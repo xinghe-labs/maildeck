@@ -92,6 +92,7 @@ export interface ImportPreviewResult {
   duplicates: number;
   invalid: number;
   errors: string[];
+  warnings: string[];
 }
 
 export interface TestConnectionResult {

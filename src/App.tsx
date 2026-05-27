@@ -1,43 +1,29 @@
-import DOMPurify from "dompurify";
 import {
   AlertCircle,
   CheckCircle2,
-  ClipboardList,
-  FileUp,
-  Inbox,
   Loader2,
-  Mail,
-  Paperclip,
   Pencil,
-  Plus,
   RefreshCw,
-  Search,
-  Settings,
-  ShieldAlert,
   Trash2,
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { AccountSidebar } from "./components/AccountSidebar";
+import { ImportModal } from "./components/ImportModal";
+import { MailReader } from "./components/MailReader";
+import { MessageList } from "./components/MessageList";
+import { SettingsModal } from "./components/SettingsModal";
+import { getDesktopApi } from "./desktop-api";
 import type {
-  AccountInput,
   AccountUpdateInput,
   AccountView,
   AppSettings,
-  ImportResult,
-  ImportPreviewResult,
   MailListResult,
   MailMessageDetail,
   MailMessageSummary,
   RefreshManyResult
 } from "./types";
-
-const emptyAccountForm: AccountInput = {
-  email: "",
-  clientId: "",
-  refreshToken: "",
-  remark: "",
-  group: ""
-};
+import { formatRelativeTime } from "./ui-utils";
 
 const defaultSettings: AppSettings = {
   cacheMessages: true,
@@ -46,248 +32,8 @@ const defaultSettings: AppSettings = {
   batchConcurrency: 4
 };
 
-function getDesktopApi() {
-  return window.outlookManager;
-}
-
-function formatDate(value: string | null) {
-  if (!value) {
-    return "-";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
-}
-
-function formatDateShort(value: string | null) {
-  if (!value) {
-    return "-";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  const now = new Date();
-  const sameDay = now.toDateString() === date.toDateString();
-
-  return new Intl.DateTimeFormat("zh-CN", sameDay ? { hour: "2-digit", minute: "2-digit" } : { month: "2-digit", day: "2-digit" }).format(date);
-}
-
-function formatRelativeTime(value?: string | null) {
-  if (!value) {
-    return "未刷新";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
-}
-
-function senderLabel(message: MailMessageSummary) {
-  if (!message.from) {
-    return "未知发件人";
-  }
-
-  return message.from.name || message.from.address || "未知发件人";
-}
-
-function addressList(addresses: { name: string; address: string }[]) {
-  if (addresses.length === 0) {
-    return "-";
-  }
-
-  return addresses.map((item) => item.name || item.address).join(", ");
-}
-
-function sanitizeMailHtml(content: string) {
-  return DOMPurify.sanitize(content, {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select", "option", "meta", "link", "base"],
-    FORBID_ATTR: ["srcset"],
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|cid):|data:image\/(?:png|gif|jpe?g|webp);base64,)/i
-  });
-}
-
-function statusMeta(account: AccountView) {
-  if (account.status === "valid") {
-    return { label: "可用", icon: CheckCircle2, className: "status-chip status-valid" };
-  }
-
-  if (account.status === "invalid") {
-    return { label: "失效", icon: AlertCircle, className: "status-chip status-invalid" };
-  }
-
-  return { label: "未测", icon: ShieldAlert, className: "status-chip status-untested" };
-}
-
 function replaceAccount(accounts: AccountView[], next: AccountView) {
   return accounts.map((account) => (account.id === next.id ? next : account));
-}
-
-function accountMailStats(account: AccountView, fallbackCount = 0) {
-  const count = account.lastInboxCount ?? fallbackCount;
-  const refreshedAt = formatRelativeTime(account.lastRefreshedAt);
-
-  return `${count} 封 · ${refreshedAt}`;
-}
-
-function ImportModal({
-  onClose,
-  onImported
-}: {
-  onClose: () => void;
-  onImported: (result: ImportResult) => void;
-}) {
-  const [mode, setMode] = useState<"single" | "batch">("single");
-  const [single, setSingle] = useState<AccountInput>(emptyAccountForm);
-  const [batchText, setBatchText] = useState("");
-  const [preview, setPreview] = useState<ImportPreviewResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function previewBatch() {
-    const api = getDesktopApi();
-    if (!api) {
-      setError("导入预检需要在 Electron 桌面应用中使用。");
-      return;
-    }
-
-    setError("");
-    setPreview(await api.accounts.previewImportText(mode === "single" ? `${single.email},${single.clientId},${single.refreshToken}` : batchText));
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const api = getDesktopApi();
-
-    if (!api) {
-      setError("导入账号需要在 Electron 桌面应用中使用。");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-
-    try {
-      const result =
-        mode === "single" ? await api.accounts.upsert(single) : await api.accounts.importText(batchText);
-
-      onImported(result);
-      onClose();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="modal-backdrop">
-      <form className="modal dark-modal" onSubmit={submit}>
-        <div className="modal-header">
-          <div>
-            <h2>导入邮箱</h2>
-            <p>支持 CSV 和 email----client_id----refresh_token 格式</p>
-          </div>
-          <button className="toolbar-icon" type="button" onClick={onClose} title="关闭">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="segmented dark-segmented">
-          <button type="button" className={mode === "single" ? "active" : ""} onClick={() => setMode("single")}>
-            单个账号
-          </button>
-          <button type="button" className={mode === "batch" ? "active" : ""} onClick={() => setMode("batch")}>
-            批量粘贴
-          </button>
-        </div>
-
-        {mode === "single" ? (
-          <div className="form-grid">
-            <label>
-              邮箱
-              <input value={single.email} onChange={(event) => setSingle({ ...single, email: event.target.value })} required />
-            </label>
-            <label>
-              Client ID
-              <input value={single.clientId} onChange={(event) => setSingle({ ...single, clientId: event.target.value })} required />
-            </label>
-            <label className="span-2">
-              Refresh Token
-              <textarea
-                value={single.refreshToken}
-                onChange={(event) => setSingle({ ...single, refreshToken: event.target.value })}
-                required
-              />
-            </label>
-            <label>
-              备注
-              <input value={single.remark} onChange={(event) => setSingle({ ...single, remark: event.target.value })} />
-            </label>
-            <label>
-              分组
-              <input value={single.group} onChange={(event) => setSingle({ ...single, group: event.target.value })} />
-            </label>
-          </div>
-        ) : (
-          <label className="stacked-label">
-            导入文本
-            <textarea
-              className="batch-textarea"
-              value={batchText}
-              onChange={(event) => setBatchText(event.target.value)}
-              placeholder={"email,client_id,refresh_token,remark,group\nuser@hotmail.com,client-id,refresh-token,主号,A组"}
-              required
-            />
-          </label>
-        )}
-
-        {preview ? (
-          <div className="preview-box">
-            共 {preview.total} 行 · 有效 {preview.valid} · 重复 {preview.duplicates} · 错误 {preview.invalid}
-            {preview.errors.length > 0 ? <p>{preview.errors.slice(0, 3).join("；")}</p> : null}
-          </div>
-        ) : null}
-
-        {error ? <div className="error-box">{error}</div> : null}
-
-        <div className="modal-actions">
-          <button type="button" className="secondary-button dark-button" onClick={previewBatch}>
-            预检
-          </button>
-          <button type="button" className="secondary-button dark-button" onClick={onClose}>
-            取消
-          </button>
-          <button className="primary-button dark-primary" type="submit" disabled={loading}>
-            {loading ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
-            保存导入
-          </button>
-        </div>
-      </form>
-    </div>
-  );
 }
 
 function EditAccountModal({
@@ -373,103 +119,6 @@ function EditAccountModal({
           <button className="primary-button dark-primary" type="submit" disabled={loading}>
             {loading ? <Loader2 size={16} className="spin" /> : <Pencil size={16} />}
             保存修改
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-function SettingsModal({
-  settings,
-  onClose,
-  onSaved
-}: {
-  settings: AppSettings;
-  onClose: () => void;
-  onSaved: (settings: AppSettings) => void;
-}) {
-  const [form, setForm] = useState<AppSettings>(settings);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const api = getDesktopApi();
-    if (!api) {
-      setError("设置需要在 Electron 桌面应用中使用。");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-
-    try {
-      onSaved(await api.settings.update(form));
-      onClose();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="modal-backdrop">
-      <form className="modal dark-modal" onSubmit={submit}>
-        <div className="modal-header">
-          <div>
-            <h2>设置</h2>
-            <p>代理支持 HTTP/HTTPS/SOCKS，留空表示直连</p>
-          </div>
-          <button className="toolbar-icon" type="button" onClick={onClose} title="关闭">
-            <X size={18} />
-          </button>
-        </div>
-        <div className="settings-grid">
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={form.cacheMessages}
-              onChange={(event) => setForm({ ...form, cacheMessages: event.target.checked })}
-            />
-            缓存邮件列表
-          </label>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={form.cacheBodies}
-              onChange={(event) => setForm({ ...form, cacheBodies: event.target.checked })}
-            />
-            缓存邮件正文
-          </label>
-          <label>
-            批量并发
-            <input
-              type="number"
-              min={1}
-              max={12}
-              value={form.batchConcurrency}
-              onChange={(event) => setForm({ ...form, batchConcurrency: Number(event.target.value) || 1 })}
-            />
-          </label>
-          <label>
-            代理地址
-            <input
-              value={form.proxyUrl}
-              onChange={(event) => setForm({ ...form, proxyUrl: event.target.value })}
-              placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
-            />
-          </label>
-        </div>
-        {error ? <div className="error-box">{error}</div> : null}
-        <div className="modal-actions">
-          <button type="button" className="secondary-button dark-button" onClick={onClose}>
-            取消
-          </button>
-          <button className="primary-button dark-primary" type="submit" disabled={loading}>
-            {loading ? <Loader2 size={16} className="spin" /> : <Settings size={16} />}
-            保存设置
           </button>
         </div>
       </form>
@@ -925,107 +574,24 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const sanitizedBody =
-    messageDetail?.body.contentType.toLowerCase() === "html"
-      ? sanitizeMailHtml(messageDetail.body.content)
-      : "";
-
   return (
     <div className="mail-app">
       <div className="mail-shell">
-        <aside className="sidebar">
-          <div className="brand-block">
-            <div className="brand-icon">
-              <Mail size={26} />
-            </div>
-            <div>
-              <h1>Outlook Manager</h1>
-              <p>Microsoft 邮箱工作台</p>
-            </div>
-          </div>
-
-          <div className="sidebar-actions">
-            <button className="import-button" onClick={() => setShowImportModal(true)}>
-              <Plus size={16} />
-              导入
-            </button>
-            <button className="square-button" onClick={importFromFile} title="导入文件">
-              <FileUp size={16} />
-            </button>
-            <button className="square-button" onClick={loadAccounts} title="刷新账号">
-              <RefreshCw size={16} />
-            </button>
-            <button className="square-button" onClick={() => setShowSettingsModal(true)} title="设置">
-              <Settings size={16} />
-            </button>
-          </div>
-
-          <div className="sidebar-search">
-            <Search size={16} />
-            <input value={accountQuery} onChange={(event) => setAccountQuery(event.target.value)} placeholder="搜索邮箱" />
-          </div>
-
-          <div className="sidebar-stats">
-            <span>
-              {filteredAccounts.length} / {accounts.length} 个邮箱
-            </span>
-          </div>
-
-          <div className="segmented slim-segmented">
-            <button type="button" className={statusFilter === "all" ? "active" : ""} onClick={() => setStatusFilter("all")}>
-              全部
-            </button>
-            <button type="button" className={statusFilter === "valid" ? "active" : ""} onClick={() => setStatusFilter("valid")}>
-              可用
-            </button>
-            <button type="button" className={statusFilter === "invalid" ? "active" : ""} onClick={() => setStatusFilter("invalid")}>
-              失效
-            </button>
-            <button type="button" className={statusFilter === "untested" ? "active" : ""} onClick={() => setStatusFilter("untested")}>
-              未测
-            </button>
-          </div>
-
-          <div className="account-scroll">
-            {loadingAccounts ? (
-              <div className="panel-empty">
-                <Loader2 size={22} className="spin" />
-                <p>加载账号</p>
-              </div>
-            ) : null}
-
-            {!loadingAccounts && filteredAccounts.length === 0 ? (
-              <div className="panel-empty">
-                <Inbox size={24} />
-                <p>没有符合条件的邮箱</p>
-              </div>
-            ) : null}
-
-            {filteredAccounts.map((account) => {
-              const meta = statusMeta(account);
-              const StatusIcon = meta.icon;
-
-              return (
-                <button
-                  key={account.id}
-                  className={`account-row ${account.id === selectedAccountId ? "selected" : ""}`}
-                  onClick={() => setSelectedAccountId(account.id)}
-                >
-                  <div className="account-text">
-                    <strong>{account.email}</strong>
-                    <div className="account-meta-row">
-                      <span>{account.remark || "Hotmail OAuth"}</span>
-                      <span>{accountMailStats(account)}</span>
-                    </div>
-                  </div>
-                  <span className={meta.className} title={meta.label}>
-                    <StatusIcon size={12} />
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
+        <AccountSidebar
+          accounts={accounts}
+          filteredAccounts={filteredAccounts}
+          selectedAccountId={selectedAccountId}
+          loadingAccounts={loadingAccounts}
+          accountQuery={accountQuery}
+          statusFilter={statusFilter}
+          onAccountQueryChange={setAccountQuery}
+          onStatusFilterChange={setStatusFilter}
+          onSelectAccount={setSelectedAccountId}
+          onOpenImport={() => setShowImportModal(true)}
+          onImportFromFile={importFromFile}
+          onReloadAccounts={loadAccounts}
+          onOpenSettings={() => setShowSettingsModal(true)}
+        />
 
         <main className="workspace">
           <header className="workspace-header">
@@ -1098,124 +664,22 @@ export default function App() {
           ) : null}
 
           <div className="workspace-content">
-            <section className="list-panel">
-              <div className="list-header">
-                <div className="folder-title">
-                  <Inbox size={16} />
-                  收件箱
-                </div>
-                <div className="list-searchbar">
-                  <div className="search-box">
-                    <Search size={16} />
-                    <input
-                      value={mailQuery}
-                      onChange={(event) => setMailQuery(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && selectedAccountId) {
-                          executeMailSearch();
-                        }
-                      }}
-                      placeholder="搜索主题，回车执行"
-                    />
-                  </div>
-                  <button
-                    className="toolbar-icon"
-                    onClick={() => selectedAccountId && loadMessages(selectedAccountId, true)}
-                    disabled={!selectedAccountId || loadingMessages}
-                    title="强制刷新"
-                  >
-                    {loadingMessages ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
-                  </button>
-                </div>
-              </div>
+            <MessageList
+              messages={messages}
+              selectedMessageId={selectedMessageId}
+              loadingMessages={loadingMessages}
+              loadingMore={loadingMore}
+              mailCursor={mailCursor}
+              mailQuery={mailQuery}
+              canRefresh={Boolean(selectedAccountId)}
+              onMailQueryChange={setMailQuery}
+              onExecuteSearch={executeMailSearch}
+              onRefresh={() => selectedAccountId && loadMessages(selectedAccountId, true)}
+              onSelectMessage={setSelectedMessageId}
+              onLoadMore={loadMoreMessages}
+            />
 
-              <div className="message-scroll">
-                {loadingMessages ? (
-                  <div className="panel-empty">
-                    <Loader2 size={22} className="spin" />
-                    <p>正在刷新邮件</p>
-                  </div>
-                ) : null}
-
-                {!loadingMessages && messages.length === 0 ? (
-                  <div className="panel-empty">
-                    <ClipboardList size={24} />
-                    <p>没有邮件可显示</p>
-                  </div>
-                ) : null}
-
-                {messages.map((message) => (
-                  <button
-                    key={message.id}
-                    className={`message-row ${message.id === selectedMessageId ? "selected" : ""}`}
-                    onClick={() => setSelectedMessageId(message.id)}
-                  >
-                    <div className="message-row-top">
-                      <strong>{senderLabel(message)}</strong>
-                      <span>{formatDateShort(message.receivedDateTime || message.sentDateTime)}</span>
-                    </div>
-                    <div className="message-row-subject">
-                      {message.hasAttachments ? <Paperclip size={13} /> : null}
-                      {message.subject}
-                    </div>
-                    {message.bodyPreview ? <p>{message.bodyPreview}</p> : null}
-                  </button>
-                ))}
-                {mailCursor && !loadingMessages ? (
-                  <button className="load-more-button" onClick={loadMoreMessages} disabled={loadingMore}>
-                    {loadingMore ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
-                    加载更多
-                  </button>
-                ) : null}
-              </div>
-            </section>
-
-            <article className="reader-panel">
-              {!selectedMessage && !loadingDetail ? (
-                <div className="panel-empty">
-                  <Mail size={30} />
-                  <p>选择一封邮件查看正文</p>
-                </div>
-              ) : null}
-
-              {loadingDetail ? (
-                <div className="panel-empty">
-                  <Loader2 size={24} className="spin" />
-                  <p>正在读取邮件</p>
-                </div>
-              ) : null}
-
-              {!loadingDetail && selectedMessage && messageDetail ? (
-                <>
-                  <header className="reader-header">
-                    <h2>{messageDetail.subject}</h2>
-                    <div className="reader-meta-head">
-                      <div className="sender-pill">
-                        <div>
-                          <strong>{messageDetail.from?.name || messageDetail.from?.address || "-"}</strong>
-                          <span>{messageDetail.from?.address || ""}</span>
-                        </div>
-                      </div>
-                      <time>{formatDate(messageDetail.receivedDateTime || messageDetail.sentDateTime)}</time>
-                    </div>
-                    <div className="reader-lines">
-                      <span>发送给 {addressList(messageDetail.toRecipients)}</span>
-                      <span>抄送 {addressList(messageDetail.ccRecipients)}</span>
-                    </div>
-                  </header>
-
-                  <div className="reader-body">
-                    <div className="mail-paper">
-                      {messageDetail.body.contentType.toLowerCase() === "html" ? (
-                        <div dangerouslySetInnerHTML={{ __html: sanitizedBody }} />
-                      ) : (
-                        <pre>{messageDetail.body.content}</pre>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : null}
-            </article>
+            <MailReader selectedMessage={selectedMessage} messageDetail={messageDetail} loadingDetail={loadingDetail} />
           </div>
         </main>
       </div>

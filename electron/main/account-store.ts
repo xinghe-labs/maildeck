@@ -97,6 +97,57 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function isEmailLike(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function looksLikeRefreshToken(value: string) {
+  const trimmed = value.trim();
+  return trimmed.startsWith("M.") && trimmed.length > 80;
+}
+
+function looksLikeAccessToken(value: string) {
+  const trimmed = value.trim();
+  return trimmed.startsWith("Ew") && trimmed.length > 80 && !trimmed.includes(".");
+}
+
+function validateImportInput(input: AccountInput, rowNumber: number) {
+  const email = normalizeEmail(input.email);
+  const clientId = input.clientId.trim();
+  const refreshToken = input.refreshToken.trim();
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!email || !clientId || !refreshToken) {
+    errors.push(`第 ${rowNumber} 行缺少 email、client_id 或 refresh_token`);
+    return { email, clientId, refreshToken, errors, warnings };
+  }
+
+  if (!isEmailLike(email)) {
+    errors.push(`第 ${rowNumber} 行 email 格式不正确`);
+  }
+
+  if (!UUID_PATTERN.test(clientId)) {
+    errors.push(`第 ${rowNumber} 行 client_id 不是 UUID，可能字段顺序写错`);
+  }
+
+  if (UUID_PATTERN.test(refreshToken)) {
+    errors.push(`第 ${rowNumber} 行 refresh_token 看起来像 client_id，疑似字段顺序错误`);
+  }
+
+  if (looksLikeRefreshToken(clientId)) {
+    errors.push(`第 ${rowNumber} 行 client_id 看起来像 refresh_token，疑似字段顺序错误`);
+  }
+
+  if (looksLikeAccessToken(refreshToken)) {
+    errors.push(`第 ${rowNumber} 行 refresh_token 看起来像 access_token，请导入 refresh_token`);
+  } else if (!looksLikeRefreshToken(refreshToken)) {
+    warnings.push(`第 ${rowNumber} 行 refresh_token 不像常见 Microsoft refresh token，请确认不是复制了密码或 access token`);
+  }
+
+  return { email, clientId, refreshToken, errors, warnings };
+}
+
 function rowToRecord(row: AccountRow): AccountRecord {
   return {
     id: row.id,
@@ -279,26 +330,26 @@ export async function previewAccounts(inputs: AccountInput[]): Promise<ImportPre
   const existingEmails = new Set(listAccountRecords().map((account) => account.email));
   const seenEmails = new Set<string>();
   const errors: string[] = [];
+  const warnings: string[] = [];
   let valid = 0;
   let duplicates = 0;
   let invalid = 0;
 
   for (const [index, input] of inputs.entries()) {
-    const email = normalizeEmail(input.email);
-    const clientId = input.clientId.trim();
-    const refreshToken = input.refreshToken.trim();
+    const result = validateImportInput(input, index + 1);
+    errors.push(...result.errors);
+    warnings.push(...result.warnings);
 
-    if (!email || !clientId || !refreshToken) {
+    if (result.errors.length > 0) {
       invalid += 1;
-      errors.push(`第 ${index + 1} 行缺少 email、client_id 或 refresh_token`);
       continue;
     }
 
     valid += 1;
-    if (existingEmails.has(email) || seenEmails.has(email)) {
+    if (existingEmails.has(result.email) || seenEmails.has(result.email)) {
       duplicates += 1;
     }
-    seenEmails.add(email);
+    seenEmails.add(result.email);
   }
 
   return {
@@ -306,7 +357,8 @@ export async function previewAccounts(inputs: AccountInput[]): Promise<ImportPre
     valid,
     duplicates,
     invalid,
-    errors
+    errors,
+    warnings
   };
 }
 
@@ -320,13 +372,14 @@ export async function upsertAccounts(inputs: AccountInput[]) {
 
     transaction(() => {
       for (const [index, input] of inputs.entries()) {
-        const email = normalizeEmail(input.email);
-        const clientId = input.clientId.trim();
-        const refreshToken = input.refreshToken.trim();
+        const result = validateImportInput(input, index + 1);
+        const email = result.email;
+        const clientId = result.clientId;
+        const refreshToken = result.refreshToken;
 
-        if (!email || !clientId || !refreshToken) {
+        if (result.errors.length > 0) {
           skipped += 1;
-          errors.push(`第 ${index + 1} 行缺少 email、client_id 或 refresh_token`);
+          errors.push(...result.errors);
           continue;
         }
 

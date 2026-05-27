@@ -92,13 +92,13 @@ $notes = @(
   "",
   "- Outlook Manager $Version.exe: portable build",
   "- Outlook Manager Setup $Version.exe: Windows installer",
-  "- SHA256SUMS-$Version.txt: SHA256 checksums",
   "",
   "## Verification",
   "",
   "- npm run dist:win completed",
   "- release startup smoke test passed",
-  "- executable icon and SQLite startup were verified"
+  "- executable icon and SQLite startup were verified",
+  "- local SHA256 checksums were generated but not uploaded"
 )
 $notes | Set-Content -LiteralPath $NotesFile -Encoding utf8
 

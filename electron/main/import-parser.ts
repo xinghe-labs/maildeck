@@ -42,6 +42,35 @@ function isHeader(cells: string[]) {
   return normalized.includes("email") && normalized.some((cell) => cell === "client_id" || cell === "clientid");
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function looksLikeUuid(value: string) {
+  return UUID_PATTERN.test(value.trim());
+}
+
+function parseDashedLine(cells: string[]): AccountInput {
+  const secondLooksClientId = looksLikeUuid(cells[1] || "");
+  const thirdLooksClientId = looksLikeUuid(cells[2] || "");
+
+  if (cells.length >= 4 && thirdLooksClientId && !secondLooksClientId) {
+    return {
+      email: cells[0] || "",
+      clientId: cells[2] || "",
+      refreshToken: cells[3] || "",
+      remark: cells[4] || "",
+      group: cells[5] || ""
+    };
+  }
+
+  return {
+    email: cells[0] || "",
+    clientId: cells[1] || "",
+    refreshToken: cells[2] || "",
+    remark: cells[3] || "",
+    group: cells[4] || ""
+  };
+}
+
 export function parseAccountImport(text: string): AccountInput[] {
   const lines = stripBom(text)
     .split(/\r?\n/)
@@ -77,17 +106,11 @@ export function parseAccountImport(text: string): AccountInput[] {
   }
 
   return lines.map((line) => {
-    const cells = line.includes("----") ? line.split("----").map((cell) => cell.trim()) : parseCsvLine(line);
-
-    if (line.includes("----") && cells.length >= 4) {
-      return {
-        email: cells[0] || "",
-        clientId: cells[2] || "",
-        refreshToken: cells[3] || "",
-        remark: cells[1] || "",
-        group: cells[4] || ""
-      };
+    if (line.includes("----")) {
+      return parseDashedLine(line.split("----").map((cell) => cell.trim()));
     }
+
+    const cells = parseCsvLine(line);
 
     return {
       email: cells[0] || "",

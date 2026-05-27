@@ -710,6 +710,23 @@ textarea {
   line-height: 1.6;
 }
 
+.import-format-help {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+  padding: 10px 12px;
+  border: 1px solid #d7dfda;
+  border-radius: 8px;
+  background: #f8faf8;
+  color: #486163;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.import-format-help strong {
+  color: #102a2d;
+}
+
 .span-2 {
   grid-column: span 2;
 }
@@ -737,6 +754,10 @@ textarea {
   margin: 6px 0 0;
   color: #a4261d;
   font-weight: 700;
+}
+
+.preview-box .preview-warning {
+  color: #8a5d00;
 }
 
 .settings-grid {
