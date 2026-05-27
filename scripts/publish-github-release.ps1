@@ -62,6 +62,7 @@ if (-not $AllowDirty) {
 
 $Version = Get-PackageVersion
 $Tag = "v$Version"
+$Target = (git rev-parse HEAD).Trim()
 $Portable = Join-Path $Root "release\Outlook Manager $Version.exe"
 $Installer = Join-Path $Root "release\Outlook Manager Setup $Version.exe"
 $Checksums = Join-Path $Root "release\SHA256SUMS-$Version.txt"
@@ -114,12 +115,16 @@ if ($NoUpload) {
 
 Invoke-Checked "gh.exe" @("auth", "status")
 
-$jq = ".[] | select(.tagName == `"$Tag`") | .tagName"
-$existingTag = & gh.exe release list --repo $Repo --limit 100 --json tagName --jq $jq
+$releaseJson = & gh.exe release list --repo $Repo --limit 100 --json tagName
 if ($LASTEXITCODE -ne 0) {
   throw "Failed to query GitHub releases for $Repo."
 }
-$releaseExists = ($existingTag -contains $Tag) -or ($existingTag -eq $Tag)
+
+$releaseRows = @()
+if ($releaseJson) {
+  $releaseRows = @($releaseJson | ConvertFrom-Json)
+}
+$releaseExists = @($releaseRows | Where-Object { $_.tagName -eq $Tag }).Count -gt 0
 
 if (-not $releaseExists) {
   $args = @(
@@ -131,7 +136,9 @@ if (-not $releaseExists) {
     "--title",
     "Outlook Manager $Version",
     "--notes-file",
-    $NotesFile
+    $NotesFile,
+    "--target",
+    $Target
   )
 
   if ($Draft) {
