@@ -105,8 +105,9 @@ $notes | Set-Content -LiteralPath $NotesFile -Encoding utf8
 Write-Output "Release assets ready:"
 Write-Output "  $Portable"
 Write-Output "  $Installer"
-Write-Output "  $Checksums"
 Write-Output "  $NotesFile"
+Write-Output "Local checksum file:"
+Write-Output "  $Checksums"
 
 if ($NoUpload) {
   Write-Output "NoUpload was set. Skipping GitHub Release upload."
@@ -169,7 +170,6 @@ $uploadArgs = @(
   $Tag,
   $Portable,
   $Installer,
-  $Checksums,
   "--repo",
   $Repo
 )
