@@ -17,7 +17,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AccountInput,
   AccountUpdateInput,
@@ -143,6 +143,13 @@ function statusMeta(account: AccountView) {
 
 function replaceAccount(accounts: AccountView[], next: AccountView) {
   return accounts.map((account) => (account.id === next.id ? next : account));
+}
+
+function accountMailStats(account: AccountView, fallbackCount = 0) {
+  const count = account.lastInboxCount ?? fallbackCount;
+  const refreshedAt = formatRelativeTime(account.lastRefreshedAt);
+
+  return `${count} 封 · ${refreshedAt}`;
 }
 
 function ImportModal({
@@ -496,6 +503,8 @@ export default function App() {
   const [mailCursor, setMailCursor] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
+  const messagesRequestRef = useRef(0);
+  const detailRequestRef = useRef(0);
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
@@ -572,6 +581,10 @@ export default function App() {
       return;
     }
 
+    const requestId = messagesRequestRef.current + 1;
+    messagesRequestRef.current = requestId;
+    detailRequestRef.current += 1;
+
     setLoadingMessages(true);
     setMessages([]);
     setSelectedMessageId(null);
@@ -585,13 +598,21 @@ export default function App() {
         search: activeMailQuery,
         forceRefresh
       });
+      if (messagesRequestRef.current !== requestId) {
+        return;
+      }
       setMessages(result.messages);
       setMailCursor(result.nextCursor);
       setSelectedMessageId(result.messages[0]?.id || null);
     } catch (loadError) {
+      if (messagesRequestRef.current !== requestId) {
+        return;
+      }
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
-      setLoadingMessages(false);
+      if (messagesRequestRef.current === requestId) {
+        setLoadingMessages(false);
+      }
     }
   }
 
@@ -603,14 +624,21 @@ export default function App() {
 
     setLoadingMore(true);
     setError("");
+    const accountId = selectedAccountId;
+    const cursor = mailCursor;
+    const query = activeMailQuery;
+    const requestId = messagesRequestRef.current;
 
     try {
       const result = await api.mail.listMessages({
-        accountId: selectedAccountId,
+        accountId,
         top: 50,
-        search: activeMailQuery,
-        cursor: mailCursor
+        search: query,
+        cursor
       });
+      if (messagesRequestRef.current !== requestId) {
+        return;
+      }
       setMessages((current) => {
         const merged = new Map(current.map((message) => [message.id, message]));
         for (const message of result.messages) {
@@ -633,16 +661,28 @@ export default function App() {
       return;
     }
 
+    const requestId = detailRequestRef.current + 1;
+    detailRequestRef.current = requestId;
+
     setLoadingDetail(true);
     setMessageDetail(null);
     setError("");
 
     try {
-      setMessageDetail(await api.mail.getMessage({ accountId, messageId }));
+      const detail = await api.mail.getMessage({ accountId, messageId });
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
+      setMessageDetail(detail);
     } catch (loadError) {
+      if (detailRequestRef.current !== requestId) {
+        return;
+      }
       setError(loadError instanceof Error ? loadError.message : String(loadError));
     } finally {
-      setLoadingDetail(false);
+      if (detailRequestRef.current === requestId) {
+        setLoadingDetail(false);
+      }
     }
   }
 
@@ -836,6 +876,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    messagesRequestRef.current += 1;
+    detailRequestRef.current += 1;
+
     if (selectedAccountId) {
       const timer = window.setTimeout(() => {
         loadMessages(selectedAccountId);
@@ -972,9 +1015,7 @@ export default function App() {
                     <strong>{account.email}</strong>
                     <div className="account-meta-row">
                       <span>{account.remark || "Hotmail OAuth"}</span>
-                      <span>
-                        {account.lastInboxCount || 0} 封 · {formatRelativeTime(account.lastRefreshedAt)}
-                      </span>
+                      <span>{accountMailStats(account)}</span>
                     </div>
                   </div>
                   <span className={meta.className} title={meta.label}>
@@ -993,7 +1034,7 @@ export default function App() {
               <h2>{selectedAccount?.email || "未选择邮箱"}</h2>
               <p>
                 {selectedAccount
-                  ? `收件箱 ${selectedAccount.lastInboxCount || messages.length} 封 · 最新邮件 ${formatRelativeTime(
+                  ? `收件箱 ${selectedAccount.lastInboxCount ?? messages.length} 封 · 最新邮件 ${formatRelativeTime(
                       selectedAccount.lastMailAt
                     )}`
                   : "选择账号后可读取文件夹和邮件"}

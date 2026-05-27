@@ -2,6 +2,11 @@ import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import type { MailFolder, MailMessageDetail, MailMessageSummary } from "./types.js";
 
+interface ImapMessageListResult {
+  messages: MailMessageSummary[];
+  totalCount: number;
+}
+
 function cleanText(value: string | undefined | null) {
   return (value || "").replace(/\r/g, "").trim();
 }
@@ -76,33 +81,48 @@ export async function listImapMessages(
   search = "",
   cursor = "",
   proxyUrl = ""
-): Promise<MailMessageSummary[]> {
+): Promise<ImapMessageListResult> {
   return withClient(email, accessToken, async (client) => {
     const lock = await client.getMailboxLock(folderId);
 
     try {
       const exists = client.mailbox && client.mailbox.exists ? client.mailbox.exists : 0;
       if (exists === 0) {
-        return [];
+        return { messages: [], totalCount: 0 };
       }
 
       const limit = Math.min(Math.max(top, 1), 100);
       const query = search.trim();
+      const nextUid = client.mailbox && client.mailbox.uidNext ? client.mailbox.uidNext : exists + 1;
+      const beforeUid = Math.max(Number(cursor) || nextUid, 1);
       const matchedUids = query ? await client.search({ subject: query }, { uid: true }) : null;
-      const beforeUid = Math.max(Number(cursor) || exists + 1, 1);
       const selectedUids = matchedUids
         ? matchedUids.filter((uid) => uid < beforeUid).slice(-limit)
-        : Array.from({ length: limit }, (_item, index) => beforeUid - 1 - index).filter((seq) => seq > 0);
+        : [];
 
-      if (selectedUids.length === 0) {
-        return [];
+      const fetchRange = (() => {
+        if (matchedUids) {
+          return selectedUids.length > 0 ? selectedUids.join(",") : "";
+        }
+
+        const endUid = beforeUid - 1;
+        if (endUid < 1) {
+          return "";
+        }
+
+        const windowSize = Math.max(limit * 5, 100);
+        const startUid = Math.max(1, endUid - windowSize + 1);
+        return `${startUid}:${endUid}`;
+      })();
+
+      if (!fetchRange) {
+        return { messages: [], totalCount: exists };
       }
 
-      const range = selectedUids.join(",");
       const messages: MailMessageSummary[] = [];
 
       for await (const message of client.fetch(
-        range,
+        fetchRange,
         {
           uid: true,
           flags: true,
@@ -111,7 +131,7 @@ export async function listImapMessages(
           internalDate: true,
           source: { maxLength: 0 }
         },
-        matchedUids ? { uid: true } : undefined
+        { uid: true }
       )) {
         const subject = cleanText(message.envelope?.subject) || "(无主题)";
         messages.push({
@@ -128,11 +148,14 @@ export async function listImapMessages(
         });
       }
 
-      return messages.sort((a, b) => {
-        const left = a.receivedDateTime ? new Date(a.receivedDateTime).getTime() : 0;
-        const right = b.receivedDateTime ? new Date(b.receivedDateTime).getTime() : 0;
-        return right - left;
-      });
+      return {
+        messages: messages.sort((a, b) => {
+          const left = a.receivedDateTime ? new Date(a.receivedDateTime).getTime() : 0;
+          const right = b.receivedDateTime ? new Date(b.receivedDateTime).getTime() : 0;
+          return right - left;
+        }).slice(0, limit),
+        totalCount: exists
+      };
     } finally {
       lock.release();
     }
@@ -146,14 +169,14 @@ export async function listNewImapMessages(
   top = 30,
   afterUid = "",
   proxyUrl = ""
-): Promise<MailMessageSummary[]> {
+): Promise<ImapMessageListResult> {
   return withClient(email, accessToken, async (client) => {
     const lock = await client.getMailboxLock(folderId);
 
     try {
       const exists = client.mailbox && client.mailbox.exists ? client.mailbox.exists : 0;
       if (exists === 0) {
-        return [];
+        return { messages: [], totalCount: 0 };
       }
 
       const lastUid = Number(afterUid) || 0;
@@ -161,7 +184,7 @@ export async function listNewImapMessages(
       const selectedUids = (Array.isArray(matchedUids) ? matchedUids : []).slice(-Math.min(Math.max(top, 1), 100));
 
       if (selectedUids.length === 0) {
-        return [];
+        return { messages: [], totalCount: exists };
       }
 
       const messages: MailMessageSummary[] = [];
@@ -191,11 +214,14 @@ export async function listNewImapMessages(
         });
       }
 
-      return messages.sort((a, b) => {
-        const left = Number(a.id) || 0;
-        const right = Number(b.id) || 0;
-        return right - left;
-      });
+      return {
+        messages: messages.sort((a, b) => {
+          const left = Number(a.id) || 0;
+          const right = Number(b.id) || 0;
+          return right - left;
+        }),
+        totalCount: exists
+      };
     } finally {
       lock.release();
     }

@@ -28,6 +28,11 @@ interface GraphError {
   error?: {
     code?: string;
     message?: string;
+    innerError?: {
+      date?: string;
+      "request-id"?: string;
+      "client-request-id"?: string;
+    };
   };
 }
 
@@ -73,7 +78,12 @@ function createGraphError(status: number, payload: GraphError | string) {
     return new Error(`Graph 请求失败 ${status}: ${payload}`);
   }
 
-  return new Error(payload.error?.message || payload.error?.code || `Graph 请求失败 ${status}`);
+  const code = payload.error?.code || "unknown";
+  const message = payload.error?.message || `Graph 请求失败 ${status}`;
+  const requestId = payload.error?.innerError?.["request-id"] || payload.error?.innerError?.["client-request-id"] || "";
+  const suffix = requestId ? `，request-id: ${requestId}` : "";
+
+  return new Error(`Graph 请求失败 ${status} (${code})：${message}${suffix}`);
 }
 
 async function parseResponse(response: Response) {
@@ -196,7 +206,10 @@ export async function refreshAccessToken(clientId: string, refreshToken: string,
       };
     }
 
-    lastError = payload.error_description || payload.error || `Token 刷新失败 ${response.status}`;
+    const endpointTenant = endpoint.match(/login\.microsoftonline\.com\/([^/]+)/)?.[1] || "unknown";
+    const errorCode = payload.error || `HTTP_${response.status}`;
+    const description = payload.error_description || `Token 刷新失败 ${response.status}`;
+    lastError = `Token 刷新失败 [${endpointTenant}/${errorCode}]：${description}`;
 
     // 租户不匹配时继续尝试其它端点，其它错误直接返回，避免无意义重试。
     if (!lastError.includes("AADSTS7000012")) {

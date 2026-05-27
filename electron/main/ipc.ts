@@ -1,4 +1,5 @@
 import { dialog, ipcMain } from "electron";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
   clearAccountCache,
@@ -45,7 +46,10 @@ const tokenCache = new Map<
   })
 >();
 const tokenRefreshes = new Map<string, Promise<AccessTokenResult & { email: string; expiresAt: number }>>();
-const canceledJobs = new Set<"test" | "refresh">();
+type JobKind = "test" | "refresh";
+
+const activeJobs = new Map<JobKind, Set<string>>();
+const canceledJobIds = new Set<string>();
 
 async function refreshAndCacheAccessToken(accountId: string): Promise<AccessTokenResult & { email: string; expiresAt: number }> {
   const account = await getAccountRecord(accountId);
@@ -127,11 +131,38 @@ function maxCursorFor(messages: MailMessageSummary[]) {
   );
 }
 
-function shouldCancel(job: "test" | "refresh") {
-  return canceledJobs.has(job);
+function startJob(kind: JobKind) {
+  const jobId = randomUUID();
+  const jobs = activeJobs.get(kind) || new Set<string>();
+  jobs.add(jobId);
+  activeJobs.set(kind, jobs);
+  return jobId;
 }
 
-function cancelError(job: "test" | "refresh") {
+function finishJob(kind: JobKind, jobId: string) {
+  const jobs = activeJobs.get(kind);
+  jobs?.delete(jobId);
+  canceledJobIds.delete(jobId);
+
+  if (jobs && jobs.size === 0) {
+    activeJobs.delete(kind);
+  }
+}
+
+function cancelJobs(kind: JobKind) {
+  const jobs = activeJobs.get(kind) || new Set<string>();
+  for (const jobId of jobs) {
+    canceledJobIds.add(jobId);
+  }
+
+  return jobs.size;
+}
+
+function shouldCancel(jobId: string) {
+  return canceledJobIds.has(jobId);
+}
+
+function cancelError(job: JobKind) {
   return job === "test" ? "批量测试已取消" : "批量刷新已取消";
 }
 
@@ -207,9 +238,8 @@ export function registerIpcHandlers() {
     }
   );
 
-  ipcMain.handle("jobs:cancel", async (_event, job: "test" | "refresh") => {
-    canceledJobs.add(job);
-    return { canceled: job };
+  ipcMain.handle("jobs:cancel", async (_event, job: JobKind) => {
+    return { canceled: job, count: cancelJobs(job) };
   });
 
   ipcMain.handle("accounts:previewImportText", async (_event, text: string) => {
@@ -275,35 +305,39 @@ export function registerIpcHandlers() {
   });
 
   ipcMain.handle("accounts:testMany", async (event, accountIds: string[]) => {
-    canceledJobs.delete("test");
+    const jobId = startJob("test");
     const settings = await getSettings();
     let completed = 0;
     let ok = 0;
     let failed = 0;
     const total = accountIds.length;
 
-    return runLimited(accountIds, settings.batchConcurrency, async (accountId) => {
-      if (shouldCancel("test")) {
+    try {
+      return await runLimited(accountIds, settings.batchConcurrency, async (accountId) => {
+        if (shouldCancel(jobId)) {
+          completed += 1;
+          failed += 1;
+          const message = cancelError("test");
+          event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: message });
+          return { accountId, account: null, ok: false, message, code: "UNKNOWN" as AppErrorCode };
+        }
+
+        const result = await testAccountConnection(accountId, true);
         completed += 1;
-        failed += 1;
-        const message = cancelError("test");
-        event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: message });
-        return { accountId, account: null, ok: false, message, code: "UNKNOWN" as AppErrorCode };
-      }
 
-      const result = await testAccountConnection(accountId, true);
-      completed += 1;
+        if (result.ok) {
+          ok += 1;
+          event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId });
+        } else {
+          failed += 1;
+          event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: result.message });
+        }
 
-      if (result.ok) {
-        ok += 1;
-        event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId });
-      } else {
-        failed += 1;
-        event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: result.message });
-      }
-
-      return result;
-    });
+        return result;
+      });
+    } finally {
+      finishJob("test", jobId);
+    }
   });
 
   ipcMain.handle("mail:listFolders", async (_event, accountId: string) => {
@@ -342,7 +376,7 @@ export function registerIpcHandlers() {
         return { messages: [], nextCursor: null } satisfies MailListResult;
       }
 
-      const messages = await listImapMessages(
+      const result = await listImapMessages(
         token.email,
         token.accessToken,
         inbox.id,
@@ -351,13 +385,14 @@ export function registerIpcHandlers() {
         options.cursor || "",
         settings.proxyUrl
       );
+      const messages = result.messages;
       const nextCursor = nextCursorFor(messages);
       if (!search) {
         await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
         await updateAccountRefreshState(options.accountId, {
           status: "valid",
           lastError: null,
-          lastInboxCount: messages.length,
+          lastInboxCount: result.totalCount,
           lastMailAt: latestMailTime(messages),
           lastMailCursor: maxCursorFor(messages)
         });
@@ -380,7 +415,7 @@ export function registerIpcHandlers() {
       await updateAccountRefreshState(options.accountId, {
         status: "valid",
         lastError: null,
-        lastInboxCount: messages.length,
+        lastInboxCount: inbox.totalItemCount || messages.length,
         lastMailAt: latestMailTime(messages),
         lastMailCursor: null
       });
@@ -426,20 +461,23 @@ export function registerIpcHandlers() {
   });
 
   ipcMain.handle("mail:refreshMany", async (event, accountIds: string[]) => {
-    canceledJobs.delete("refresh");
+    const jobId = startJob("refresh");
     const appSettings = await getSettings();
     let completed = 0;
     let ok = 0;
     let failed = 0;
     const total = accountIds.length;
 
-    return runLimited(accountIds, appSettings.batchConcurrency, async (accountId) => {
-      try {
-        if (shouldCancel("refresh")) {
-          throw new Error(cancelError("refresh"));
-        }
+    try {
+      return await runLimited(accountIds, appSettings.batchConcurrency, async (accountId) => {
+        let account: Awaited<ReturnType<typeof getAccountRecord>> | null = null;
 
-        const account = await getAccountRecord(accountId);
+        try {
+          if (shouldCancel(jobId)) {
+            throw new Error(cancelError("refresh"));
+          }
+
+        account = await getAccountRecord(accountId);
         const token = await getAccessToken(accountId);
         const settings = await getSettings();
 
@@ -451,8 +489,8 @@ export function registerIpcHandlers() {
             await updateAccountRefreshState(accountId, {
               status: "invalid",
               lastError: "未找到收件箱",
-              lastInboxCount: 0,
-              lastMailAt: null,
+              lastInboxCount: account.lastInboxCount || 0,
+              lastMailAt: account.lastMailAt || null,
               lastMailCursor: null
             });
             failed += 1;
@@ -461,15 +499,16 @@ export function registerIpcHandlers() {
             return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode };
           }
 
-          const messages = account.lastMailCursor
+          const result = account.lastMailCursor
             ? await listNewImapMessages(token.email, token.accessToken, inbox.id, 20, account.lastMailCursor, settings.proxyUrl)
             : await listImapMessages(token.email, token.accessToken, inbox.id, 20, "", "", settings.proxyUrl);
+          const messages = result.messages;
           const cursor = maxCursorFor(messages) || account.lastMailCursor || null;
           await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages));
           await updateAccountRefreshState(accountId, {
             status: "valid",
             lastError: null,
-            lastInboxCount: messages.length,
+            lastInboxCount: result.totalCount,
             lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
             lastMailCursor: cursor
           });
@@ -486,8 +525,8 @@ export function registerIpcHandlers() {
           await updateAccountRefreshState(accountId, {
             status: "invalid",
             lastError: "未找到收件箱",
-            lastInboxCount: 0,
-            lastMailAt: null,
+            lastInboxCount: account.lastInboxCount || 0,
+            lastMailAt: account.lastMailAt || null,
             lastMailCursor: null
           });
           failed += 1;
@@ -501,7 +540,7 @@ export function registerIpcHandlers() {
         await updateAccountRefreshState(accountId, {
           status: "valid",
           lastError: null,
-          lastInboxCount: messages.length,
+          lastInboxCount: inbox.totalItemCount || account.lastInboxCount || messages.length,
           lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
           lastMailCursor: null
         });
@@ -509,20 +548,23 @@ export function registerIpcHandlers() {
         completed += 1;
         event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId });
         return { accountId, ok: true, count: messages.length };
-      } catch (error) {
-        const { code, message } = normalizeErrorResult(error);
-        await updateAccountRefreshState(accountId, {
-          status: "invalid",
-          lastError: message,
-          lastInboxCount: 0,
-          lastMailAt: null,
-          lastMailCursor: null
-        }).catch(() => undefined);
-        failed += 1;
-        completed += 1;
-        event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: message, code });
-        return { accountId, ok: false, count: 0, error: message, code };
-      }
-    });
+        } catch (error) {
+          const { code, message } = normalizeErrorResult(error);
+          await updateAccountRefreshState(accountId, {
+            status: "invalid",
+            lastError: message,
+            lastInboxCount: account?.lastInboxCount || 0,
+            lastMailAt: account?.lastMailAt || null,
+            lastMailCursor: null
+          }).catch(() => undefined);
+          failed += 1;
+          completed += 1;
+          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: message, code });
+          return { accountId, ok: false, count: 0, error: message, code };
+        }
+      });
+    } finally {
+      finishJob("refresh", jobId);
+    }
   });
 }
