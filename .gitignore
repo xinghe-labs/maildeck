@@ -1,0 +1,16 @@
+node_modules
+dist
+dist-electron
+release
+*.log
+token-debug*.json
+token-debug*.txt
+*.db
+*.db-shm
+*.db-wal
+accounts.json*
+mail-cache.json*
+settings.json*
+.DS_Store
+*.tsbuildinfo
+tmp-*user-data/
