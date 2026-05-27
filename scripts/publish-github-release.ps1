@@ -114,11 +114,12 @@ if ($NoUpload) {
 
 Invoke-Checked "gh.exe" @("auth", "status")
 
-$releaseExists = $false
-& gh.exe release view $Tag --repo $Repo *> $null
-if ($LASTEXITCODE -eq 0) {
-  $releaseExists = $true
+$jq = ".[] | select(.tagName == `"$Tag`") | .tagName"
+$existingTag = & gh.exe release list --repo $Repo --limit 100 --json tagName --jq $jq
+if ($LASTEXITCODE -ne 0) {
+  throw "Failed to query GitHub releases for $Repo."
 }
+$releaseExists = ($existingTag -contains $Tag) -or ($existingTag -eq $Tag)
 
 if (-not $releaseExists) {
   $args = @(
