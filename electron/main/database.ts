@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 let database: DatabaseSync | null = null;
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 export function getDatabase() {
   if (database) {
@@ -33,6 +33,8 @@ export function getDatabase() {
       last_inbox_count INTEGER NOT NULL DEFAULT 0,
       last_mail_at TEXT,
       last_mail_cursor TEXT,
+      inbox_folder_id TEXT,
+      refresh_cooldown_until TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -81,6 +83,15 @@ export function getDatabase() {
       updated_at TEXT NOT NULL
     );
   `);
+
+  const columns = database.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>;
+  const columnNames = new Set(columns.map((column) => column.name));
+  if (!columnNames.has("inbox_folder_id")) {
+    database.exec("ALTER TABLE accounts ADD COLUMN inbox_folder_id TEXT");
+  }
+  if (!columnNames.has("refresh_cooldown_until")) {
+    database.exec("ALTER TABLE accounts ADD COLUMN refresh_cooldown_until TEXT");
+  }
 
   database
     .prepare(`

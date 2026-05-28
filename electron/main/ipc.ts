@@ -22,7 +22,7 @@ import {
   upsertAccounts
 } from "./account-store.js";
 import { getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
-import { getImapMessage, listImapFolders, listImapMessages, listNewImapMessages } from "./imap-client.js";
+import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import { parseAccountImport } from "./import-parser.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
@@ -200,6 +200,41 @@ function pickInboxFolder<T extends { id: string; displayName: string }>(folders:
     validFolders[0] ||
     null
   );
+}
+
+function isCooldownActive(value?: string | null) {
+  return Boolean(value && new Date(value).getTime() > Date.now());
+}
+
+function isCooldownError(code: AppErrorCode) {
+  return ["TOKEN_EXPIRED", "IMAP_AUTH_FAILED", "SCOPE_MISSING", "MAILBOX_NOT_FOUND"].includes(code);
+}
+
+function cooldownUntilFor(code: AppErrorCode) {
+  if (!isCooldownError(code)) {
+    return null;
+  }
+
+  return new Date(Date.now() + 30 * 60 * 1000).toISOString();
+}
+
+async function resolveGraphInbox(accessToken: string, cachedFolderId: string | null | undefined, proxyUrl: string) {
+  if (cachedFolderId) {
+    try {
+      await listMessages(accessToken, cachedFolderId, 1, 0, "", null, proxyUrl);
+      return {
+        id: cachedFolderId,
+        displayName: "Inbox",
+        totalItemCount: 0,
+        unreadItemCount: 0
+      };
+    } catch {
+      // Folder ids may be invalidated by mailbox moves; fall back to folder discovery.
+    }
+  }
+
+  const folders = await listMailFolders(accessToken, proxyUrl);
+  return pickInboxFolder(folders);
 }
 
 async function testAccountConnection(accountId: string, forceRefresh = true): Promise<TestManyResult> {
@@ -394,14 +429,16 @@ export function registerIpcHandlers() {
           lastError: null,
           lastInboxCount: result.totalCount,
           lastMailAt: latestMailTime(messages),
-          lastMailCursor: maxCursorFor(messages)
+          lastMailCursor: maxCursorFor(messages),
+          inboxFolderId: inbox.id,
+          refreshCooldownUntil: null
         });
       }
       return { messages, nextCursor } satisfies MailListResult;
     }
 
-    const folders = await listMailFolders(token.accessToken, settings.proxyUrl);
-    const inbox = pickInboxFolder(folders);
+    const account = await getAccountRecord(options.accountId);
+    const inbox = await resolveGraphInbox(token.accessToken, account.inboxFolderId || null, settings.proxyUrl);
 
     if (!inbox) {
       return { messages: [], nextCursor: null } satisfies MailListResult;
@@ -417,7 +454,9 @@ export function registerIpcHandlers() {
         lastError: null,
         lastInboxCount: inbox.totalItemCount || messages.length,
         lastMailAt: latestMailTime(messages),
-        lastMailCursor: null
+        lastMailCursor: null,
+        inboxFolderId: inbox.id,
+        refreshCooldownUntil: null
       });
     }
     return { messages, nextCursor } satisfies MailListResult;
@@ -478,20 +517,36 @@ export function registerIpcHandlers() {
           }
 
         account = await getAccountRecord(accountId);
+        const settings = appSettings;
+
+        if (isCooldownActive(account.refreshCooldownUntil)) {
+          ok += 1;
+          completed += 1;
+          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId });
+          return { accountId, ok: true, count: 0, skipped: true };
+        }
+
         const token = await getAccessToken(accountId);
-        const settings = await getSettings();
 
         if (token.authMode === "imap") {
-          const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl);
-          const inbox = pickInboxFolder(folders);
+          const result = await refreshImapInbox(
+            token.email,
+            token.accessToken,
+            20,
+            account.lastMailCursor || "",
+            account.inboxFolderId || null,
+            settings.proxyUrl
+          );
 
-          if (!inbox) {
+          if (!result.inboxFolderId) {
             await updateAccountRefreshState(accountId, {
               status: "invalid",
               lastError: "未找到收件箱",
               lastInboxCount: account.lastInboxCount || 0,
               lastMailAt: account.lastMailAt || null,
-              lastMailCursor: null
+              lastMailCursor: account.lastMailCursor || null,
+              inboxFolderId: null,
+              refreshCooldownUntil: cooldownUntilFor("MAILBOX_NOT_FOUND")
             });
             failed += 1;
             completed += 1;
@@ -499,18 +554,16 @@ export function registerIpcHandlers() {
             return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode };
           }
 
-          const result = account.lastMailCursor
-            ? await listNewImapMessages(token.email, token.accessToken, inbox.id, 20, account.lastMailCursor, settings.proxyUrl)
-            : await listImapMessages(token.email, token.accessToken, inbox.id, 20, "", "", settings.proxyUrl);
           const messages = result.messages;
-          const cursor = maxCursorFor(messages) || account.lastMailCursor || null;
           await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages));
           await updateAccountRefreshState(accountId, {
             status: "valid",
             lastError: null,
             lastInboxCount: result.totalCount,
             lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
-            lastMailCursor: cursor
+            lastMailCursor: result.cursor || account.lastMailCursor || null,
+            inboxFolderId: result.inboxFolderId,
+            refreshCooldownUntil: null
           });
           ok += 1;
           completed += 1;
@@ -518,8 +571,7 @@ export function registerIpcHandlers() {
           return { accountId, ok: true, count: messages.length };
         }
 
-        const folders = await listMailFolders(token.accessToken, settings.proxyUrl);
-        const inbox = pickInboxFolder(folders);
+        const inbox = await resolveGraphInbox(token.accessToken, account.inboxFolderId || null, settings.proxyUrl);
 
         if (!inbox) {
           await updateAccountRefreshState(accountId, {
@@ -527,7 +579,9 @@ export function registerIpcHandlers() {
             lastError: "未找到收件箱",
             lastInboxCount: account.lastInboxCount || 0,
             lastMailAt: account.lastMailAt || null,
-            lastMailCursor: null
+            lastMailCursor: null,
+            inboxFolderId: null,
+            refreshCooldownUntil: cooldownUntilFor("MAILBOX_NOT_FOUND")
           });
           failed += 1;
           completed += 1;
@@ -542,7 +596,9 @@ export function registerIpcHandlers() {
           lastError: null,
           lastInboxCount: inbox.totalItemCount || account.lastInboxCount || messages.length,
           lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
-          lastMailCursor: null
+          lastMailCursor: null,
+          inboxFolderId: inbox.id,
+          refreshCooldownUntil: null
         });
         ok += 1;
         completed += 1;
@@ -555,7 +611,9 @@ export function registerIpcHandlers() {
             lastError: message,
             lastInboxCount: account?.lastInboxCount || 0,
             lastMailAt: account?.lastMailAt || null,
-            lastMailCursor: null
+            lastMailCursor: account?.lastMailCursor || null,
+            inboxFolderId: account?.inboxFolderId || null,
+            refreshCooldownUntil: cooldownUntilFor(code)
           }).catch(() => undefined);
           failed += 1;
           completed += 1;

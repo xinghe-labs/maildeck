@@ -40,6 +40,8 @@ export interface AccountRecord {
   lastInboxCount?: number;
   lastMailAt?: string | null;
   lastMailCursor?: string | null;
+  inboxFolderId?: string | null;
+  refreshCooldownUntil?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -58,6 +60,8 @@ export interface AccountView {
   lastInboxCount?: number;
   lastMailAt?: string | null;
   lastMailCursor?: string | null;
+  inboxFolderId?: string | null;
+  refreshCooldownUntil?: string | null;
   createdAt: string;
   updatedAt: string;
 }

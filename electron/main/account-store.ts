@@ -25,6 +25,8 @@ interface AccountRow {
   last_inbox_count: number | null;
   last_mail_at: string | null;
   last_mail_cursor: string | null;
+  inbox_folder_id: string | null;
+  refresh_cooldown_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -163,6 +165,8 @@ function rowToRecord(row: AccountRow): AccountRecord {
     lastInboxCount: row.last_inbox_count || 0,
     lastMailAt: row.last_mail_at,
     lastMailCursor: row.last_mail_cursor,
+    inboxFolderId: row.inbox_folder_id,
+    refreshCooldownUntil: row.refresh_cooldown_until,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -182,6 +186,8 @@ function toView(account: AccountRecord): AccountView {
     lastInboxCount: account.lastInboxCount || 0,
     lastMailAt: account.lastMailAt || null,
     lastMailCursor: account.lastMailCursor || null,
+    inboxFolderId: account.inboxFolderId || null,
+    refreshCooldownUntil: account.refreshCooldownUntil || null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt
   };
@@ -214,9 +220,10 @@ function insertOrReplaceAccount(account: AccountRecord) {
       INSERT INTO accounts (
         id, email, client_id, encrypted_refresh_token, remark, group_name, status,
         last_checked_at, last_error, last_refreshed_at, last_inbox_count,
-        last_mail_at, last_mail_cursor, created_at, updated_at
+        last_mail_at, last_mail_cursor, inbox_folder_id, refresh_cooldown_until,
+        created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         email = excluded.email,
         client_id = excluded.client_id,
@@ -230,6 +237,8 @@ function insertOrReplaceAccount(account: AccountRecord) {
         last_inbox_count = excluded.last_inbox_count,
         last_mail_at = excluded.last_mail_at,
         last_mail_cursor = excluded.last_mail_cursor,
+        inbox_folder_id = excluded.inbox_folder_id,
+        refresh_cooldown_until = excluded.refresh_cooldown_until,
         updated_at = excluded.updated_at
     `)
     .run(
@@ -246,6 +255,8 @@ function insertOrReplaceAccount(account: AccountRecord) {
       account.lastInboxCount || 0,
       account.lastMailAt || null,
       account.lastMailCursor || null,
+      account.inboxFolderId || null,
+      account.refreshCooldownUntil || null,
       account.createdAt,
       account.updatedAt
     );
@@ -415,6 +426,8 @@ export async function upsertAccounts(inputs: AccountInput[]) {
           lastInboxCount: 0,
           lastMailAt: null,
           lastMailCursor: null,
+          inboxFolderId: null,
+          refreshCooldownUntil: null,
           createdAt: timestamp,
           updatedAt: timestamp
         });
@@ -532,6 +545,8 @@ export async function updateAccountRefreshState(
     lastInboxCount: number;
     lastMailAt: string | null;
     lastMailCursor?: string | null;
+    inboxFolderId?: string | null;
+    refreshCooldownUntil?: string | null;
   }
 ): Promise<AccountView> {
   await migrateLegacyAccountsOnce();
@@ -552,6 +567,8 @@ export async function updateAccountRefreshState(
       lastInboxCount: values.lastInboxCount,
       lastMailAt: values.lastMailAt,
       lastMailCursor: values.lastMailCursor ?? account.lastMailCursor ?? null,
+      inboxFolderId: values.inboxFolderId ?? account.inboxFolderId ?? null,
+      refreshCooldownUntil: values.refreshCooldownUntil ?? account.refreshCooldownUntil ?? null,
       updatedAt: timestamp
     };
 

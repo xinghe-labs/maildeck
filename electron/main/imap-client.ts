@@ -7,6 +7,11 @@ interface ImapMessageListResult {
   totalCount: number;
 }
 
+interface ImapRefreshResult extends ImapMessageListResult {
+  inboxFolderId: string;
+  cursor: string | null;
+}
+
 function cleanText(value: string | undefined | null) {
   return (value || "").replace(/\r/g, "").trim();
 }
@@ -221,6 +226,112 @@ export async function listNewImapMessages(
           return right - left;
         }),
         totalCount: exists
+      };
+    } finally {
+      lock.release();
+    }
+  }, proxyUrl);
+}
+
+function isInboxCandidate(folderId: string) {
+  const normalized = folderId.toLowerCase();
+  return normalized === "inbox" || normalized.includes("收件箱");
+}
+
+async function resolveInboxPath(client: ImapFlow, cachedFolderId?: string | null) {
+  if (cachedFolderId) {
+    try {
+      const lock = await client.getMailboxLock(cachedFolderId);
+      lock.release();
+      return cachedFolderId;
+    } catch {
+      // Cached folder ids can become stale after mailbox localization or server changes.
+    }
+  }
+
+  const mailboxes = await client.list();
+  const inbox = mailboxes.find((mailbox) => typeof mailbox.path === "string" && isInboxCandidate(mailbox.path));
+  return inbox?.path || "";
+}
+
+async function fetchImapSummaries(client: ImapFlow, uidRange: string, limit: number) {
+  const messages: MailMessageSummary[] = [];
+
+  for await (const message of client.fetch(
+    uidRange,
+    {
+      uid: true,
+      flags: true,
+      envelope: true,
+      bodyStructure: true,
+      internalDate: true,
+      source: { maxLength: 0 }
+    },
+    { uid: true }
+  )) {
+    messages.push({
+      id: String(message.uid),
+      subject: cleanText(message.envelope?.subject) || "(无主题)",
+      from: headerAddress(message.envelope?.from?.[0]),
+      receivedDateTime: toIsoString(message.internalDate),
+      sentDateTime: toIsoString(message.envelope?.date),
+      isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
+      importance: "normal",
+      hasAttachments: Boolean(message.bodyStructure?.childNodes?.some((part) => part.disposition === "attachment")),
+      bodyPreview: "",
+      webLink: null
+    });
+  }
+
+  return messages.sort((a, b) => {
+    const left = Number(a.id) || 0;
+    const right = Number(b.id) || 0;
+    return right - left;
+  }).slice(0, limit);
+}
+
+export async function refreshImapInbox(
+  email: string,
+  accessToken: string,
+  top = 30,
+  afterUid = "",
+  cachedFolderId: string | null = null,
+  proxyUrl = ""
+): Promise<ImapRefreshResult> {
+  return withClient(email, accessToken, async (client) => {
+    const inboxFolderId = await resolveInboxPath(client, cachedFolderId);
+    if (!inboxFolderId) {
+      return { messages: [], totalCount: 0, inboxFolderId: "", cursor: null };
+    }
+
+    const lock = await client.getMailboxLock(inboxFolderId);
+
+    try {
+      const exists = client.mailbox && client.mailbox.exists ? client.mailbox.exists : 0;
+      const uidNext = client.mailbox && client.mailbox.uidNext ? client.mailbox.uidNext : 0;
+      const lastUid = Number(afterUid) || 0;
+      const currentCursor = uidNext > 1 ? String(uidNext - 1) : afterUid || null;
+
+      if (exists === 0 || (lastUid > 0 && uidNext > 0 && uidNext <= lastUid + 1)) {
+        return { messages: [], totalCount: exists, inboxFolderId, cursor: currentCursor };
+      }
+
+      const limit = Math.min(Math.max(top, 1), 100);
+      const uidRange = lastUid > 0 ? `${lastUid + 1}:*` : `${Math.max(1, uidNext - limit)}:*`;
+      const matchedUids = await client.search({ uid: uidRange }, { uid: true });
+      const selectedUids = (Array.isArray(matchedUids) ? matchedUids : []).slice(-limit);
+
+      if (selectedUids.length === 0) {
+        return { messages: [], totalCount: exists, inboxFolderId, cursor: currentCursor };
+      }
+
+      const messages = await fetchImapSummaries(client, selectedUids.join(","), limit);
+      const maxUid = messages.reduce((value, message) => Math.max(value, Number(message.id) || 0), lastUid);
+      return {
+        messages,
+        totalCount: exists,
+        inboxFolderId,
+        cursor: maxUid > 0 ? String(maxUid) : currentCursor
       };
     } finally {
       lock.release();
