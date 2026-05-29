@@ -24,7 +24,7 @@ import {
 } from "./account-store.js";
 import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
-import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled } from "./hotmail-fallback-client.js";
+import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled, testHotmailFallbackConnection } from "./hotmail-fallback-client.js";
 import { parseAccountImport } from "./import-parser.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
@@ -431,22 +431,24 @@ async function testHotmailFallback(accountId: string): Promise<TestFallbackResul
     account = await getAccountRecord(accountId);
     const settings = await getSettings();
     const refreshToken = await getRefreshToken(accountId);
-    const result = await fetchHotmailFallbackMessages(settings, account, refreshToken, 5);
+    const result = await testHotmailFallbackConnection(settings, account, refreshToken, 5);
     const accountView = await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken || undefined);
+
+    const elapsedMs = Date.now() - started;
+    const count = result.totalCount || result.messages.length;
 
     return {
       account: accountView,
       ok: true,
-      message: `兜底可用 · ${result.transport} · ${result.messages.length} 封 · ${Date.now() - started}ms`,
+      message: `兜底可用 · ${result.transport} · 收件箱 ${count} 封 · ${elapsedMs}ms`,
       transport: result.transport,
-      count: result.messages.length,
-      elapsedMs: Date.now() - started
+      count,
+      elapsedMs
     };
   } catch (error) {
     const { code, message } = normalizeErrorResult(error);
-    const accountView = account ? await updateAccountStatus(accountId, "invalid", message).catch(() => null) : null;
     return {
-      account: accountView,
+      account: null,
       ok: false,
       message,
       code,

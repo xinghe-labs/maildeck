@@ -168,3 +168,30 @@ export async function fetchHotmailFallbackMessages(
     cursor: result.cursor
   };
 }
+
+export async function testHotmailFallbackConnection(
+  settings: { hotmailFallbackEnabled?: boolean; proxyUrl?: string },
+  account: AccountRecord,
+  refreshToken: string,
+  top = 5
+): Promise<Omit<HotmailFallbackMessagesResult, "details">> {
+  if (!isHotmailFallbackEnabled(settings)) {
+    throw new Error("内置 Hotmail 兜底未启用");
+  }
+
+  const proxyUrl = settings.proxyUrl || "";
+  const token = await refreshHotmailFallbackToken(account.clientId, refreshToken, proxyUrl);
+  const result = await refreshImapInbox(account.email, token.accessToken, top, "", account.inboxFolderId || null, proxyUrl);
+  const messages = result.messages.length > 0
+    ? result.messages
+    : (await listImapMessages(account.email, token.accessToken, result.inboxFolderId || "INBOX", top, "", "", proxyUrl)).messages;
+
+  return {
+    messages,
+    transport: `builtin-${token.endpoint}`,
+    nextRefreshToken: token.refreshToken,
+    totalCount: result.totalCount || messages.length,
+    inboxFolderId: result.inboxFolderId || null,
+    cursor: result.cursor
+  };
+}
