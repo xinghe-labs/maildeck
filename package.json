@@ -1,6 +1,6 @@
 {
   "name": "outlook-manager",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "description": "Desktop Outlook mailbox manager for importing Microsoft accounts and reading mail.",

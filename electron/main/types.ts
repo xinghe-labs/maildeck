@@ -126,6 +126,16 @@ export interface TestConnectionResult {
   code?: AppErrorCode;
 }
 
+export interface TestFallbackResult {
+  account: AccountView | null;
+  ok: boolean;
+  message: string;
+  code?: AppErrorCode;
+  transport?: string;
+  count?: number;
+  elapsedMs?: number;
+}
+
 export interface TestManyResult {
   accountId: string;
   account: AccountView | null;

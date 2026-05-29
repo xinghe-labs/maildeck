@@ -146,6 +146,7 @@ export default function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [fallbackTestingId, setFallbackTestingId] = useState<string | null>(null);
   const [bulkTesting, setBulkTesting] = useState(false);
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
   const [bulkProgress, setBulkProgress] = useState("");
@@ -386,6 +387,33 @@ export default function App() {
     }
   }
 
+  async function testFallback(accountId: string) {
+    const api = getDesktopApi();
+
+    if (!api) {
+      setError("兜底测试需要在 Electron 桌面应用中使用。");
+      return;
+    }
+
+    setFallbackTestingId(accountId);
+    setError("");
+
+    try {
+      const result = await api.accounts.testFallback(accountId);
+      if (result.account) {
+        setAccounts((current) => replaceAccount(current, result.account!));
+      }
+      setToast(result.message);
+      if (!result.ok) {
+        setError(result.message);
+      }
+    } catch (fallbackError) {
+      setError(fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+    } finally {
+      setFallbackTestingId(null);
+    }
+  }
+
   async function testFilteredAccounts() {
     if (filteredAccounts.length === 0 || bulkTesting) {
       return;
@@ -615,6 +643,14 @@ export default function App() {
               >
                 {testingId === selectedAccountId ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
                 测试连接
+              </button>
+              <button
+                className="toolbar-button"
+                onClick={() => selectedAccountId && testFallback(selectedAccountId)}
+                disabled={!selectedAccountId || fallbackTestingId === selectedAccountId}
+              >
+                {fallbackTestingId === selectedAccountId ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+                兜底测试
               </button>
               <button className="toolbar-button" onClick={testFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkTesting}>
                 {bulkTesting ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}

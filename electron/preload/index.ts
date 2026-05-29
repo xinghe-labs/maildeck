@@ -14,6 +14,7 @@ import type {
   MailMessageSummary,
   RefreshManyResult,
   TestConnectionResult,
+  TestFallbackResult,
   TestManyResult
 } from "../main/types.js";
 
@@ -27,6 +28,7 @@ const api = {
     update: (input: AccountUpdateInput) => ipcRenderer.invoke("accounts:update", input) as Promise<AccountView>,
     delete: (accountId: string) => ipcRenderer.invoke("accounts:delete", accountId) as Promise<AccountView[]>,
     test: (accountId: string) => ipcRenderer.invoke("accounts:test", accountId) as Promise<TestConnectionResult>,
+    testFallback: (accountId: string) => ipcRenderer.invoke("accounts:testFallback", accountId) as Promise<TestFallbackResult>,
     testMany: (accountIds: string[]) => ipcRenderer.invoke("accounts:testMany", accountIds) as Promise<TestManyResult[]>,
     refreshMany: (accountIds: string[]) =>
       ipcRenderer.invoke("mail:refreshMany", accountIds) as Promise<RefreshManyResult[]>,

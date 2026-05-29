@@ -38,6 +38,7 @@ import type {
   MailListResult,
   MailMessageSummary,
   RefreshMetrics,
+  TestFallbackResult,
   TestManyResult
 } from "./types.js";
 
@@ -422,6 +423,38 @@ async function testAccountConnection(accountId: string, forceRefresh = true): Pr
   }
 }
 
+async function testHotmailFallback(accountId: string): Promise<TestFallbackResult> {
+  const started = Date.now();
+  let account: Awaited<ReturnType<typeof getAccountRecord>> | null = null;
+
+  try {
+    account = await getAccountRecord(accountId);
+    const settings = await getSettings();
+    const refreshToken = await getRefreshToken(accountId);
+    const result = await fetchHotmailFallbackMessages(settings, account, refreshToken, 5);
+    const accountView = await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken || undefined);
+
+    return {
+      account: accountView,
+      ok: true,
+      message: `兜底可用 · ${result.transport} · ${result.messages.length} 封 · ${Date.now() - started}ms`,
+      transport: result.transport,
+      count: result.messages.length,
+      elapsedMs: Date.now() - started
+    };
+  } catch (error) {
+    const { code, message } = normalizeErrorResult(error);
+    const accountView = account ? await updateAccountStatus(accountId, "invalid", message).catch(() => null) : null;
+    return {
+      account: accountView,
+      ok: false,
+      message,
+      code,
+      elapsedMs: Date.now() - started
+    };
+  }
+}
+
 export function registerIpcHandlers() {
   ipcMain.handle("accounts:list", async () => listAccounts());
 
@@ -514,6 +547,8 @@ export function registerIpcHandlers() {
       code: result.code
     };
   });
+
+  ipcMain.handle("accounts:testFallback", async (_event, accountId: string) => testHotmailFallback(accountId));
 
   ipcMain.handle("accounts:testMany", async (event, accountIds: string[]) => {
     const jobId = startJob("test");
