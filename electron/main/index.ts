@@ -1,11 +1,44 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
 import { registerIpcHandlers } from "./ipc.js";
+import { guardExternalNavigation } from "./navigation-guard.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+
+function isRecoverableNetworkError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("econnreset") ||
+    lower.includes("etimedout") ||
+    lower.includes("econnrefused") ||
+    lower.includes("socket hang up") ||
+    lower.includes("tlswrap") ||
+    lower.includes("network")
+  );
+}
+
+process.on("uncaughtException", (error) => {
+  if (isRecoverableNetworkError(error)) {
+    console.warn("Suppressed recoverable network exception", error);
+    return;
+  }
+
+  console.error("Uncaught exception", error);
+  app.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  if (isRecoverableNetworkError(reason)) {
+    console.warn("Suppressed recoverable network rejection", reason);
+    return;
+  }
+
+  console.error("Unhandled rejection", reason);
+});
 
 if (process.env.OUTLOOK_MANAGER_USER_DATA_DIR) {
   app.setPath("userData", process.env.OUTLOOK_MANAGER_USER_DATA_DIR);
@@ -28,16 +61,14 @@ function createWindow() {
     }
   });
 
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
-    return { action: "deny" };
-  });
+  const indexFilePath = path.join(__dirname, "../../dist/index.html");
+  guardExternalNavigation(window, isDev ? new URL(process.env.VITE_DEV_SERVER_URL!).origin : null, isDev ? null : indexFilePath);
 
   if (isDev) {
     window.loadURL(process.env.VITE_DEV_SERVER_URL!);
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    window.loadFile(path.join(__dirname, "../../dist/index.html"));
+    window.loadFile(indexFilePath);
   }
 }
 

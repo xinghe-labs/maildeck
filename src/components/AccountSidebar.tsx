@@ -15,7 +15,10 @@ export function AccountSidebar({
   onOpenImport,
   onImportFromFile,
   onReloadAccounts,
-  onOpenSettings
+  onOpenSettings,
+  newMailCounts,
+  refreshingAccountIds,
+  onRefreshAccount
 }: {
   accounts: AccountView[];
   filteredAccounts: AccountView[];
@@ -30,6 +33,9 @@ export function AccountSidebar({
   onImportFromFile: () => void;
   onReloadAccounts: () => void;
   onOpenSettings: () => void;
+  newMailCounts?: Record<string, number>;
+  refreshingAccountIds?: Set<string>;
+  onRefreshAccount: (accountId: string) => void;
 }) {
   return (
     <aside className="sidebar">
@@ -103,12 +109,22 @@ export function AccountSidebar({
         {filteredAccounts.map((account) => {
           const meta = statusMeta(account);
           const StatusIcon = meta.icon;
+          const newCount = newMailCounts?.[account.id] || 0;
+          const isRefreshing = refreshingAccountIds?.has(account.id) || false;
 
           return (
-            <button
+            <div
               key={account.id}
               className={`account-row ${account.id === selectedAccountId ? "selected" : ""}`}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelectAccount(account.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectAccount(account.id);
+                }
+              }}
             >
               <div className="account-text">
                 <strong>{account.email}</strong>
@@ -117,10 +133,22 @@ export function AccountSidebar({
                   <span>{accountMailStats(account)}</span>
                 </div>
               </div>
-              <span className={meta.className} title={meta.label}>
-                <StatusIcon size={12} />
-              </span>
-            </button>
+              <div className="account-badges">
+                {newCount > 0 ? <span className="new-mail-chip">+{newCount}</span> : null}
+                <button
+                  type="button"
+                  className={`${meta.className} account-refresh-status`}
+                  title={`${meta.label}，点击刷新账号`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRefreshAccount(account.id);
+                  }}
+                  disabled={isRefreshing}
+                >
+                  {isRefreshing ? <Loader2 size={12} className="spin" /> : <StatusIcon size={12} />}
+                </button>
+              </div>
+            </div>
           );
         })}
       </div>

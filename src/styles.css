@@ -229,11 +229,17 @@ button:disabled {
   color: #08272a;
   padding: 10px 12px;
   text-align: left;
+  cursor: pointer;
 }
 
 .account-row.selected {
   background: #edf8f5;
   border-color: #9ebfba;
+}
+
+.account-row:focus-visible {
+  outline: 2px solid #0b6f64;
+  outline-offset: 2px;
 }
 
 .account-text {
@@ -274,6 +280,35 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.account-refresh-status {
+  border: 0;
+  padding: 0;
+}
+
+.account-refresh-status:hover:not(:disabled) {
+  box-shadow: 0 0 0 3px rgba(11, 111, 100, 0.12);
+}
+
+.account-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.new-mail-chip {
+  display: inline-flex;
+  min-width: 30px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #0b6f64;
+  color: #fff;
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .status-valid {
   background: #dff6e7;
   color: #158352;
@@ -299,10 +334,11 @@ button:disabled {
 }
 
 .workspace-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) auto;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   margin-bottom: 14px;
 }
 
@@ -318,12 +354,10 @@ button:disabled {
 
 .account-heading h2 {
   margin: 3px 0 1px;
-  overflow: hidden;
+  overflow-wrap: anywhere;
   color: #06272a;
-  font-size: 28px;
-  line-height: 1.16;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 24px;
+  line-height: 1.12;
 }
 
 .account-heading p {
@@ -334,14 +368,59 @@ button:disabled {
 
 .toolbar-group {
   display: flex;
-  gap: 8px;
+  gap: 5px;
   align-items: center;
-  flex: 0 0 auto;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .toolbar-button {
-  height: 40px;
+  height: 34px;
+  gap: 5px;
+  min-width: 58px;
+  padding: 0 8px;
   background: #fff;
+}
+
+.toolbar-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.toolbar-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  min-width: 118px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #d8e0db;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 26px rgba(15, 45, 42, 0.14);
+}
+
+.toolbar-menu-popover button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #0e272a;
+  padding: 0 9px;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+}
+
+.toolbar-menu-popover button:hover {
+  background: #edf8f5;
 }
 
 .danger-outline {

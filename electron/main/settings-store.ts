@@ -15,7 +15,9 @@ const defaultSettings: AppSettings = {
   cacheBodies: true,
   proxyUrl: "",
   batchConcurrency: 4,
-  hotmailFallbackEnabled: true
+  hotmailFallbackEnabled: true,
+  autoRefreshEnabled: false,
+  autoRefreshIntervalMinutes: 10
 };
 
 let settingsQueue = Promise.resolve();
@@ -42,6 +44,7 @@ function getSettingsPath() {
 
 function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const batchConcurrency = Number(input?.batchConcurrency);
+  const autoRefreshIntervalMinutes = Number(input?.autoRefreshIntervalMinutes);
   const legacyInput = input as Partial<AppSettings> & {
     hotmailHelperFallbackEnabled?: boolean;
   };
@@ -51,7 +54,11 @@ function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
     cacheBodies: input?.cacheBodies !== false,
     proxyUrl: input?.proxyUrl?.trim() || "",
     batchConcurrency: Number.isFinite(batchConcurrency) ? Math.min(Math.max(Math.round(batchConcurrency), 1), 12) : 4,
-    hotmailFallbackEnabled: input?.hotmailFallbackEnabled ?? legacyInput.hotmailHelperFallbackEnabled ?? true
+    hotmailFallbackEnabled: input?.hotmailFallbackEnabled ?? legacyInput.hotmailHelperFallbackEnabled ?? true,
+    autoRefreshEnabled: input?.autoRefreshEnabled === true,
+    autoRefreshIntervalMinutes: Number.isFinite(autoRefreshIntervalMinutes)
+      ? Math.min(Math.max(Math.round(autoRefreshIntervalMinutes), 1), 120)
+      : 10
   };
 }
 

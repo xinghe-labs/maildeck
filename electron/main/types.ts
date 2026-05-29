@@ -157,11 +157,14 @@ export interface RefreshManyResult {
   accountId: string;
   ok: boolean;
   count: number;
+  newCount?: number;
   skipped?: boolean;
   error?: string;
   code?: AppErrorCode;
   metrics?: RefreshMetrics;
 }
+
+export type RefreshJobKind = "refresh" | "refreshSingle" | "refreshBackground";
 
 export interface AccessTokenResult {
   accessToken: string;
@@ -189,6 +192,7 @@ export interface GetMessageOptions {
 export interface MailListResult {
   messages: MailMessageSummary[];
   nextCursor: string | null;
+  totalCount?: number;
 }
 
 export interface AppSettings {
@@ -197,4 +201,6 @@ export interface AppSettings {
   proxyUrl: string;
   batchConcurrency: number;
   hotmailFallbackEnabled: boolean;
+  autoRefreshEnabled: boolean;
+  autoRefreshIntervalMinutes: number;
 }

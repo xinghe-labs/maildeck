@@ -37,6 +37,8 @@ interface MailMetaRow {
   updated_at: string | null;
 }
 
+const KEEP_EXISTING_CURSOR = Symbol("keep-existing-cursor");
+
 interface MailDetailRow {
   detail_json: string;
   updated_at: string | null;
@@ -121,7 +123,7 @@ function rowToMessage(row: MailMessageRow): MailMessageSummary {
   };
 }
 
-function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nextCursor?: string | null) {
+function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nextCursor: string | null | typeof KEEP_EXISTING_CURSOR) {
   const db = getDatabase();
   const timestamp = nowIso();
   const upsert = db.prepare(`
@@ -163,13 +165,22 @@ function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nex
     );
   }
 
-  db.prepare(`
-    INSERT INTO mail_cache_meta (account_id, next_cursor, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(account_id) DO UPDATE SET
-      next_cursor = COALESCE(excluded.next_cursor, mail_cache_meta.next_cursor),
-      updated_at = excluded.updated_at
-  `).run(accountId, nextCursor ?? null, timestamp);
+  if (nextCursor === KEEP_EXISTING_CURSOR) {
+    db.prepare(`
+      INSERT INTO mail_cache_meta (account_id, next_cursor, updated_at)
+      VALUES (?, NULL, ?)
+      ON CONFLICT(account_id) DO UPDATE SET
+        updated_at = excluded.updated_at
+    `).run(accountId, timestamp);
+  } else {
+    db.prepare(`
+      INSERT INTO mail_cache_meta (account_id, next_cursor, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET
+        next_cursor = excluded.next_cursor,
+        updated_at = excluded.updated_at
+    `).run(accountId, nextCursor, timestamp);
+  }
 
   const staleRows = db
     .prepare(`
@@ -209,7 +220,7 @@ async function migrateLegacyCacheOnce() {
   transaction(() => {
     for (const record of records) {
       if (record.messages.length > 0) {
-        saveMessagesSync(record.accountId, record.messages, record.nextCursor);
+        saveMessagesSync(record.accountId, record.messages, record.nextCursor ?? null);
       }
 
       const detailUpsert = db.prepare(`
@@ -292,7 +303,7 @@ export async function saveCachedMessages(
 
   return withCacheLock(async () => {
     transaction(() => {
-      saveMessagesSync(accountId, messages, nextCursor);
+      saveMessagesSync(accountId, messages, nextCursor === undefined ? KEEP_EXISTING_CURSOR : nextCursor);
     });
 
     return options.readBack === false ? messages : getCachedMessages(accountId, "", MAX_MESSAGES_PER_ACCOUNT, true);

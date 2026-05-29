@@ -26,6 +26,7 @@ import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccess
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled, testHotmailFallbackConnection } from "./hotmail-fallback-client.js";
 import { parseAccountImport } from "./import-parser.js";
+import { countNewMessagesAfterRefresh } from "./mail-refresh-state.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
 import type {
@@ -38,6 +39,7 @@ import type {
   MailListResult,
   MailMessageSummary,
   RefreshMetrics,
+  RefreshJobKind,
   TestFallbackResult,
   TestManyResult
 } from "./types.js";
@@ -52,7 +54,7 @@ const tokenCache = new Map<
   CachedAccessTokenWithEmail
 >();
 const tokenRefreshes = new Map<string, Promise<CachedAccessTokenWithEmail>>();
-type JobKind = "test" | "refresh";
+type JobKind = "test" | RefreshJobKind;
 
 const activeJobs = new Map<JobKind, Set<string>>();
 const canceledJobIds = new Set<string>();
@@ -129,8 +131,11 @@ function latestMailTime(messages: Array<{ receivedDateTime: string | null; sentD
   );
 }
 
-function nextCursorFor(messages: MailMessageSummary[]) {
+function nextCursorFor(messages: MailMessageSummary[], totalCount = 0) {
   if (messages.length === 0) {
+    return null;
+  }
+  if (totalCount > 0 && messages.length >= totalCount) {
     return null;
   }
 
@@ -187,7 +192,11 @@ function shouldCancel(jobId: string) {
 }
 
 function cancelError(job: JobKind) {
-  return job === "test" ? "批量测试已取消" : "批量刷新已取消";
+  return job === "test" ? "批量测试已取消" : "刷新已取消";
+}
+
+function normalizeRefreshJobKind(value: unknown): RefreshJobKind {
+  return value === "refreshSingle" || value === "refreshBackground" ? value : "refresh";
 }
 
 function normalizeErrorResult(error: unknown) {
@@ -600,21 +609,25 @@ export function registerIpcHandlers() {
   });
 
   ipcMain.handle("mail:listMessages", async (_event, options: ListMessagesOptions) => {
+    try {
     const search = options.search?.trim() || "";
     const top = options.top || 50;
     const settings = await getSettings();
+    const account = await getAccountRecord(options.accountId);
 
     if (!options.forceRefresh && !options.cursor) {
       const cached = await getCachedMessages(options.accountId, search, top, settings.cacheMessages);
       if (cached.length > 0) {
+        const totalCount = account.lastInboxCount || cached.length;
+        const cachedCursor = cached.length < totalCount ? await getCachedCursor(options.accountId) : null;
         return {
           messages: cached,
-          nextCursor: await getCachedCursor(options.accountId)
+          nextCursor: cachedCursor,
+          totalCount
         } satisfies MailListResult;
       }
     }
 
-    const account = await getAccountRecord(options.accountId);
     const token = await getAccessToken(options.accountId).catch(async (error) => {
       if (search || options.cursor) {
         throw error;
@@ -637,7 +650,7 @@ export function registerIpcHandlers() {
     });
 
     if ("fallback" in token) {
-      return { messages: token.fallback.messages, nextCursor: null } satisfies MailListResult;
+      return { messages: token.fallback.messages, nextCursor: null, totalCount: token.fallback.totalCount } satisfies MailListResult;
     }
 
     if (token.authMode === "imap") {
@@ -646,7 +659,7 @@ export function registerIpcHandlers() {
         const inbox = pickInboxFolder(folders);
 
         if (!inbox) {
-          return { messages: [], nextCursor: null } satisfies MailListResult;
+          return { messages: [], nextCursor: null, totalCount: 0 } satisfies MailListResult;
         }
 
         const result = await listImapMessages(
@@ -659,7 +672,7 @@ export function registerIpcHandlers() {
           settings.proxyUrl
         );
         const messages = result.messages;
-        const nextCursor = nextCursorFor(messages);
+        const nextCursor = nextCursorFor(messages, result.totalCount);
         if (!search) {
           await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
           await updateAccountRefreshState(options.accountId, {
@@ -673,7 +686,7 @@ export function registerIpcHandlers() {
             refreshCooldownUntil: null
           });
         }
-        return { messages, nextCursor } satisfies MailListResult;
+        return { messages, nextCursor, totalCount: result.totalCount } satisfies MailListResult;
       } catch (error) {
         if (search || options.cursor) {
           throw error;
@@ -691,7 +704,7 @@ export function registerIpcHandlers() {
           graphDeltaLink: null,
           refreshCooldownUntil: null
         });
-        return { messages: fallback.messages, nextCursor: null } satisfies MailListResult;
+        return { messages: fallback.messages, nextCursor: null, totalCount: fallback.totalCount } satisfies MailListResult;
       }
     }
 
@@ -725,7 +738,7 @@ export function registerIpcHandlers() {
       }
 
       if (!inbox) {
-        return { messages: [], nextCursor: null } satisfies MailListResult;
+        return { messages: [], nextCursor: null, totalCount: 0 } satisfies MailListResult;
       }
     } catch (error) {
       if (search || options.cursor) {
@@ -744,23 +757,29 @@ export function registerIpcHandlers() {
         graphDeltaLink: null,
         refreshCooldownUntil: null
       });
-      return { messages: fallback.messages, nextCursor: null } satisfies MailListResult;
+      return { messages: fallback.messages, nextCursor: null, totalCount: fallback.totalCount } satisfies MailListResult;
     }
 
-    const nextCursor = messages.length >= top ? String(skip + messages.length) : null;
+    const totalCount = inbox.totalItemCount || messages.length;
+    const loadedCount = skip + messages.length;
+    const nextCursor = messages.length >= top && loadedCount < totalCount ? String(loadedCount) : null;
     if (!search) {
       await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
       await updateAccountRefreshState(options.accountId, {
         status: "valid",
         lastError: null,
-        lastInboxCount: inbox.totalItemCount || messages.length,
+        lastInboxCount: totalCount,
         lastMailAt: latestMailTime(messages),
         lastMailCursor: null,
         inboxFolderId: inbox.id,
         refreshCooldownUntil: null
       });
     }
-    return { messages, nextCursor } satisfies MailListResult;
+    return { messages, nextCursor, totalCount } satisfies MailListResult;
+    } catch (error) {
+      const { message } = normalizeErrorResult(error);
+      throw new Error(message);
+    }
   });
 
   ipcMain.handle("mail:getMessage", async (_event, options: GetMessageOptions) => {
@@ -838,8 +857,9 @@ export function registerIpcHandlers() {
     return { cleared: "all" };
   });
 
-  ipcMain.handle("mail:refreshMany", async (event, accountIds: string[]) => {
-    const jobId = startJob("refresh");
+  ipcMain.handle("mail:refreshMany", async (event, accountIds: string[], requestedJobKind?: RefreshJobKind) => {
+    const jobKind = normalizeRefreshJobKind(requestedJobKind);
+    const jobId = startJob(jobKind);
     const appSettings = await getSettings();
     let completed = 0;
     let ok = 0;
@@ -861,7 +881,7 @@ export function registerIpcHandlers() {
 
         try {
           if (shouldCancel(jobId)) {
-            throw new Error(cancelError("refresh"));
+            throw new Error(cancelError(jobKind));
           }
 
         account = await getAccountRecord(accountId);
@@ -887,7 +907,13 @@ export function registerIpcHandlers() {
         metrics.tokenMs = metrics.tokenMs || elapsedSince(tokenStart);
 
         if ("fallback" in token) {
-          return { accountId, ok: true, count: token.fallback.messages.length, metrics };
+          return {
+            accountId,
+            ok: true,
+            count: token.fallback.messages.length,
+            newCount: countNewMessagesAfterRefresh(token.fallback.messages, account.lastRefreshedAt),
+            metrics
+          };
         }
 
         if (token.authMode === "imap") {
@@ -908,6 +934,7 @@ export function registerIpcHandlers() {
             }
 
             const messages = result.messages;
+            const newCount = countNewMessagesAfterRefresh(messages, account.lastRefreshedAt);
             if (messages.length > 0) {
               const cacheStart = nowMs();
               await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages), { readBack: false });
@@ -929,13 +956,14 @@ export function registerIpcHandlers() {
             ok += 1;
             completed += 1;
             event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
-            return { accountId, ok: true, count: messages.length, metrics };
+            return { accountId, ok: true, count: messages.length, newCount, metrics };
           } catch (error) {
             const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, error);
+            const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
             ok += 1;
             completed += 1;
             event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
-            return { accountId, ok: true, count: fallback.messages.length, metrics };
+            return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           }
         }
 
@@ -946,10 +974,11 @@ export function registerIpcHandlers() {
           metrics.mailMs = elapsedSince(mailStart);
         } catch (error) {
           const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, error);
+          const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
           ok += 1;
           completed += 1;
           event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
-          return { accountId, ok: true, count: fallback.messages.length, metrics };
+          return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
         }
 
         const inbox = graphResult.inbox;
@@ -957,10 +986,11 @@ export function registerIpcHandlers() {
         if (!inbox) {
           try {
             const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, new Error("未找到收件箱"));
+            const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
             ok += 1;
             completed += 1;
             event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
-            return { accountId, ok: true, count: fallback.messages.length, metrics };
+            return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           } catch {
             const stateStart = nowMs();
             await updateAccountRefreshState(accountId, {
@@ -983,6 +1013,7 @@ export function registerIpcHandlers() {
         }
 
         const messages = graphResult.messages;
+        const newCount = countNewMessagesAfterRefresh(messages, account.lastRefreshedAt);
         if (messages.length > 0) {
           const cacheStart = nowMs();
           await saveCachedMessages(accountId, messages, settings.cacheMessages, null, { readBack: false });
@@ -1004,7 +1035,7 @@ export function registerIpcHandlers() {
         ok += 1;
         completed += 1;
         event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
-        return { accountId, ok: true, count: messages.length, metrics };
+        return { accountId, ok: true, count: messages.length, newCount, metrics };
         } catch (error) {
           const { code, message } = normalizeErrorResult(error);
           await updateAccountRefreshState(accountId, {
@@ -1043,7 +1074,7 @@ export function registerIpcHandlers() {
       });
       return results;
     } finally {
-      finishJob("refresh", jobId);
+      finishJob(jobKind, jobId);
     }
   });
 }

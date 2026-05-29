@@ -8,7 +8,7 @@ export function encryptSecret(value: string): string {
     return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(value).toString("base64")}`;
   }
 
-  return `${PLAIN_PREFIX}${Buffer.from(value, "utf8").toString("base64")}`;
+  throw new Error("当前系统不可用 Electron safeStorage，已拒绝明文保存 token。请检查系统凭据服务后重试。");
 }
 
 export function decryptSecret(value: string): string {

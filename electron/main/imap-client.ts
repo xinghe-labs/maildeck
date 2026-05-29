@@ -54,11 +54,20 @@ async function withClient<T>(email: string, accessToken: string, handler: (clien
     },
     logger: false
   });
+  const deferredErrors: Error[] = [];
+
+  client.on("error", (error) => {
+    deferredErrors.push(error instanceof Error ? error : new Error(String(error)));
+  });
 
   await client.connect();
 
   try {
-    return await handler(client);
+    const result = await handler(client);
+    if (deferredErrors.length > 0) {
+      throw deferredErrors[0];
+    }
+    return result;
   } finally {
     await client.logout().catch(() => undefined);
   }

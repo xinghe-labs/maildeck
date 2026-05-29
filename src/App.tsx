@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Loader2,
   Pencil,
   RefreshCw,
@@ -14,6 +15,7 @@ import { MailReader } from "./components/MailReader";
 import { MessageList } from "./components/MessageList";
 import { SettingsModal } from "./components/SettingsModal";
 import { getDesktopApi } from "./desktop-api";
+import { resolveVisibleMailCursor } from "./mail-pagination";
 import type {
   AccountUpdateInput,
   AccountView,
@@ -30,11 +32,21 @@ const defaultSettings: AppSettings = {
   cacheBodies: true,
   proxyUrl: "",
   batchConcurrency: 4,
-  hotmailFallbackEnabled: true
+  hotmailFallbackEnabled: true,
+  autoRefreshEnabled: false,
+  autoRefreshIntervalMinutes: 10
 };
 
 function replaceAccount(accounts: AccountView[], next: AccountView) {
   return accounts.map((account) => (account.id === next.id ? next : account));
+}
+
+function errorMessage(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/^Error invoking remote method '[^']+': Error:\s*/i, "")
+    .replace(/^Error invoking remote method \"[^\"]+\": Error:\s*/i, "")
+    .replace(/^Error:\s*/i, "");
 }
 
 function EditAccountModal({
@@ -72,7 +84,7 @@ function EditAccountModal({
       onSaved(await api.accounts.update(form));
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      setError(errorMessage(submitError));
     } finally {
       setLoading(false);
     }
@@ -126,7 +138,6 @@ function EditAccountModal({
     </div>
   );
 }
-
 export default function App() {
   const [accounts, setAccounts] = useState<AccountView[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -147,15 +158,20 @@ export default function App() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [fallbackTestingId, setFallbackTestingId] = useState<string | null>(null);
+  const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [bulkTesting, setBulkTesting] = useState(false);
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
+  const [refreshingAccountIds, setRefreshingAccountIds] = useState<Set<string>>(new Set());
   const [bulkProgress, setBulkProgress] = useState("");
   const [lastRefreshResults, setLastRefreshResults] = useState<RefreshManyResult[]>([]);
   const [mailCursor, setMailCursor] = useState<string | null>(null);
+  const [newMailCounts, setNewMailCounts] = useState<Record<string, number>>({});
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const messagesRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  const autoRefreshRunningRef = useRef(false);
+  const silentRefreshRef = useRef(false);
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
@@ -165,6 +181,16 @@ export default function App() {
   const selectedMessage = useMemo(
     () => messages.find((message) => message.id === selectedMessageId) || null,
     [messages, selectedMessageId]
+  );
+
+  const visibleMailCursor = useMemo(
+    () =>
+      resolveVisibleMailCursor({
+        cursor: mailCursor,
+        displayedCount: messages.length,
+        totalCount: selectedAccount?.lastInboxCount
+      }),
+    [mailCursor, messages.length, selectedAccount?.lastInboxCount]
   );
 
   const filteredAccounts = useMemo(() => {
@@ -206,7 +232,7 @@ export default function App() {
         setSelectedAccountId(nextAccounts[0].id);
       }
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(errorMessage(loadError));
     } finally {
       setLoadingAccounts(false);
     }
@@ -221,7 +247,7 @@ export default function App() {
     try {
       setSettings(await api.settings.get());
     } catch (settingsError) {
-      setError(settingsError instanceof Error ? settingsError.message : String(settingsError));
+      setError(errorMessage(settingsError));
     }
   }
 
@@ -238,6 +264,7 @@ export default function App() {
 
     setLoadingMessages(true);
     setMessages([]);
+    setMailCursor(null);
     setSelectedMessageId(null);
     setMessageDetail(null);
     setError("");
@@ -252,14 +279,21 @@ export default function App() {
       if (messagesRequestRef.current !== requestId) {
         return;
       }
+      const totalCount = result.totalCount ?? accounts.find((account) => account.id === accountId)?.lastInboxCount;
       setMessages(result.messages);
-      setMailCursor(result.nextCursor);
+      setMailCursor(
+        resolveVisibleMailCursor({
+          cursor: result.nextCursor,
+          displayedCount: result.messages.length,
+          totalCount
+        })
+      );
       setSelectedMessageId(result.messages[0]?.id || null);
     } catch (loadError) {
       if (messagesRequestRef.current !== requestId) {
         return;
       }
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(errorMessage(loadError));
     } finally {
       if (messagesRequestRef.current === requestId) {
         setLoadingMessages(false);
@@ -269,14 +303,22 @@ export default function App() {
 
   async function loadMoreMessages() {
     const api = getDesktopApi();
-    if (!api || !selectedAccountId || !mailCursor || loadingMore) {
+    const totalCount = selectedAccount?.lastInboxCount;
+    const cursor = resolveVisibleMailCursor({
+      cursor: mailCursor,
+      displayedCount: messages.length,
+      totalCount
+    });
+    if (!api || !selectedAccountId || !cursor || loadingMore) {
+      if (mailCursor && !cursor) {
+        setMailCursor(null);
+      }
       return;
     }
 
     setLoadingMore(true);
     setError("");
     const accountId = selectedAccountId;
-    const cursor = mailCursor;
     const query = activeMailQuery;
     const requestId = messagesRequestRef.current;
 
@@ -290,6 +332,10 @@ export default function App() {
       if (messagesRequestRef.current !== requestId) {
         return;
       }
+      const existingIds = new Set(messages.map((message) => message.id));
+      const newMessagesCount = result.messages.filter((message) => !existingIds.has(message.id)).length;
+      const nextDisplayedCount = messages.length + newMessagesCount;
+      const nextTotalCount = result.totalCount ?? totalCount;
       setMessages((current) => {
         const merged = new Map(current.map((message) => [message.id, message]));
         for (const message of result.messages) {
@@ -297,9 +343,15 @@ export default function App() {
         }
         return Array.from(merged.values());
       });
-      setMailCursor(result.nextCursor);
+      setMailCursor(
+        resolveVisibleMailCursor({
+          cursor: result.messages.length === 0 ? null : result.nextCursor,
+          displayedCount: nextDisplayedCount,
+          totalCount: nextTotalCount
+        })
+      );
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(errorMessage(loadError));
     } finally {
       setLoadingMore(false);
     }
@@ -329,7 +381,7 @@ export default function App() {
       if (detailRequestRef.current !== requestId) {
         return;
       }
-      setError(loadError instanceof Error ? loadError.message : String(loadError));
+      setError(errorMessage(loadError));
     } finally {
       if (detailRequestRef.current === requestId) {
         setLoadingDetail(false);
@@ -361,11 +413,12 @@ export default function App() {
         setSelectedAccountId(result.accounts[0].id);
       }
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : String(importError));
+      setError(errorMessage(importError));
     }
   }
 
   async function testConnection(accountId: string) {
+    setTestMenuOpen(false);
     const api = getDesktopApi();
 
     if (!api) {
@@ -381,13 +434,14 @@ export default function App() {
       setAccounts((current) => replaceAccount(current, result.account));
       setToast(result.message);
     } catch (testError) {
-      setError(testError instanceof Error ? testError.message : String(testError));
+      setError(errorMessage(testError));
     } finally {
       setTestingId(null);
     }
   }
 
   async function testFallback(accountId: string) {
+    setTestMenuOpen(false);
     const api = getDesktopApi();
 
     if (!api) {
@@ -408,7 +462,7 @@ export default function App() {
         setError(result.message);
       }
     } catch (fallbackError) {
-      setError(fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+      setError(errorMessage(fallbackError));
     } finally {
       setFallbackTestingId(null);
     }
@@ -437,7 +491,7 @@ export default function App() {
       setToast(`已测试 ${validCount}/${results.length} 个账号`);
       setBulkProgress(`测试完成 ${validCount}/${results.length}`);
     } catch (testError) {
-      setError(testError instanceof Error ? testError.message : String(testError));
+      setError(errorMessage(testError));
     } finally {
       setBulkTesting(false);
     }
@@ -453,7 +507,7 @@ export default function App() {
     setToast("正在取消批量测试");
   }
 
-  async function refreshAccounts(accountIds: string[], doneText = "已刷新") {
+  async function refreshAccounts(accountIds: string[], doneText = "已刷新", options: { silent?: boolean } = {}) {
     if (accountIds.length === 0 || bulkRefreshing) {
       return;
     }
@@ -465,26 +519,101 @@ export default function App() {
     }
 
     setBulkRefreshing(true);
+    silentRefreshRef.current = options.silent === true;
     setError("");
     setLastRefreshResults([]);
-    setBulkProgress(`刷新中 0/${accountIds.length} · 成功 0 · 失败 0`);
+    if (!options.silent) {
+      setBulkProgress(`刷新中 0/${accountIds.length} · 成功 0 · 失败 0`);
+    }
 
     try {
-      const results = await api.accounts.refreshMany(accountIds);
+      const results = await api.accounts.refreshMany(accountIds, options.silent ? "refreshBackground" : "refresh");
       const okCount = results.filter((item) => item.ok).length;
       setLastRefreshResults(results);
-      setToast(`${doneText} ${okCount}/${results.length} 个账号的收件箱`);
-      setBulkProgress(`刷新完成 ${okCount}/${results.length}`);
-      await loadAccounts();
+      const nextAccounts = await api.accounts.list();
+      setAccounts(nextAccounts);
+      const changedCount = options.silent ? recordNewMailCounts(results) : 0;
+
+      if (options.silent) {
+        setToast(changedCount > 0 ? `定时刷新发现 ${changedCount} 个账号有新邮件` : `定时刷新完成 ${okCount}/${results.length}`);
+      } else {
+        setToast(`${doneText} ${okCount}/${results.length} 个账号的收件箱`);
+        setBulkProgress(`刷新完成 ${okCount}/${results.length}`);
+      }
 
       if (selectedAccountId) {
         await loadMessages(selectedAccountId);
       }
     } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+      setError(errorMessage(refreshError));
     } finally {
       setBulkRefreshing(false);
+      silentRefreshRef.current = false;
     }
+  }
+
+  async function refreshSingleAccount(accountId: string) {
+    if (refreshingAccountIds.has(accountId)) {
+      return;
+    }
+
+    const api = getDesktopApi();
+    if (!api) {
+      setError("桌面接口不可用");
+      return;
+    }
+
+    setRefreshingAccountIds((current) => new Set(current).add(accountId));
+    setError("");
+
+    try {
+      const results = await api.accounts.refreshMany([accountId], "refreshSingle");
+      const result = results[0];
+      const nextAccounts = await api.accounts.list();
+      setAccounts(nextAccounts);
+
+      if (result?.ok) {
+        setToast(`已刷新 ${nextAccounts.find((account) => account.id === accountId)?.email || "账号"}`);
+        if (selectedAccountId === accountId) {
+          await loadMessages(accountId);
+        }
+        return;
+      }
+
+      setError(result?.error || "刷新账号失败");
+    } catch (refreshError) {
+      setError(errorMessage(refreshError));
+    } finally {
+      setRefreshingAccountIds((current) => {
+        const next = new Set(current);
+        next.delete(accountId);
+        return next;
+      });
+    }
+  }
+
+  function recordNewMailCounts(results: RefreshManyResult[]) {
+    const increments: Record<string, number> = {};
+
+    for (const result of results) {
+      if (!result.ok || result.skipped || !result.newCount || result.newCount <= 0) {
+        continue;
+      }
+
+      increments[result.accountId] = result.newCount;
+    }
+
+    if (Object.keys(increments).length > 0) {
+      setNewMailCounts((current) => {
+        const next = { ...current };
+        for (const [accountId, increment] of Object.entries(increments)) {
+          next[accountId] = (next[accountId] || 0) + increment;
+        }
+        return next;
+      });
+    }
+
+    return Object.keys(increments).length;
   }
 
   async function cancelBulkRefresh() {
@@ -502,6 +631,19 @@ export default function App() {
       filteredAccounts.map((account) => account.id),
       "已刷新"
     );
+  }
+
+  function selectAccount(accountId: string) {
+    setSelectedAccountId(accountId);
+    setNewMailCounts((current) => {
+      if (!current[accountId]) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[accountId];
+      return next;
+    });
   }
 
   function retryFailedRefresh() {
@@ -544,7 +686,7 @@ export default function App() {
       setSelectedAccountId(nextAccounts[0]?.id || null);
       setToast("账号已删除");
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : String(deleteError));
+      setError(errorMessage(deleteError));
     }
   }
 
@@ -573,6 +715,10 @@ export default function App() {
     }
 
     return api.accounts.onRefreshProgress((progress) => {
+      if (silentRefreshRef.current) {
+        return;
+      }
+
       setBulkProgress(`刷新中 ${progress.completed}/${progress.total} · 成功 ${progress.ok} · 失败 ${progress.failed}`);
     });
   }, []);
@@ -603,6 +749,35 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (!settings.autoRefreshEnabled) {
+      return;
+    }
+
+    const intervalMs = Math.max(settings.autoRefreshIntervalMinutes, 1) * 60 * 1000;
+    const timer = window.setInterval(() => {
+      if (autoRefreshRunningRef.current || bulkRefreshing) {
+        return;
+      }
+
+      const accountIds = accounts.filter((account) => account.status === "valid").map((account) => account.id);
+      if (accountIds.length === 0) {
+        return;
+      }
+
+      autoRefreshRunningRef.current = true;
+      void refreshAccounts(accountIds, "定时刷新", { silent: true }).finally(() => {
+        autoRefreshRunningRef.current = false;
+      });
+    }, intervalMs);
+
+    return () => window.clearInterval(timer);
+  }, [accounts, bulkRefreshing, settings.autoRefreshEnabled, settings.autoRefreshIntervalMinutes]);
+
+  useEffect(() => {
+    setTestMenuOpen(false);
+  }, [selectedAccountId]);
+
   return (
     <div className="mail-app">
       <div className="mail-shell">
@@ -615,11 +790,14 @@ export default function App() {
           statusFilter={statusFilter}
           onAccountQueryChange={setAccountQuery}
           onStatusFilterChange={setStatusFilter}
-          onSelectAccount={setSelectedAccountId}
+          onSelectAccount={selectAccount}
           onOpenImport={() => setShowImportModal(true)}
           onImportFromFile={importFromFile}
           onReloadAccounts={loadAccounts}
           onOpenSettings={() => setShowSettingsModal(true)}
+          newMailCounts={newMailCounts}
+          refreshingAccountIds={refreshingAccountIds}
+          onRefreshAccount={refreshSingleAccount}
         />
 
         <main className="workspace">
@@ -636,47 +814,59 @@ export default function App() {
               </p>
             </div>
             <div className="toolbar-group">
-              <button
-                className="toolbar-button"
-                onClick={() => selectedAccountId && testConnection(selectedAccountId)}
-                disabled={!selectedAccountId || testingId === selectedAccountId}
-              >
-                {testingId === selectedAccountId ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
-                测试连接
-              </button>
-              <button
-                className="toolbar-button"
-                onClick={() => selectedAccountId && testFallback(selectedAccountId)}
-                disabled={!selectedAccountId || fallbackTestingId === selectedAccountId}
-              >
-                {fallbackTestingId === selectedAccountId ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
-                兜底测试
-              </button>
-              <button className="toolbar-button" onClick={testFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkTesting}>
+              <div className="toolbar-menu">
+                <button
+                  className="toolbar-button"
+                  onClick={() => setTestMenuOpen((open) => !open)}
+                  disabled={!selectedAccountId || testingId === selectedAccountId || fallbackTestingId === selectedAccountId}
+                  title="测试当前账号"
+                >
+                  {testingId === selectedAccountId || fallbackTestingId === selectedAccountId ? (
+                    <Loader2 size={15} className="spin" />
+                  ) : (
+                    <CheckCircle2 size={15} />
+                  )}
+                  测试
+                  <ChevronDown size={13} />
+                </button>
+                {testMenuOpen ? (
+                  <div className="toolbar-menu-popover">
+                    <button type="button" onClick={() => selectedAccountId && testConnection(selectedAccountId)}>
+                      <CheckCircle2 size={14} />
+                      测试连接
+                    </button>
+                    <button type="button" onClick={() => selectedAccountId && testFallback(selectedAccountId)}>
+                      <CheckCircle2 size={14} />
+                      兜底测试
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              <button className="toolbar-button" onClick={testFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkTesting} title="批量测试">
                 {bulkTesting ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
-                批量测试
+                批测
               </button>
               {bulkTesting ? (
-                <button className="toolbar-button" onClick={cancelBulkTest}>
+                <button className="toolbar-button" onClick={cancelBulkTest} title="取消批量测试">
                   <X size={15} />
-                  取消测试
+                  停测
                 </button>
               ) : null}
-              <button className="toolbar-button" onClick={refreshFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkRefreshing}>
+              <button className="toolbar-button" onClick={refreshFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkRefreshing} title="刷新邮件">
                 {bulkRefreshing ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
-                刷新邮件
+                刷新
               </button>
               {bulkRefreshing ? (
-                <button className="toolbar-button" onClick={cancelBulkRefresh}>
+                <button className="toolbar-button" onClick={cancelBulkRefresh} title="取消批量刷新">
                   <X size={15} />
-                  取消刷新
+                  停刷
                 </button>
               ) : null}
-              <button className="toolbar-button" onClick={() => selectedAccount && setEditingAccount(selectedAccount)} disabled={!selectedAccount}>
+              <button className="toolbar-button" onClick={() => selectedAccount && setEditingAccount(selectedAccount)} disabled={!selectedAccount} title="编辑账号">
                 <Pencil size={15} />
                 编辑
               </button>
-              <button className="toolbar-button danger-outline" onClick={deleteSelectedAccount} disabled={!selectedAccountId}>
+              <button className="toolbar-button danger-outline" onClick={deleteSelectedAccount} disabled={!selectedAccountId} title="删除账号">
                 <Trash2 size={15} />
                 删除
               </button>
@@ -706,7 +896,7 @@ export default function App() {
               selectedMessageId={selectedMessageId}
               loadingMessages={loadingMessages}
               loadingMore={loadingMore}
-              mailCursor={mailCursor}
+              mailCursor={visibleMailCursor}
               mailQuery={mailQuery}
               canRefresh={Boolean(selectedAccountId)}
               onMailQueryChange={setMailQuery}

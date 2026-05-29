@@ -13,6 +13,7 @@ import type {
   MailMessageDetail,
   MailMessageSummary,
   RefreshManyResult,
+  RefreshJobKind,
   TestConnectionResult,
   TestFallbackResult,
   TestManyResult
@@ -30,8 +31,8 @@ const api = {
     test: (accountId: string) => ipcRenderer.invoke("accounts:test", accountId) as Promise<TestConnectionResult>,
     testFallback: (accountId: string) => ipcRenderer.invoke("accounts:testFallback", accountId) as Promise<TestFallbackResult>,
     testMany: (accountIds: string[]) => ipcRenderer.invoke("accounts:testMany", accountIds) as Promise<TestManyResult[]>,
-    refreshMany: (accountIds: string[]) =>
-      ipcRenderer.invoke("mail:refreshMany", accountIds) as Promise<RefreshManyResult[]>,
+    refreshMany: (accountIds: string[], jobKind?: RefreshJobKind) =>
+      ipcRenderer.invoke("mail:refreshMany", accountIds, jobKind) as Promise<RefreshManyResult[]>,
     onRefreshProgress: (
       callback: (
         event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string; metrics?: RefreshManyResult["metrics"] }
@@ -72,7 +73,7 @@ const api = {
     update: (settings: Partial<AppSettings>) => ipcRenderer.invoke("settings:update", settings) as Promise<AppSettings>
   },
   jobs: {
-    cancel: (job: "test" | "refresh") => ipcRenderer.invoke("jobs:cancel", job) as Promise<{ canceled: "test" | "refresh" }>
+    cancel: (job: "test" | RefreshJobKind) => ipcRenderer.invoke("jobs:cancel", job) as Promise<{ canceled: "test" | RefreshJobKind }>
   }
 };
 

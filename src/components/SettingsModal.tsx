@@ -92,6 +92,25 @@ export function SettingsModal({
             />
             内置 Hotmail 兜底
           </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={form.autoRefreshEnabled}
+              onChange={(event) => setForm({ ...form, autoRefreshEnabled: event.target.checked })}
+            />
+            后台定时刷新
+          </label>
+          <label>
+            刷新间隔（分钟）
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={form.autoRefreshIntervalMinutes}
+              disabled={!form.autoRefreshEnabled}
+              onChange={(event) => setForm({ ...form, autoRefreshIntervalMinutes: Number(event.target.value) || 10 })}
+            />
+          </label>
         </div>
         {error ? <div className="error-box">{error}</div> : null}
         <div className="modal-actions">
