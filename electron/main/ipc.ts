@@ -10,6 +10,7 @@ import {
   saveCachedMessageDetail,
   saveCachedMessages
 } from "./mail-cache.js";
+import { clearPersistedAccessTokens, getPersistedAccessToken, savePersistedAccessToken } from "./access-token-cache.js";
 import {
   deleteAccount,
   getAccountRecord,
@@ -21,8 +22,9 @@ import {
   updateAccountStatus,
   upsertAccounts
 } from "./account-store.js";
-import { getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
+import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
+import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled } from "./hotmail-fallback-client.js";
 import { parseAccountImport } from "./import-parser.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
@@ -35,27 +37,31 @@ import type {
   ListMessagesOptions,
   MailListResult,
   MailMessageSummary,
+  RefreshMetrics,
   TestManyResult
 } from "./types.js";
 
+type CachedAccessTokenWithEmail = AccessTokenResult & {
+  email: string;
+  expiresAt: number;
+};
+
 const tokenCache = new Map<
   string,
-  (AccessTokenResult & {
-    email: string;
-    expiresAt: number;
-  })
+  CachedAccessTokenWithEmail
 >();
-const tokenRefreshes = new Map<string, Promise<AccessTokenResult & { email: string; expiresAt: number }>>();
+const tokenRefreshes = new Map<string, Promise<CachedAccessTokenWithEmail>>();
 type JobKind = "test" | "refresh";
 
 const activeJobs = new Map<JobKind, Set<string>>();
 const canceledJobIds = new Set<string>();
 
-async function refreshAndCacheAccessToken(accountId: string): Promise<AccessTokenResult & { email: string; expiresAt: number }> {
+async function refreshAndCacheAccessToken(accountId: string): Promise<CachedAccessTokenWithEmail> {
   const account = await getAccountRecord(accountId);
   const refreshToken = await getRefreshToken(accountId);
   const settings = await getSettings();
   const token = await refreshAccessToken(account.clientId, refreshToken, settings.proxyUrl);
+  const expiresAt = Date.now() + Math.max((token.expiresIn || 300) - 60, 60) * 1000;
 
   if (token.refreshToken) {
     await updateAccountStatus(accountId, "valid", null, token.refreshToken);
@@ -64,10 +70,11 @@ async function refreshAndCacheAccessToken(accountId: string): Promise<AccessToke
   const result = {
     ...token,
     email: account.email,
-    expiresAt: Date.now() + Math.max((token.expiresIn || 300) - 60, 60) * 1000
+    expiresAt
   };
 
   tokenCache.set(accountId, result);
+  savePersistedAccessToken(accountId, token, expiresAt);
   return result;
 }
 
@@ -75,6 +82,20 @@ async function getAccessToken(accountId: string, forceRefresh = false): Promise<
   const cached = tokenCache.get(accountId);
   if (!forceRefresh && cached && cached.expiresAt > Date.now() + 30_000) {
     return cached;
+  }
+
+  const account = await getAccountRecord(accountId);
+
+  if (!forceRefresh) {
+    const persisted = getPersistedAccessToken(accountId);
+    if (persisted) {
+      const result = {
+        ...persisted,
+        email: account.email
+      };
+      tokenCache.set(accountId, result);
+      return result;
+    }
   }
 
   const pending = tokenRefreshes.get(accountId);
@@ -94,6 +115,8 @@ function clearTokenCache(accountIds: string[]) {
     tokenCache.delete(accountId);
     tokenRefreshes.delete(accountId);
   }
+
+  clearPersistedAccessTokens(accountIds);
 }
 
 function latestMailTime(messages: Array<{ receivedDateTime: string | null; sentDateTime: string | null }>) {
@@ -170,6 +193,24 @@ function normalizeErrorResult(error: unknown) {
   return normalizeError(error);
 }
 
+function nowMs() {
+  return performance.now();
+}
+
+function elapsedSince(start: number) {
+  return Math.round(performance.now() - start);
+}
+
+function resolveBatchLimit(requestedLimit: number, total: number) {
+  if (total <= 0) {
+    return 1;
+  }
+
+  const requested = Number.isFinite(requestedLimit) ? Math.max(1, Math.round(requestedLimit)) : 4;
+  const volumeCap = total >= 80 ? 6 : total >= 30 ? 8 : 12;
+  return Math.min(requested, volumeCap, total);
+}
+
 async function runLimited<T, R>(
   items: T[],
   limit: number,
@@ -186,7 +227,8 @@ async function runLimited<T, R>(
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  const workerCount = Math.min(Math.max(1, Math.round(limit)), items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 }
 
@@ -218,23 +260,146 @@ function cooldownUntilFor(code: AppErrorCode) {
   return new Date(Date.now() + 30 * 60 * 1000).toISOString();
 }
 
-async function resolveGraphInbox(accessToken: string, cachedFolderId: string | null | undefined, proxyUrl: string) {
-  if (cachedFolderId) {
+async function cacheHotmailFallbackResult(
+  accountId: string,
+  result: Awaited<ReturnType<typeof fetchHotmailFallbackMessages>>,
+  settings: Awaited<ReturnType<typeof getSettings>>,
+  nextCursor: string | null = null
+) {
+  await saveCachedMessages(accountId, result.messages, settings.cacheMessages, nextCursor, { readBack: false });
+
+  await Promise.all(result.details.map((detail) => saveCachedMessageDetail(accountId, detail, true)));
+}
+
+async function fetchHotmailFallback(
+  accountId: string,
+  account: Awaited<ReturnType<typeof getAccountRecord>>,
+  settings: Awaited<ReturnType<typeof getSettings>>,
+  top: number,
+  cause: unknown
+) {
+  if (!isHotmailFallbackEnabled(settings)) {
+    throw cause;
+  }
+
+  const refreshToken = await getRefreshToken(accountId);
+  const result = await fetchHotmailFallbackMessages(settings, account, refreshToken, top);
+
+  if (result.nextRefreshToken) {
+    await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken);
+    clearTokenCache([accountId]);
+  }
+
+  return result;
+}
+
+async function finishWithHotmailFallback(
+  accountId: string,
+  account: Awaited<ReturnType<typeof getAccountRecord>>,
+  settings: Awaited<ReturnType<typeof getSettings>>,
+  metrics: RefreshMetrics,
+  totalStart: number,
+  cause: unknown
+) {
+  const mailStart = nowMs();
+  const fallback = await fetchHotmailFallback(accountId, account, settings, 20, cause);
+  metrics.mailMs += elapsedSince(mailStart);
+  metrics.fallback = fallback.transport;
+
+  const cacheStart = nowMs();
+  await cacheHotmailFallbackResult(accountId, fallback, settings, null);
+  metrics.cacheMs += elapsedSince(cacheStart);
+
+  const stateStart = nowMs();
+  await updateAccountRefreshState(accountId, {
+    status: "valid",
+    lastError: null,
+    lastInboxCount: fallback.totalCount,
+    lastMailAt: latestMailTime(fallback.messages) || account.lastMailAt || null,
+    lastMailCursor: fallback.cursor || null,
+    inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
+    graphDeltaLink: null,
+    refreshCooldownUntil: null
+  });
+  metrics.stateMs += elapsedSince(stateStart);
+  metrics.totalMs = elapsedSince(totalStart);
+
+  return fallback;
+}
+
+async function discoverGraphInbox(accessToken: string, proxyUrl: string) {
+  const folders = await listMailFolders(accessToken, proxyUrl);
+  return pickInboxFolder(folders);
+}
+
+async function listGraphInboxMessages(
+  accessToken: string,
+  account: Awaited<ReturnType<typeof getAccountRecord>>,
+  top: number,
+  since: string | null,
+  proxyUrl: string
+) {
+  if (account.inboxFolderId) {
     try {
-      await listMessages(accessToken, cachedFolderId, 1, 0, "", null, proxyUrl);
       return {
-        id: cachedFolderId,
-        displayName: "Inbox",
-        totalItemCount: 0,
-        unreadItemCount: 0
+        inbox: {
+          id: account.inboxFolderId,
+          displayName: "Inbox",
+          totalItemCount: account.lastInboxCount || 0,
+          unreadItemCount: 0
+        },
+        messages: await listMessages(accessToken, account.inboxFolderId, top, 0, "", since, proxyUrl)
       };
     } catch {
-      // Folder ids may be invalidated by mailbox moves; fall back to folder discovery.
+      // Folder ids may become stale; discover once and retry below.
     }
   }
 
-  const folders = await listMailFolders(accessToken, proxyUrl);
-  return pickInboxFolder(folders);
+  const inbox = await discoverGraphInbox(accessToken, proxyUrl);
+  if (!inbox) {
+    return { inbox: null, messages: [] };
+  }
+
+  return {
+    inbox,
+    messages: await listMessages(accessToken, inbox.id, top, 0, "", since, proxyUrl)
+  };
+}
+
+async function deltaGraphInboxMessages(
+  accessToken: string,
+  account: Awaited<ReturnType<typeof getAccountRecord>>,
+  top: number,
+  proxyUrl: string
+) {
+  const inbox = account.inboxFolderId
+    ? {
+        id: account.inboxFolderId,
+        displayName: "Inbox",
+        totalItemCount: account.lastInboxCount || 0,
+        unreadItemCount: 0
+      }
+    : await discoverGraphInbox(accessToken, proxyUrl);
+
+  if (!inbox) {
+    return { inbox: null, messages: [], deltaLink: account.graphDeltaLink || null };
+  }
+
+  try {
+    const result = await deltaMessages(accessToken, inbox.id, top, account.graphDeltaLink || null, 3, proxyUrl);
+    return {
+      inbox,
+      messages: result.messages,
+      deltaLink: result.deltaLink || result.nextLink || account.graphDeltaLink || null
+    };
+  } catch {
+    const fallback = await listGraphInboxMessages(accessToken, { ...account, inboxFolderId: inbox.id, graphDeltaLink: null }, top, account.lastMailAt || null, proxyUrl);
+    return {
+      inbox: fallback.inbox,
+      messages: fallback.messages,
+      deltaLink: null
+    };
+  }
 }
 
 async function testAccountConnection(accountId: string, forceRefresh = true): Promise<TestManyResult> {
@@ -264,10 +429,21 @@ export function registerIpcHandlers() {
 
   ipcMain.handle(
     "settings:update",
-    async (_event, settings: { cacheMessages?: boolean; cacheBodies?: boolean; proxyUrl?: string; batchConcurrency?: number }) => {
+    async (
+      _event,
+      settings: {
+        cacheMessages?: boolean;
+        cacheBodies?: boolean;
+        proxyUrl?: string;
+        batchConcurrency?: number;
+        hotmailFallbackEnabled?: boolean;
+      }
+    ) => {
     const next = await updateSettings(settings);
     if (settings.proxyUrl !== undefined) {
-      clearTokenCache(Array.from(tokenCache.keys()));
+      tokenCache.clear();
+      tokenRefreshes.clear();
+      clearPersistedAccessTokens();
     }
     return next;
     }
@@ -348,7 +524,7 @@ export function registerIpcHandlers() {
     const total = accountIds.length;
 
     try {
-      return await runLimited(accountIds, settings.batchConcurrency, async (accountId) => {
+      return await runLimited(accountIds, resolveBatchLimit(settings.batchConcurrency, total), async (accountId) => {
         if (shouldCancel(jobId)) {
           completed += 1;
           failed += 1;
@@ -401,51 +577,139 @@ export function registerIpcHandlers() {
       }
     }
 
-    const token = await getAccessToken(options.accountId);
+    const account = await getAccountRecord(options.accountId);
+    const token = await getAccessToken(options.accountId).catch(async (error) => {
+      if (search || options.cursor) {
+        throw error;
+      }
+
+      const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
+      await cacheHotmailFallbackResult(options.accountId, fallback, settings, null);
+      await updateAccountRefreshState(options.accountId, {
+        status: "valid",
+        lastError: null,
+        lastInboxCount: fallback.totalCount,
+        lastMailAt: latestMailTime(fallback.messages),
+        lastMailCursor: fallback.cursor || null,
+        inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
+        graphDeltaLink: null,
+        refreshCooldownUntil: null
+      });
+
+      return { fallback };
+    });
+
+    if ("fallback" in token) {
+      return { messages: token.fallback.messages, nextCursor: null } satisfies MailListResult;
+    }
 
     if (token.authMode === "imap") {
-      const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl);
-      const inbox = pickInboxFolder(folders);
+      try {
+        const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl);
+        const inbox = pickInboxFolder(folders);
+
+        if (!inbox) {
+          return { messages: [], nextCursor: null } satisfies MailListResult;
+        }
+
+        const result = await listImapMessages(
+          token.email,
+          token.accessToken,
+          inbox.id,
+          top,
+          search,
+          options.cursor || "",
+          settings.proxyUrl
+        );
+        const messages = result.messages;
+        const nextCursor = nextCursorFor(messages);
+        if (!search) {
+          await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
+          await updateAccountRefreshState(options.accountId, {
+            status: "valid",
+            lastError: null,
+            lastInboxCount: result.totalCount,
+            lastMailAt: latestMailTime(messages),
+            lastMailCursor: maxCursorFor(messages),
+            inboxFolderId: inbox.id,
+            graphDeltaLink: null,
+            refreshCooldownUntil: null
+          });
+        }
+        return { messages, nextCursor } satisfies MailListResult;
+      } catch (error) {
+        if (search || options.cursor) {
+          throw error;
+        }
+
+        const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
+        await cacheHotmailFallbackResult(options.accountId, fallback, settings, null);
+        await updateAccountRefreshState(options.accountId, {
+          status: "valid",
+          lastError: null,
+          lastInboxCount: fallback.totalCount,
+          lastMailAt: latestMailTime(fallback.messages),
+          lastMailCursor: fallback.cursor || null,
+          inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
+          graphDeltaLink: null,
+          refreshCooldownUntil: null
+        });
+        return { messages: fallback.messages, nextCursor: null } satisfies MailListResult;
+      }
+    }
+
+    let inbox = account.inboxFolderId
+      ? {
+          id: account.inboxFolderId,
+          displayName: "Inbox",
+          totalItemCount: account.lastInboxCount || 0,
+          unreadItemCount: 0
+        }
+      : null;
+    let messages: MailMessageSummary[] = [];
+    const skip = options.cursor ? Number(options.cursor) || 0 : options.skip || 0;
+
+    try {
+      if (inbox) {
+        try {
+          messages = await listMessages(token.accessToken, inbox.id, top, skip, search, options.since || null, settings.proxyUrl);
+        } catch {
+          inbox = null;
+        }
+      }
+
+      if (inbox) {
+        // already loaded through cached folder id
+      } else {
+        inbox = await discoverGraphInbox(token.accessToken, settings.proxyUrl);
+        if (inbox) {
+          messages = await listMessages(token.accessToken, inbox.id, top, skip, search, options.since || null, settings.proxyUrl);
+        }
+      }
 
       if (!inbox) {
         return { messages: [], nextCursor: null } satisfies MailListResult;
       }
-
-      const result = await listImapMessages(
-        token.email,
-        token.accessToken,
-        inbox.id,
-        top,
-        search,
-        options.cursor || "",
-        settings.proxyUrl
-      );
-      const messages = result.messages;
-      const nextCursor = nextCursorFor(messages);
-      if (!search) {
-        await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
-        await updateAccountRefreshState(options.accountId, {
-          status: "valid",
-          lastError: null,
-          lastInboxCount: result.totalCount,
-          lastMailAt: latestMailTime(messages),
-          lastMailCursor: maxCursorFor(messages),
-          inboxFolderId: inbox.id,
-          refreshCooldownUntil: null
-        });
+    } catch (error) {
+      if (search || options.cursor) {
+        throw error;
       }
-      return { messages, nextCursor } satisfies MailListResult;
+
+      const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
+      await cacheHotmailFallbackResult(options.accountId, fallback, settings, null);
+      await updateAccountRefreshState(options.accountId, {
+        status: "valid",
+        lastError: null,
+        lastInboxCount: fallback.totalCount,
+        lastMailAt: latestMailTime(fallback.messages),
+        lastMailCursor: fallback.cursor || null,
+        inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
+        graphDeltaLink: null,
+        refreshCooldownUntil: null
+      });
+      return { messages: fallback.messages, nextCursor: null } satisfies MailListResult;
     }
 
-    const account = await getAccountRecord(options.accountId);
-    const inbox = await resolveGraphInbox(token.accessToken, account.inboxFolderId || null, settings.proxyUrl);
-
-    if (!inbox) {
-      return { messages: [], nextCursor: null } satisfies MailListResult;
-    }
-
-    const skip = options.cursor ? Number(options.cursor) || 0 : options.skip || 0;
-    const messages = await listMessages(token.accessToken, inbox.id, top, skip, search, options.since || null, settings.proxyUrl);
     const nextCursor = messages.length >= top ? String(skip + messages.length) : null;
     if (!search) {
       await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
@@ -464,22 +728,60 @@ export function registerIpcHandlers() {
 
   ipcMain.handle("mail:getMessage", async (_event, options: GetMessageOptions) => {
     const settings = await getSettings();
-    const cached = await getCachedMessageDetail(options.accountId, options.messageId, settings.cacheBodies);
+    const isHelperMessage = options.messageId.startsWith("helper:");
+    const cached = await getCachedMessageDetail(options.accountId, options.messageId, settings.cacheBodies || isHelperMessage);
     if (cached) {
       return cached;
+    }
+
+    if (isHelperMessage) {
+      throw new Error("兜底邮件正文缓存不存在，请刷新邮件后再打开");
     }
 
     const token = await getAccessToken(options.accountId);
 
     if (token.authMode === "imap") {
-      const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl);
-      const inbox = pickInboxFolder(folders);
+      const account = await getAccountRecord(options.accountId);
+      const folderIds = account.inboxFolderId ? [account.inboxFolderId] : [];
 
-      if (!inbox) {
+      if (folderIds.length === 0) {
+        const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl);
+        const inbox = pickInboxFolder(folders);
+        if (inbox) {
+          folderIds.push(inbox.id);
+        }
+      }
+
+      if (folderIds.length === 0) {
         throw new Error("未找到收件箱");
       }
 
-      const detail = await getImapMessage(token.email, token.accessToken, inbox.id, options.messageId, settings.proxyUrl);
+      let detail;
+      try {
+        detail = await getImapMessage(token.email, token.accessToken, folderIds[0], options.messageId, settings.proxyUrl);
+      } catch (error) {
+        if (!account.inboxFolderId) {
+          throw error;
+        }
+
+        const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl);
+        const inbox = pickInboxFolder(folders);
+        if (!inbox) {
+          throw new Error("未找到收件箱");
+        }
+        detail = await getImapMessage(token.email, token.accessToken, inbox.id, options.messageId, settings.proxyUrl);
+        await updateAccountRefreshState(options.accountId, {
+          status: "valid",
+          lastError: null,
+          lastInboxCount: account.lastInboxCount || 0,
+          lastMailAt: account.lastMailAt || null,
+          lastMailCursor: account.lastMailCursor || null,
+          inboxFolderId: inbox.id,
+          graphDeltaLink: null,
+          refreshCooldownUntil: null
+        });
+      }
+
       await saveCachedMessageDetail(options.accountId, detail, settings.cacheBodies);
       return detail;
     }
@@ -508,8 +810,17 @@ export function registerIpcHandlers() {
     const total = accountIds.length;
 
     try {
-      return await runLimited(accountIds, appSettings.batchConcurrency, async (accountId) => {
+      const batchLimit = resolveBatchLimit(appSettings.batchConcurrency, total);
+      const results = await runLimited(accountIds, batchLimit, async (accountId) => {
         let account: Awaited<ReturnType<typeof getAccountRecord>> | null = null;
+        const metrics: RefreshMetrics = {
+          tokenMs: 0,
+          mailMs: 0,
+          cacheMs: 0,
+          stateMs: 0,
+          totalMs: 0
+        };
+        const totalStart = nowMs();
 
         try {
           if (shouldCancel(jobId)) {
@@ -520,77 +831,127 @@ export function registerIpcHandlers() {
         const settings = appSettings;
 
         if (isCooldownActive(account.refreshCooldownUntil)) {
+          metrics.totalMs = elapsedSince(totalStart);
           ok += 1;
           completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId });
-          return { accountId, ok: true, count: 0, skipped: true };
+          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+          return { accountId, ok: true, count: 0, skipped: true, metrics };
         }
 
-        const token = await getAccessToken(accountId);
+        const tokenStart = nowMs();
+        const token = await getAccessToken(accountId).catch(async (error) => {
+          metrics.tokenMs = elapsedSince(tokenStart);
+          const fallback = await finishWithHotmailFallback(accountId, account!, settings, metrics, totalStart, error);
+          ok += 1;
+          completed += 1;
+          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+          return { fallback };
+        });
+        metrics.tokenMs = metrics.tokenMs || elapsedSince(tokenStart);
+
+        if ("fallback" in token) {
+          return { accountId, ok: true, count: token.fallback.messages.length, metrics };
+        }
 
         if (token.authMode === "imap") {
-          const result = await refreshImapInbox(
-            token.email,
-            token.accessToken,
-            20,
-            account.lastMailCursor || "",
-            account.inboxFolderId || null,
-            settings.proxyUrl
-          );
+          try {
+            const mailStart = nowMs();
+            const result = await refreshImapInbox(
+              token.email,
+              token.accessToken,
+              20,
+              account.lastMailCursor || "",
+              account.inboxFolderId || null,
+              settings.proxyUrl
+            );
+            metrics.mailMs = elapsedSince(mailStart);
 
-          if (!result.inboxFolderId) {
+            if (!result.inboxFolderId) {
+              throw new Error("未找到收件箱");
+            }
+
+            const messages = result.messages;
+            if (messages.length > 0) {
+              const cacheStart = nowMs();
+              await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages), { readBack: false });
+              metrics.cacheMs = elapsedSince(cacheStart);
+            }
+            const stateStart = nowMs();
+            await updateAccountRefreshState(accountId, {
+              status: "valid",
+              lastError: null,
+              lastInboxCount: result.totalCount,
+              lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
+              lastMailCursor: result.cursor || account.lastMailCursor || null,
+              inboxFolderId: result.inboxFolderId,
+              graphDeltaLink: null,
+              refreshCooldownUntil: null
+            });
+            metrics.stateMs = elapsedSince(stateStart);
+            metrics.totalMs = elapsedSince(totalStart);
+            ok += 1;
+            completed += 1;
+            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+            return { accountId, ok: true, count: messages.length, metrics };
+          } catch (error) {
+            const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, error);
+            ok += 1;
+            completed += 1;
+            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+            return { accountId, ok: true, count: fallback.messages.length, metrics };
+          }
+        }
+
+        let graphResult: Awaited<ReturnType<typeof deltaGraphInboxMessages>> | null = null;
+        try {
+          const mailStart = nowMs();
+          graphResult = await deltaGraphInboxMessages(token.accessToken, account, 20, settings.proxyUrl);
+          metrics.mailMs = elapsedSince(mailStart);
+        } catch (error) {
+          const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, error);
+          ok += 1;
+          completed += 1;
+          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+          return { accountId, ok: true, count: fallback.messages.length, metrics };
+        }
+
+        const inbox = graphResult.inbox;
+
+        if (!inbox) {
+          try {
+            const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, new Error("未找到收件箱"));
+            ok += 1;
+            completed += 1;
+            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+            return { accountId, ok: true, count: fallback.messages.length, metrics };
+          } catch {
+            const stateStart = nowMs();
             await updateAccountRefreshState(accountId, {
               status: "invalid",
               lastError: "未找到收件箱",
               lastInboxCount: account.lastInboxCount || 0,
               lastMailAt: account.lastMailAt || null,
-              lastMailCursor: account.lastMailCursor || null,
+              lastMailCursor: null,
               inboxFolderId: null,
+              graphDeltaLink: null,
               refreshCooldownUntil: cooldownUntilFor("MAILBOX_NOT_FOUND")
             });
+            metrics.stateMs = elapsedSince(stateStart);
+            metrics.totalMs = elapsedSince(totalStart);
             failed += 1;
             completed += 1;
-            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" });
-            return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode };
+            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND", metrics });
+            return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode, metrics };
           }
-
-          const messages = result.messages;
-          await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages));
-          await updateAccountRefreshState(accountId, {
-            status: "valid",
-            lastError: null,
-            lastInboxCount: result.totalCount,
-            lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
-            lastMailCursor: result.cursor || account.lastMailCursor || null,
-            inboxFolderId: result.inboxFolderId,
-            refreshCooldownUntil: null
-          });
-          ok += 1;
-          completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId });
-          return { accountId, ok: true, count: messages.length };
         }
 
-        const inbox = await resolveGraphInbox(token.accessToken, account.inboxFolderId || null, settings.proxyUrl);
-
-        if (!inbox) {
-          await updateAccountRefreshState(accountId, {
-            status: "invalid",
-            lastError: "未找到收件箱",
-            lastInboxCount: account.lastInboxCount || 0,
-            lastMailAt: account.lastMailAt || null,
-            lastMailCursor: null,
-            inboxFolderId: null,
-            refreshCooldownUntil: cooldownUntilFor("MAILBOX_NOT_FOUND")
-          });
-          failed += 1;
-          completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" });
-          return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode };
+        const messages = graphResult.messages;
+        if (messages.length > 0) {
+          const cacheStart = nowMs();
+          await saveCachedMessages(accountId, messages, settings.cacheMessages, null, { readBack: false });
+          metrics.cacheMs = elapsedSince(cacheStart);
         }
-
-        const messages = await listMessages(token.accessToken, inbox.id, 20, 0, "", account.lastMailAt || null, settings.proxyUrl);
-        await saveCachedMessages(accountId, messages, settings.cacheMessages, null);
+        const stateStart = nowMs();
         await updateAccountRefreshState(accountId, {
           status: "valid",
           lastError: null,
@@ -598,12 +959,15 @@ export function registerIpcHandlers() {
           lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
           lastMailCursor: null,
           inboxFolderId: inbox.id,
+          graphDeltaLink: graphResult.deltaLink,
           refreshCooldownUntil: null
         });
+        metrics.stateMs = elapsedSince(stateStart);
+        metrics.totalMs = elapsedSince(totalStart);
         ok += 1;
         completed += 1;
-        event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId });
-        return { accountId, ok: true, count: messages.length };
+        event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+        return { accountId, ok: true, count: messages.length, metrics };
         } catch (error) {
           const { code, message } = normalizeErrorResult(error);
           await updateAccountRefreshState(accountId, {
@@ -613,14 +977,34 @@ export function registerIpcHandlers() {
             lastMailAt: account?.lastMailAt || null,
             lastMailCursor: account?.lastMailCursor || null,
             inboxFolderId: account?.inboxFolderId || null,
+            graphDeltaLink: account?.graphDeltaLink || null,
             refreshCooldownUntil: cooldownUntilFor(code)
           }).catch(() => undefined);
           failed += 1;
           completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: message, code });
-          return { accountId, ok: false, count: 0, error: message, code };
+          metrics.totalMs = elapsedSince(totalStart);
+          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: message, code, metrics });
+          return { accountId, ok: false, count: 0, error: message, code, metrics };
         }
       });
+      const slowest = results
+        .filter((result) => result.metrics)
+        .sort((left, right) => (right.metrics?.totalMs || 0) - (left.metrics?.totalMs || 0))
+        .slice(0, 5)
+        .map((result) => ({
+          accountId: result.accountId,
+          ok: result.ok,
+          count: result.count,
+          metrics: result.metrics
+        }));
+      console.info("mail:refreshMany summary", {
+        total,
+        batchLimit,
+        ok,
+        failed,
+        slowest
+      });
+      return results;
     } finally {
       finishJob("refresh", jobId);
     }

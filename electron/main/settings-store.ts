@@ -14,7 +14,8 @@ const defaultSettings: AppSettings = {
   cacheMessages: true,
   cacheBodies: true,
   proxyUrl: "",
-  batchConcurrency: 4
+  batchConcurrency: 4,
+  hotmailFallbackEnabled: true
 };
 
 let settingsQueue = Promise.resolve();
@@ -41,12 +42,16 @@ function getSettingsPath() {
 
 function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const batchConcurrency = Number(input?.batchConcurrency);
+  const legacyInput = input as Partial<AppSettings> & {
+    hotmailHelperFallbackEnabled?: boolean;
+  };
 
   return {
     cacheMessages: input?.cacheMessages !== false,
     cacheBodies: input?.cacheBodies !== false,
     proxyUrl: input?.proxyUrl?.trim() || "",
-    batchConcurrency: Number.isFinite(batchConcurrency) ? Math.min(Math.max(Math.round(batchConcurrency), 1), 12) : 4
+    batchConcurrency: Number.isFinite(batchConcurrency) ? Math.min(Math.max(Math.round(batchConcurrency), 1), 12) : 4,
+    hotmailFallbackEnabled: input?.hotmailFallbackEnabled ?? legacyInput.hotmailHelperFallbackEnabled ?? true
   };
 }
 

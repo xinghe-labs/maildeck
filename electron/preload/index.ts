@@ -12,6 +12,7 @@ import type {
   MailListResult,
   MailMessageDetail,
   MailMessageSummary,
+  RefreshManyResult,
   TestConnectionResult,
   TestManyResult
 } from "../main/types.js";
@@ -28,13 +29,15 @@ const api = {
     test: (accountId: string) => ipcRenderer.invoke("accounts:test", accountId) as Promise<TestConnectionResult>,
     testMany: (accountIds: string[]) => ipcRenderer.invoke("accounts:testMany", accountIds) as Promise<TestManyResult[]>,
     refreshMany: (accountIds: string[]) =>
-      ipcRenderer.invoke("mail:refreshMany", accountIds) as Promise<Array<{ accountId: string; ok: boolean; count: number; error?: string }>>,
+      ipcRenderer.invoke("mail:refreshMany", accountIds) as Promise<RefreshManyResult[]>,
     onRefreshProgress: (
-      callback: (event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string }) => void
+      callback: (
+        event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string; metrics?: RefreshManyResult["metrics"] }
+      ) => void
     ) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
-        payload: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string }
+        payload: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string; metrics?: RefreshManyResult["metrics"] }
       ) => callback(payload);
       ipcRenderer.on("mail:refreshProgress", listener);
       return () => {

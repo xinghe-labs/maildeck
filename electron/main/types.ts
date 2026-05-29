@@ -41,6 +41,7 @@ export interface AccountRecord {
   lastMailAt?: string | null;
   lastMailCursor?: string | null;
   inboxFolderId?: string | null;
+  graphDeltaLink?: string | null;
   refreshCooldownUntil?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -61,6 +62,7 @@ export interface AccountView {
   lastMailAt?: string | null;
   lastMailCursor?: string | null;
   inboxFolderId?: string | null;
+  graphDeltaLink?: string | null;
   refreshCooldownUntil?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -132,6 +134,25 @@ export interface TestManyResult {
   code?: AppErrorCode;
 }
 
+export interface RefreshMetrics {
+  tokenMs: number;
+  mailMs: number;
+  cacheMs: number;
+  stateMs: number;
+  totalMs: number;
+  fallback?: string;
+}
+
+export interface RefreshManyResult {
+  accountId: string;
+  ok: boolean;
+  count: number;
+  skipped?: boolean;
+  error?: string;
+  code?: AppErrorCode;
+  metrics?: RefreshMetrics;
+}
+
 export interface AccessTokenResult {
   accessToken: string;
   refreshToken: string | null;
@@ -165,4 +186,5 @@ export interface AppSettings {
   cacheBodies: boolean;
   proxyUrl: string;
   batchConcurrency: number;
+  hotmailFallbackEnabled: boolean;
 }

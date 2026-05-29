@@ -26,6 +26,7 @@ interface AccountRow {
   last_mail_at: string | null;
   last_mail_cursor: string | null;
   inbox_folder_id: string | null;
+  graph_delta_link: string | null;
   refresh_cooldown_until: string | null;
   created_at: string;
   updated_at: string;
@@ -166,6 +167,7 @@ function rowToRecord(row: AccountRow): AccountRecord {
     lastMailAt: row.last_mail_at,
     lastMailCursor: row.last_mail_cursor,
     inboxFolderId: row.inbox_folder_id,
+    graphDeltaLink: row.graph_delta_link,
     refreshCooldownUntil: row.refresh_cooldown_until,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -187,6 +189,7 @@ function toView(account: AccountRecord): AccountView {
     lastMailAt: account.lastMailAt || null,
     lastMailCursor: account.lastMailCursor || null,
     inboxFolderId: account.inboxFolderId || null,
+    graphDeltaLink: account.graphDeltaLink || null,
     refreshCooldownUntil: account.refreshCooldownUntil || null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt
@@ -220,10 +223,11 @@ function insertOrReplaceAccount(account: AccountRecord) {
       INSERT INTO accounts (
         id, email, client_id, encrypted_refresh_token, remark, group_name, status,
         last_checked_at, last_error, last_refreshed_at, last_inbox_count,
-        last_mail_at, last_mail_cursor, inbox_folder_id, refresh_cooldown_until,
+        last_mail_at, last_mail_cursor, inbox_folder_id, graph_delta_link,
+        refresh_cooldown_until,
         created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         email = excluded.email,
         client_id = excluded.client_id,
@@ -238,6 +242,7 @@ function insertOrReplaceAccount(account: AccountRecord) {
         last_mail_at = excluded.last_mail_at,
         last_mail_cursor = excluded.last_mail_cursor,
         inbox_folder_id = excluded.inbox_folder_id,
+        graph_delta_link = excluded.graph_delta_link,
         refresh_cooldown_until = excluded.refresh_cooldown_until,
         updated_at = excluded.updated_at
     `)
@@ -256,6 +261,7 @@ function insertOrReplaceAccount(account: AccountRecord) {
       account.lastMailAt || null,
       account.lastMailCursor || null,
       account.inboxFolderId || null,
+      account.graphDeltaLink || null,
       account.refreshCooldownUntil || null,
       account.createdAt,
       account.updatedAt
@@ -427,6 +433,7 @@ export async function upsertAccounts(inputs: AccountInput[]) {
           lastMailAt: null,
           lastMailCursor: null,
           inboxFolderId: null,
+          graphDeltaLink: null,
           refreshCooldownUntil: null,
           createdAt: timestamp,
           updatedAt: timestamp
@@ -546,6 +553,7 @@ export async function updateAccountRefreshState(
     lastMailAt: string | null;
     lastMailCursor?: string | null;
     inboxFolderId?: string | null;
+    graphDeltaLink?: string | null;
     refreshCooldownUntil?: string | null;
   }
 ): Promise<AccountView> {
@@ -568,6 +576,7 @@ export async function updateAccountRefreshState(
       lastMailAt: values.lastMailAt,
       lastMailCursor: values.lastMailCursor ?? account.lastMailCursor ?? null,
       inboxFolderId: values.inboxFolderId ?? account.inboxFolderId ?? null,
+      graphDeltaLink: values.graphDeltaLink ?? account.graphDeltaLink ?? null,
       refreshCooldownUntil: values.refreshCooldownUntil ?? account.refreshCooldownUntil ?? null,
       updatedAt: timestamp
     };

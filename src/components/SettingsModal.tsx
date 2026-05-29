@@ -84,6 +84,14 @@ export function SettingsModal({
               placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
             />
           </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={form.hotmailFallbackEnabled}
+              onChange={(event) => setForm({ ...form, hotmailFallbackEnabled: event.target.checked })}
+            />
+            内置 Hotmail 兜底
+          </label>
         </div>
         {error ? <div className="error-box">{error}</div> : null}
         <div className="modal-actions">

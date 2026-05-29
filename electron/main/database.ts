@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 let database: DatabaseSync | null = null;
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 4;
 
 export function getDatabase() {
   if (database) {
@@ -34,6 +34,7 @@ export function getDatabase() {
       last_mail_at TEXT,
       last_mail_cursor TEXT,
       inbox_folder_id TEXT,
+      graph_delta_link TEXT,
       refresh_cooldown_until TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -77,6 +78,15 @@ export function getDatabase() {
       PRIMARY KEY (account_id, message_id)
     );
 
+    CREATE TABLE IF NOT EXISTS access_token_cache (
+      account_id TEXT PRIMARY KEY,
+      encrypted_access_token TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      scope TEXT NOT NULL DEFAULT '',
+      auth_mode TEXT NOT NULL DEFAULT 'graph',
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       version INTEGER NOT NULL,
@@ -88,6 +98,9 @@ export function getDatabase() {
   const columnNames = new Set(columns.map((column) => column.name));
   if (!columnNames.has("inbox_folder_id")) {
     database.exec("ALTER TABLE accounts ADD COLUMN inbox_folder_id TEXT");
+  }
+  if (!columnNames.has("graph_delta_link")) {
+    database.exec("ALTER TABLE accounts ADD COLUMN graph_delta_link TEXT");
   }
   if (!columnNames.has("refresh_cooldown_until")) {
     database.exec("ALTER TABLE accounts ADD COLUMN refresh_cooldown_until TEXT");

@@ -73,6 +73,17 @@ interface GraphListResponse<T> {
   value?: T[];
 }
 
+interface GraphDeltaResponse<T> extends GraphListResponse<T> {
+  "@odata.nextLink"?: string;
+  "@odata.deltaLink"?: string;
+}
+
+export interface GraphDeltaMessagesResult {
+  messages: MailMessageSummary[];
+  nextLink: string | null;
+  deltaLink: string | null;
+}
+
 function createGraphError(status: number, payload: GraphError | string) {
   if (typeof payload === "string") {
     return new Error(`Graph 请求失败 ${status}: ${payload}`);
@@ -113,6 +124,27 @@ function fetchOptions(init: RequestInit, proxyUrl = ""): RequestInit {
 async function graphFetch<T>(accessToken: string, path: string, proxyUrl = ""): Promise<T> {
   const response = await proxiedFetch(
     `${GRAPH_ENDPOINT}${path}`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json"
+      }
+    },
+    proxyUrl
+  );
+
+  const payload = await parseResponse(response);
+
+  if (!response.ok) {
+    throw createGraphError(response.status, payload as GraphError | string);
+  }
+
+  return payload as T;
+}
+
+async function graphFetchUrl<T>(accessToken: string, url: string, proxyUrl = ""): Promise<T> {
+  const response = await proxiedFetch(
+    url,
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -271,6 +303,44 @@ export async function listMessages(
   );
 
   return (payload.value || []).map(mapMessageSummary);
+}
+
+export async function deltaMessages(
+  accessToken: string,
+  folderId: string,
+  top = 20,
+  deltaLink: string | null = null,
+  maxPages = 1,
+  proxyUrl = ""
+): Promise<GraphDeltaMessagesResult> {
+  const messages: MailMessageSummary[] = [];
+  let nextLink: string | null = deltaLink;
+  let finalDeltaLink: string | null = null;
+  const pageLimit = Math.min(Math.max(maxPages, 1), 10);
+
+  for (let page = 0; page < pageLimit; page += 1) {
+    const payload = nextLink
+      ? await graphFetchUrl<GraphDeltaResponse<GraphMessage>>(accessToken, nextLink, proxyUrl)
+      : await graphFetch<GraphDeltaResponse<GraphMessage>>(
+          accessToken,
+          `/me/mailFolders/${encodeURIComponent(folderId)}/messages/delta?$top=${Math.min(Math.max(top, 1), 100)}&$select=id,subject,from,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,bodyPreview,webLink`,
+          proxyUrl
+        );
+
+    messages.push(...(payload.value || []).map(mapMessageSummary));
+    finalDeltaLink = payload["@odata.deltaLink"] || null;
+    nextLink = payload["@odata.nextLink"] || null;
+
+    if (finalDeltaLink || !nextLink) {
+      break;
+    }
+  }
+
+  return {
+    messages,
+    nextLink,
+    deltaLink: finalDeltaLink
+  };
 }
 
 export async function getMessage(accessToken: string, messageId: string, proxyUrl = ""): Promise<MailMessageDetail> {

@@ -106,14 +106,6 @@ function isFresh(updatedAt: string | null) {
   return Number.isFinite(timestamp) && Date.now() - timestamp <= MESSAGE_CACHE_TTL_MS;
 }
 
-function sortMessages(messages: MailMessageSummary[]) {
-  return messages.sort((a, b) => {
-    const left = a.receivedDateTime || a.sentDateTime || "";
-    const right = b.receivedDateTime || b.sentDateTime || "";
-    return new Date(right).getTime() - new Date(left).getTime();
-  });
-}
-
 function rowToMessage(row: MailMessageRow): MailMessageSummary {
   return {
     id: row.message_id,
@@ -286,7 +278,13 @@ export async function getCachedCursor(accountId: string) {
   return row?.next_cursor || null;
 }
 
-export async function saveCachedMessages(accountId: string, messages: MailMessageSummary[], enabled = true, nextCursor?: string | null) {
+export async function saveCachedMessages(
+  accountId: string,
+  messages: MailMessageSummary[],
+  enabled = true,
+  nextCursor?: string | null,
+  options: { readBack?: boolean } = {}
+) {
   await migrateLegacyCacheOnce();
   if (!enabled) {
     return messages;
@@ -297,8 +295,7 @@ export async function saveCachedMessages(accountId: string, messages: MailMessag
       saveMessagesSync(accountId, messages, nextCursor);
     });
 
-    const cached = await getCachedMessages(accountId, "", MAX_MESSAGES_PER_ACCOUNT, true);
-    return sortMessages(cached);
+    return options.readBack === false ? messages : getCachedMessages(accountId, "", MAX_MESSAGES_PER_ACCOUNT, true);
   });
 }
 

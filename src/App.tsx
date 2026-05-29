@@ -29,7 +29,8 @@ const defaultSettings: AppSettings = {
   cacheMessages: true,
   cacheBodies: true,
   proxyUrl: "",
-  batchConcurrency: 4
+  batchConcurrency: 4,
+  hotmailFallbackEnabled: true
 };
 
 function replaceAccount(accounts: AccountView[], next: AccountView) {
