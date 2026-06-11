@@ -303,6 +303,36 @@ async function fetchHotmailFallback(
   return result;
 }
 
+function refreshStateFromFallback(
+  account: Awaited<ReturnType<typeof getAccountRecord>>,
+  fallback: Awaited<ReturnType<typeof fetchHotmailFallback>>
+): Parameters<typeof updateAccountRefreshState>[1] {
+  return {
+    status: "valid",
+    lastError: null,
+    lastInboxCount: fallback.totalCount,
+    lastMailAt: latestMailTime(fallback.messages) || account.lastMailAt || null,
+    lastMailCursor: fallback.cursor || null,
+    inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
+    graphDeltaLink: null,
+    refreshCooldownUntil: null
+  };
+}
+
+function fallbackListResult(fallback: Awaited<ReturnType<typeof fetchHotmailFallback>>): MailListResult {
+  return { messages: fallback.messages, nextCursor: null, totalCount: fallback.totalCount };
+}
+
+async function persistHotmailFallback(
+  accountId: string,
+  account: Awaited<ReturnType<typeof getAccountRecord>>,
+  settings: Awaited<ReturnType<typeof getSettings>>,
+  fallback: Awaited<ReturnType<typeof fetchHotmailFallback>>
+) {
+  await cacheHotmailFallbackResult(accountId, fallback, settings, null);
+  await updateAccountRefreshState(accountId, refreshStateFromFallback(account, fallback));
+}
+
 async function finishWithHotmailFallback(
   accountId: string,
   account: Awaited<ReturnType<typeof getAccountRecord>>,
@@ -321,16 +351,7 @@ async function finishWithHotmailFallback(
   metrics.cacheMs += elapsedSince(cacheStart);
 
   const stateStart = nowMs();
-  await updateAccountRefreshState(accountId, {
-    status: "valid",
-    lastError: null,
-    lastInboxCount: fallback.totalCount,
-    lastMailAt: latestMailTime(fallback.messages) || account.lastMailAt || null,
-    lastMailCursor: fallback.cursor || null,
-    inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
-    graphDeltaLink: null,
-    refreshCooldownUntil: null
-  });
+  await updateAccountRefreshState(accountId, refreshStateFromFallback(account, fallback));
   metrics.stateMs += elapsedSince(stateStart);
   metrics.totalMs = elapsedSince(totalStart);
 
@@ -634,23 +655,13 @@ export function registerIpcHandlers() {
       }
 
       const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
-      await cacheHotmailFallbackResult(options.accountId, fallback, settings, null);
-      await updateAccountRefreshState(options.accountId, {
-        status: "valid",
-        lastError: null,
-        lastInboxCount: fallback.totalCount,
-        lastMailAt: latestMailTime(fallback.messages),
-        lastMailCursor: fallback.cursor || null,
-        inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
-        graphDeltaLink: null,
-        refreshCooldownUntil: null
-      });
+      await persistHotmailFallback(options.accountId, account, settings, fallback);
 
       return { fallback };
     });
 
     if ("fallback" in token) {
-      return { messages: token.fallback.messages, nextCursor: null, totalCount: token.fallback.totalCount } satisfies MailListResult;
+      return fallbackListResult(token.fallback);
     }
 
     if (token.authMode === "imap") {
@@ -693,18 +704,8 @@ export function registerIpcHandlers() {
         }
 
         const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
-        await cacheHotmailFallbackResult(options.accountId, fallback, settings, null);
-        await updateAccountRefreshState(options.accountId, {
-          status: "valid",
-          lastError: null,
-          lastInboxCount: fallback.totalCount,
-          lastMailAt: latestMailTime(fallback.messages),
-          lastMailCursor: fallback.cursor || null,
-          inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
-          graphDeltaLink: null,
-          refreshCooldownUntil: null
-        });
-        return { messages: fallback.messages, nextCursor: null, totalCount: fallback.totalCount } satisfies MailListResult;
+        await persistHotmailFallback(options.accountId, account, settings, fallback);
+        return fallbackListResult(fallback);
       }
     }
 
@@ -746,18 +747,8 @@ export function registerIpcHandlers() {
       }
 
       const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
-      await cacheHotmailFallbackResult(options.accountId, fallback, settings, null);
-      await updateAccountRefreshState(options.accountId, {
-        status: "valid",
-        lastError: null,
-        lastInboxCount: fallback.totalCount,
-        lastMailAt: latestMailTime(fallback.messages),
-        lastMailCursor: fallback.cursor || null,
-        inboxFolderId: fallback.inboxFolderId || account.inboxFolderId || "INBOX",
-        graphDeltaLink: null,
-        refreshCooldownUntil: null
-      });
-      return { messages: fallback.messages, nextCursor: null, totalCount: fallback.totalCount } satisfies MailListResult;
+      await persistHotmailFallback(options.accountId, account, settings, fallback);
+      return fallbackListResult(fallback);
     }
 
     const totalCount = inbox.totalItemCount || messages.length;
