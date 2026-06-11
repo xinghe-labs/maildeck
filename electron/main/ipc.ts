@@ -11,6 +11,7 @@ import {
   saveCachedMessages
 } from "./mail-cache.js";
 import { clearPersistedAccessTokens, getPersistedAccessToken, savePersistedAccessToken } from "./access-token-cache.js";
+import { closeProxyDispatchers } from "./proxy-agent.js";
 import {
   deleteAccount,
   getAccountRecord,
@@ -504,13 +505,14 @@ export function registerIpcHandlers() {
         hotmailFallbackEnabled?: boolean;
       }
     ) => {
-    const next = await updateSettings(settings);
-    if (settings.proxyUrl !== undefined) {
-      tokenCache.clear();
-      tokenRefreshes.clear();
-      clearPersistedAccessTokens();
-    }
-    return next;
+      const next = await updateSettings(settings);
+      if (settings.proxyUrl !== undefined) {
+        tokenCache.clear();
+        tokenRefreshes.clear();
+        clearPersistedAccessTokens();
+        closeProxyDispatchers();
+      }
+      return next;
     }
   );
 

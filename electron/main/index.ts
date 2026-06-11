@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
+import { closeProxyDispatchers } from "./proxy-agent.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -91,5 +92,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  closeProxyDispatchers();
   closeDatabase();
 });

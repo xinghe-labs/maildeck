@@ -1,5 +1,5 @@
-import { ProxyAgent } from "undici";
 import { getImapMessage, listImapMessages, refreshImapInbox } from "./imap-client.js";
+import { proxiedFetchOptions } from "./proxy-agent.js";
 import type { AccountRecord, AccessTokenResult, MailMessageDetail, MailMessageSummary } from "./types.js";
 
 const TOKEN_ENDPOINTS = [
@@ -39,17 +39,6 @@ interface TokenResponse {
   error_description?: string;
 }
 
-function fetchOptions(init: RequestInit, proxyUrl = ""): RequestInit {
-  if (!proxyUrl) {
-    return init;
-  }
-
-  return {
-    ...init,
-    dispatcher: new ProxyAgent(proxyUrl)
-  } as RequestInit;
-}
-
 async function parseResponse(response: Response) {
   const text = await response.text();
   if (!text) {
@@ -84,7 +73,7 @@ export async function refreshHotmailFallbackToken(
       form.set("scope", endpoint.scope);
     }
 
-    const response = await fetch(endpoint.url, fetchOptions({
+    const response = await fetch(endpoint.url, proxiedFetchOptions({
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded"

@@ -5,7 +5,7 @@ import type {
   MailMessageDetail,
   MailMessageSummary
 } from "./types.js";
-import { ProxyAgent } from "undici";
+import { proxiedFetchOptions } from "./proxy-agent.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
 const TOKEN_ENDPOINTS = [
@@ -110,17 +110,6 @@ async function parseResponse(response: Response) {
   }
 }
 
-function fetchOptions(init: RequestInit, proxyUrl = ""): RequestInit {
-  if (!proxyUrl) {
-    return init;
-  }
-
-  return {
-    ...init,
-    dispatcher: new ProxyAgent(proxyUrl)
-  } as RequestInit;
-}
-
 async function graphFetch<T>(accessToken: string, path: string, proxyUrl = ""): Promise<T> {
   const response = await proxiedFetch(
     `${GRAPH_ENDPOINT}${path}`,
@@ -206,7 +195,7 @@ function detectAuthMode(scope: string) {
 }
 
 async function proxiedFetch(url: string, init: RequestInit, proxyUrl = "") {
-  return fetch(url, fetchOptions(init, proxyUrl));
+  return fetch(url, proxiedFetchOptions(init, proxyUrl));
 }
 
 export async function refreshAccessToken(clientId: string, refreshToken: string, proxyUrl = ""): Promise<AccessTokenResult> {
