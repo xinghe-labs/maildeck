@@ -1,7 +1,7 @@
-import { dialog, ipcMain } from "electron";
+import { dialog } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { IPC_CHANNELS, IPC_EVENT_CHANNELS } from "../shared/ipc-contracts.js";
+import { IPC_CHANNELS, IPC_EVENT_CHANNELS, IPC_REQUEST_SCHEMAS, parseIpcRequest } from "../shared/ipc-contracts.js";
 import {
   clearAccountCache,
   clearAllMailCache,
@@ -34,18 +34,14 @@ import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
 import { isJobCanceledError, JobCanceledError } from "./job-errors.js";
 import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
+import { handleValidated } from "./validated-ipc.js";
 import type {
   AccessTokenResult,
-  AccountInput,
-  AccountUpdateInput,
   AppErrorCode,
-  GetMessageOptions,
   JobKind,
-  ListMessagesOptions,
   MailListResult,
   MailMessageSummary,
   RefreshMetrics,
-  RefreshJobKind,
   TestFallbackResult,
   TestManyResult
 } from "./types.js";
@@ -197,10 +193,6 @@ function shouldCancel(jobId: string) {
 
 function cancelError(job: JobKind) {
   return job === "test" ? "批量测试已取消" : "刷新已取消";
-}
-
-function normalizeRefreshJobKind(value: unknown): RefreshJobKind {
-  return value === "refreshSingle" || value === "refreshBackground" ? value : "refresh";
 }
 
 function normalizeErrorResult(error: unknown) {
@@ -492,22 +484,14 @@ async function testHotmailFallback(accountId: string): Promise<TestFallbackResul
 }
 
 export function registerIpcHandlers() {
-  ipcMain.handle(IPC_CHANNELS.accountsList, async () => listAccounts());
+  handleValidated(IPC_CHANNELS.accountsList, IPC_REQUEST_SCHEMAS.accountsList, async () => listAccounts());
 
-  ipcMain.handle(IPC_CHANNELS.settingsGet, async () => getSettings());
+  handleValidated(IPC_CHANNELS.settingsGet, IPC_REQUEST_SCHEMAS.getSettings, async () => getSettings());
 
-  ipcMain.handle(
+  handleValidated(
     IPC_CHANNELS.settingsUpdate,
-    async (
-      _event,
-      settings: {
-        cacheMessages?: boolean;
-        cacheBodies?: boolean;
-        proxyUrl?: string;
-        batchConcurrency?: number;
-        hotmailFallbackEnabled?: boolean;
-      }
-    ) => {
+    IPC_REQUEST_SCHEMAS.updateSettings,
+    async (_event, settings) => {
       const next = await updateSettings(settings);
       if (settings.proxyUrl !== undefined) {
         tokenCache.clear();
@@ -519,23 +503,23 @@ export function registerIpcHandlers() {
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.jobsCancel, async (_event, job: JobKind) => {
+  handleValidated(IPC_CHANNELS.jobsCancel, IPC_REQUEST_SCHEMAS.cancelJob, async (_event, job) => {
     return { canceled: job, count: cancelJobs(job) };
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsPreviewImportText, async (_event, text: string) => {
+  handleValidated(IPC_CHANNELS.accountsPreviewImportText, IPC_REQUEST_SCHEMAS.importText, async (_event, text) => {
     const inputs = parseAccountImport(text);
     return previewAccounts(inputs);
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsImportText, async (_event, text: string) => {
+  handleValidated(IPC_CHANNELS.accountsImportText, IPC_REQUEST_SCHEMAS.importText, async (_event, text) => {
     const inputs = parseAccountImport(text);
     const result = await upsertAccounts(inputs);
     clearTokenCache(result.accounts.map((account) => account.id));
     return result;
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsImportFile, async () => {
+  handleValidated(IPC_CHANNELS.accountsImportFile, IPC_REQUEST_SCHEMAS.importFile, async () => {
     const result = await dialog.showOpenDialog({
       title: "导入邮箱账号",
       filters: [
@@ -549,33 +533,33 @@ export function registerIpcHandlers() {
       return null;
     }
 
-    const text = await readFile(result.filePaths[0], "utf8");
+    const text = parseIpcRequest(IPC_REQUEST_SCHEMAS.importText, [await readFile(result.filePaths[0], "utf8")]);
     const inputs = parseAccountImport(text);
     const importResult = await upsertAccounts(inputs);
     clearTokenCache(importResult.accounts.map((account) => account.id));
     return importResult;
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsUpsert, async (_event, input: AccountInput) => {
+  handleValidated(IPC_CHANNELS.accountsUpsert, IPC_REQUEST_SCHEMAS.upsertAccount, async (_event, input) => {
     const result = await upsertAccounts([input]);
     clearTokenCache(result.accounts.map((account) => account.id));
     return result;
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsUpdate, async (_event, input: AccountUpdateInput) => {
+  handleValidated(IPC_CHANNELS.accountsUpdate, IPC_REQUEST_SCHEMAS.updateAccount, async (_event, input) => {
     const account = await updateAccount(input);
     clearTokenCache([account.id]);
     await clearAccountCache(account.id);
     return account;
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsDelete, async (_event, accountId: string) => {
+  handleValidated(IPC_CHANNELS.accountsDelete, IPC_REQUEST_SCHEMAS.deleteAccount, async (_event, accountId) => {
     const accounts = await deleteAccount(accountId);
     clearTokenCache([accountId]);
     return accounts;
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsTest, async (_event, accountId: string) => {
+  handleValidated(IPC_CHANNELS.accountsTest, IPC_REQUEST_SCHEMAS.testAccount, async (_event, accountId) => {
     const result = await testAccountConnection(accountId, true);
     return {
       account: result.account,
@@ -585,9 +569,11 @@ export function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle(IPC_CHANNELS.accountsTestFallback, async (_event, accountId: string) => testHotmailFallback(accountId));
+  handleValidated(IPC_CHANNELS.accountsTestFallback, IPC_REQUEST_SCHEMAS.testFallback, async (_event, accountId) =>
+    testHotmailFallback(accountId)
+  );
 
-  ipcMain.handle(IPC_CHANNELS.accountsTestMany, async (event, accountIds: string[]) => {
+  handleValidated(IPC_CHANNELS.accountsTestMany, IPC_REQUEST_SCHEMAS.testMany, async (event, accountIds) => {
     const jobId = startJob("test");
     const settings = await getSettings();
     let completed = 0;
@@ -623,7 +609,7 @@ export function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.mailListFolders, async (_event, accountId: string) => {
+  handleValidated(IPC_CHANNELS.mailListFolders, IPC_REQUEST_SCHEMAS.listFolders, async (_event, accountId) => {
     const token = await getAccessToken(accountId);
     const settings = await getSettings();
 
@@ -634,7 +620,7 @@ export function registerIpcHandlers() {
     return listMailFolders(token.accessToken, settings.proxyUrl);
   });
 
-  ipcMain.handle(IPC_CHANNELS.mailListMessages, async (_event, options: ListMessagesOptions) => {
+  handleValidated(IPC_CHANNELS.mailListMessages, IPC_REQUEST_SCHEMAS.listMessages, async (_event, options) => {
     try {
     const search = options.search?.trim() || "";
     const top = options.top || 50;
@@ -778,7 +764,7 @@ export function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle(IPC_CHANNELS.mailGetMessage, async (_event, options: GetMessageOptions) => {
+  handleValidated(IPC_CHANNELS.mailGetMessage, IPC_REQUEST_SCHEMAS.getMessage, async (_event, options) => {
     const settings = await getSettings();
     const isHelperMessage = options.messageId.startsWith("helper:");
     const cached = await getCachedMessageDetail(options.accountId, options.messageId, settings.cacheBodies || isHelperMessage);
@@ -843,7 +829,7 @@ export function registerIpcHandlers() {
     return detail;
   });
 
-  ipcMain.handle(IPC_CHANNELS.mailClearCache, async (_event, accountId?: string) => {
+  handleValidated(IPC_CHANNELS.mailClearCache, IPC_REQUEST_SCHEMAS.clearCache, async (_event, accountId) => {
     if (accountId) {
       await clearAccountCache(accountId);
       return { cleared: 1 };
@@ -853,8 +839,8 @@ export function registerIpcHandlers() {
     return { cleared: "all" };
   });
 
-  ipcMain.handle(IPC_CHANNELS.mailRefreshMany, async (event, accountIds: string[], requestedJobKind?: RefreshJobKind) => {
-    const jobKind = normalizeRefreshJobKind(requestedJobKind);
+  handleValidated(IPC_CHANNELS.mailRefreshMany, IPC_REQUEST_SCHEMAS.refreshMany, async (event, request) => {
+    const { accountIds, jobKind } = request;
     const jobId = startJob(jobKind);
     const appSettings = await getSettings();
     let completed = 0;
