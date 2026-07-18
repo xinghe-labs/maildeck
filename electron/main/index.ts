@@ -5,6 +5,7 @@ import { closeDatabase, getDatabase } from "./database.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
+import { SECURE_WEB_PREFERENCES } from "./window-security.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -55,10 +56,8 @@ function createWindow() {
     icon: path.join(__dirname, "../../build/icon.ico"),
     backgroundColor: "#eef2f1",
     webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
+      preload: path.join(__dirname, "../preload/index.cjs"),
+      ...SECURE_WEB_PREFERENCES
     }
   });
 

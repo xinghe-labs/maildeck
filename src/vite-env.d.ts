@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { OutlookManagerApi } from "../electron/preload";
+import type { OutlookManagerApi } from "../electron/preload/index.cjs";
 
 declare global {
   interface Window {
