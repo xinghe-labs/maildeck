@@ -46,6 +46,26 @@ try {
     throw "No browser page target was exposed by the release executable."
   }
 
+  $securityExpression = @'
+(async () => ({
+  hasBridge: typeof window.outlookManager?.settings?.get === 'function',
+  settingsReadable: Boolean(await window.outlookManager?.settings?.get()),
+  hasNodeProcess: typeof globalThis.process !== 'undefined',
+  csp: document.querySelector('meta[http-equiv=Content-Security-Policy]')?.content || ''
+}))()
+'@
+  $securityJson = & node (Join-Path $Root "scripts\evaluate-cdp.mjs") $page.webSocketDebuggerUrl $securityExpression
+  if ($LASTEXITCODE -ne 0) {
+    throw "Renderer security evaluation failed."
+  }
+  $security = $securityJson | ConvertFrom-Json
+  if (-not $security.hasBridge -or -not $security.settingsReadable -or $security.hasNodeProcess) {
+    throw "Packaged renderer security boundary is not active."
+  }
+  if (-not $security.csp.Contains("object-src 'none'")) {
+    throw "Packaged renderer CSP is missing object-src 'none'."
+  }
+
   if ($page.title -ne "Outlook Manager") {
     throw "Unexpected page title: $($page.title)"
   }
@@ -65,7 +85,7 @@ try {
     throw "Release executable icon does not look like the custom dark mail icon."
   }
 
-  Write-Output "release startup ok: title=$($page.title) db=$databasePath iconCenter=$($center.Name)"
+  Write-Output "release startup ok: title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True db=$databasePath iconCenter=$($center.Name)"
 } finally {
   if (-not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue

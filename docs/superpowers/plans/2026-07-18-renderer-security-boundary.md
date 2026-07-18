@@ -38,7 +38,7 @@
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Install the jsdom test runtime**
+- [x] **Step 1: Install the jsdom test runtime**
 
 Run:
 
@@ -48,7 +48,7 @@ npm.cmd install --save-dev --save-exact jsdom@29.1.1 --registry=https://registry
 
 Expected: exit `0`; Node `22.13.1` satisfies jsdom's declared engine range.
 
-- [ ] **Step 2: Write the failing hostile-mail tests**
+- [x] **Step 2: Write the failing hostile-mail tests**
 
 Create `tests/mail-content-security.test.ts`:
 
@@ -102,7 +102,7 @@ describe("mail document policy", () => {
 });
 ```
 
-- [ ] **Step 3: Run the tests to verify RED**
+- [x] **Step 3: Run the tests to verify RED**
 
 Run:
 
@@ -112,7 +112,7 @@ npm.cmd test -- tests/mail-content-security.test.ts
 
 Expected: FAIL because `src/mail-content-security.ts` does not exist.
 
-- [ ] **Step 4: Implement the centralized mail policy**
+- [x] **Step 4: Implement the centralized mail policy**
 
 Create `src/mail-content-security.ts` with these exported behaviors:
 
@@ -177,7 +177,7 @@ export function buildMailHtmlDocument(sanitizedHtml: string) {
 }
 ```
 
-- [ ] **Step 5: Run focused and full verification**
+- [x] **Step 5: Run focused and full verification**
 
 Run:
 
@@ -189,7 +189,7 @@ npm.cmd run typecheck
 
 Expected: hostile-mail tests pass; the full suite and both type checks exit `0`.
 
-- [ ] **Step 6: Commit without the user's icon-path hunk**
+- [x] **Step 6: Commit without the user's icon-path hunk**
 
 Stage the new module/test, lockfile, and only the jsdom dependency hunk from `package.json`. Confirm the cached package diff excludes `build.win.icon`.
 
@@ -203,7 +203,7 @@ git commit -m "security: isolate mail content policy"
 - Modify: `src/components/MailReader.tsx`
 - Modify: `src/styles.css`
 
-- [ ] **Step 1: Replace renderer HTML injection**
+- [x] **Step 1: Replace renderer HTML injection**
 
 Import `buildMailHtmlDocument` and `sanitizeMailHtml`, compute `mailDocument`, then replace `dangerouslySetInnerHTML` with:
 
@@ -219,7 +219,7 @@ Import `buildMailHtmlDocument` and `sanitizeMailHtml`, compute `mailDocument`, t
 
 Plain-text mail remains a React `<pre>` and is therefore escaped by default.
 
-- [ ] **Step 2: Give the iframe stable reader dimensions**
+- [x] **Step 2: Give the iframe stable reader dimensions**
 
 Add:
 
@@ -242,7 +242,7 @@ Add:
 }
 ```
 
-- [ ] **Step 3: Verify the renderer no longer has a mail HTML sink**
+- [x] **Step 3: Verify the renderer no longer has a mail HTML sink**
 
 Run:
 
@@ -255,7 +255,7 @@ npm.cmd run build
 
 Expected: `rg` finds neither pattern in `MailReader.tsx`; tests, type checks, and build exit `0`.
 
-- [ ] **Step 4: Commit the rendering boundary**
+- [x] **Step 4: Commit the rendering boundary**
 
 ```powershell
 git add src/components/MailReader.tsx src/styles.css
@@ -269,7 +269,7 @@ git commit -m "security: sandbox rendered mail html"
 - Create: `electron/main/navigation-policy.ts`
 - Modify: `electron/main/navigation-guard.ts`
 
-- [ ] **Step 1: Write failing navigation tests**
+- [x] **Step 1: Write failing navigation tests**
 
 Create `tests/navigation-policy.test.ts`:
 
@@ -305,7 +305,7 @@ describe("isAllowedAppNavigation", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test to verify RED**
+- [x] **Step 2: Run the focused test to verify RED**
 
 ```powershell
 npm.cmd test -- tests/navigation-policy.test.ts
@@ -313,11 +313,11 @@ npm.cmd test -- tests/navigation-policy.test.ts
 
 Expected: FAIL because `electron/main/navigation-policy.ts` does not exist.
 
-- [ ] **Step 3: Move pure decisions into the tested module**
+- [x] **Step 3: Move pure decisions into the tested module**
 
 Export `isAllowedExternalUrl(url)` and `isAllowedAppNavigation(url, appOrigin, allowedFilePath)` from the new module. Keep exact protocol equality, `new URL(url).origin === appOrigin`, and normalized `fileURLToPath` equality. Import both functions from `navigation-guard.ts`; do not widen the allowlist.
 
-- [ ] **Step 4: Run verification and commit**
+- [x] **Step 4: Run verification and commit**
 
 ```powershell
 npm.cmd test -- tests/navigation-policy.test.ts
@@ -338,7 +338,7 @@ git commit -m "security: centralize navigation allowlists"
 - Modify: `src/vite-env.d.ts`
 - Modify: `index.html`
 
-- [ ] **Step 1: Write failing BrowserWindow and CSP tests**
+- [x] **Step 1: Write failing BrowserWindow and CSP tests**
 
 Create `tests/electron-security-config.test.ts`:
 
@@ -373,7 +373,7 @@ describe("renderer security configuration", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test to verify RED**
+- [x] **Step 2: Run the focused test to verify RED**
 
 ```powershell
 npm.cmd test -- tests/electron-security-config.test.ts
@@ -381,7 +381,7 @@ npm.cmd test -- tests/electron-security-config.test.ts
 
 Expected: FAIL because `window-security.ts` and the CSP do not exist.
 
-- [ ] **Step 3: Add secure preferences and application CSP**
+- [x] **Step 3: Add secure preferences and application CSP**
 
 Create:
 
@@ -402,11 +402,11 @@ Add this early in `index.html`:
 />
 ```
 
-- [ ] **Step 4: Emit and load a CommonJS preload**
+- [x] **Step 4: Emit and load a CommonJS preload**
 
 Rename the preload source to `index.cts`, add `"**/*.cts"` to the Electron tsconfig include list, update the BrowserWindow preload path to `../preload/index.cjs`, and spread `SECURE_WEB_PREFERENCES` into `webPreferences`. Update the renderer type-only import to `../electron/preload/index.cjs`.
 
-- [ ] **Step 5: Verify source tests and compiled output**
+- [x] **Step 5: Verify source tests and compiled output**
 
 ```powershell
 npm.cmd test -- tests/electron-security-config.test.ts
@@ -418,7 +418,7 @@ Get-ChildItem dist-electron/preload
 
 Expected: tests and type checks pass; the preload directory contains `index.cjs` and does not contain `index.js`.
 
-- [ ] **Step 6: Commit the sandbox boundary**
+- [x] **Step 6: Commit the sandbox boundary**
 
 ```powershell
 git add -A -- electron/preload electron/main/window-security.ts electron/main/index.ts electron/tsconfig.json src/vite-env.d.ts index.html tests/electron-security-config.test.ts
@@ -432,7 +432,7 @@ git commit -m "security: enable renderer sandbox and csp"
 - Modify: `scripts/verify-release-startup.ps1`
 - Modify: this plan only when recording results.
 
-- [ ] **Step 1: Add a bounded CDP evaluator**
+- [x] **Step 1: Add a bounded CDP evaluator**
 
 Create `scripts/evaluate-cdp.mjs`:
 
@@ -491,7 +491,7 @@ try {
 }
 ```
 
-- [ ] **Step 2: Extend packaged startup assertions**
+- [x] **Step 2: Extend packaged startup assertions**
 
 After locating the page target, evaluate:
 
@@ -530,7 +530,7 @@ if (-not $security.csp.Contains("object-src 'none'")) {
 }
 ```
 
-- [ ] **Step 3: Run every release gate**
+- [x] **Step 3: Run every release gate**
 
 ```powershell
 npm.cmd test
@@ -542,7 +542,7 @@ npm.cmd run dist:win
 
 Expected: all tests pass, both type checks pass, production audit reports zero vulnerabilities, build succeeds, and packaged smoke confirms the sandboxed bridge and CSP.
 
-- [ ] **Step 4: Record and commit verification**
+- [x] **Step 4: Record and commit verification**
 
 Mark all plan checkboxes complete and append test count, audit result, build result, preload artifact name, smoke security fields, and release artifact names. Commit only scripts and the plan:
 
@@ -550,3 +550,14 @@ Mark all plan checkboxes complete and append test count, audit result, build res
 git add scripts/evaluate-cdp.mjs scripts/verify-release-startup.ps1 docs/superpowers/plans/2026-07-18-renderer-security-boundary.md
 git commit -m "test: verify packaged renderer security"
 ```
+
+## Verification Record (2026-07-18)
+
+- `npm.cmd test`: 8 test files passed, 28 tests passed.
+- `npm.cmd run typecheck`: renderer and Electron TypeScript checks passed.
+- `npx.cmd --yes npm@11.18.0 audit --omit=dev --registry=https://registry.npmjs.org/`: found 0 vulnerabilities. The installed npm 9.8.1 client could not be used because its retired quick-audit endpoint returned HTTP 400.
+- `npm.cmd run build`: Vite 6.4.2 transformed 1,639 modules and both renderer and Electron builds completed.
+- Preload output: `dist-electron/preload/index.cjs` exists and no `index.js` preload was emitted.
+- `npm.cmd run dist:win`: electron-builder 26.15.3 packaged Electron 35.7.5 for Windows x64 and exited 0.
+- Packaged smoke: `bridge=True`, `settings=True`, `nodeProcess=False`, `cspObjectNone=True`; SQLite creation and executable icon checks passed.
+- Release artifacts: `Outlook Manager 0.1.7.exe`, `Outlook Manager Setup 0.1.7.exe`, `Outlook Manager Setup 0.1.7.exe.blockmap`, and `latest.yml`.
