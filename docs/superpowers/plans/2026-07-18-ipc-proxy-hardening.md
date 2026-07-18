@@ -37,7 +37,7 @@
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Install the exact Zod runtime**
+- [x] **Step 1: Install the exact Zod runtime**
 
 Run:
 
@@ -47,7 +47,7 @@ npm.cmd install --save-exact zod@4.4.3 --registry=https://registry.npmjs.org/
 
 Expected: exit `0`; `zod` is a production dependency because the Electron main process loads request schemas at runtime.
 
-- [ ] **Step 2: Write failing proxy and IPC contract tests**
+- [x] **Step 2: Write failing proxy and IPC contract tests**
 
 Create tests that import the not-yet-created modules and assert these exact behaviors:
 
@@ -92,7 +92,7 @@ describe("IPC request contracts", () => {
 
 `tests/proxy-security.test.ts` must cover empty/direct mode, HTTP and HTTPS normalization, SOCKS/FTP rejection, credential extraction, and redaction that never returns the original password.
 
-- [ ] **Step 3: Run focused tests to verify RED**
+- [x] **Step 3: Run focused tests to verify RED**
 
 Run:
 
@@ -102,7 +102,7 @@ npm.cmd test -- tests/ipc-contracts.test.ts tests/proxy-security.test.ts
 
 Expected: FAIL because `electron/shared/ipc-contracts.ts` and `proxy-security.ts` do not exist.
 
-- [ ] **Step 4: Implement pure proxy parsing**
+- [x] **Step 4: Implement pure proxy parsing**
 
 Implement this public surface in `electron/shared/proxy-security.ts`:
 
@@ -127,7 +127,7 @@ export function redactProxyCredentials(value: string): string;
 
 Rules: trim input; empty means direct mode; accept only `http:`/`https:` for new input; accept SOCKS schemes only when migrating legacy settings; reject path, query, hash, missing hostname, and URLs longer than 2,048 characters; decode username/password safely; reconstruct through the structured `URL` API; replace any password in HTTP/HTTPS/SOCKS URLs with `***` in error text.
 
-- [ ] **Step 5: Implement shared channels, public types, and request schemas**
+- [x] **Step 5: Implement shared channels, public types, and request schemas**
 
 `electron/shared/ipc-contracts.ts` must export:
 
@@ -190,7 +190,7 @@ export type AppSettingsUpdate = z.input<typeof appSettingsUpdateSchema>;
 
 The update schema includes write-only `proxyPassword?: string` and `clearProxyPassword?: boolean`, but the returned `AppSettings` never contains the password.
 
-- [ ] **Step 6: Verify contracts and commit without the icon hunk**
+- [x] **Step 6: Verify contracts and commit without the icon hunk**
 
 Run:
 
@@ -215,11 +215,11 @@ git commit -m "security: define shared ipc contracts"
 - Modify: `electron/main/ipc.ts`
 - Create: `tests/preload-contract-boundary.test.ts`
 
-- [ ] **Step 1: Write the preload boundary regression test**
+- [x] **Step 1: Write the preload boundary regression test**
 
 The test reads `electron/preload/index.cts` and asserts that every non-Electron import starts with `import type`, that no `zod` runtime import exists, and that the source references the shared `IpcInvokeChannel`/`IpcEventChannel` types. It also asserts all values in `IPC_CHANNELS` and `IPC_EVENT_CHANNELS` are unique.
 
-- [ ] **Step 2: Run it before refactoring**
+- [x] **Step 2: Run it before refactoring**
 
 Run:
 
@@ -229,21 +229,21 @@ npm.cmd test -- tests/preload-contract-boundary.test.ts
 
 Expected: FAIL because the preload does not yet import the shared channel types.
 
-- [ ] **Step 3: Re-export the shared public types**
+- [x] **Step 3: Re-export the shared public types**
 
 Keep only `AccountRecord` and `AccessTokenResult` as declarations in `electron/main/types.ts`; import the shared types needed by those internal declarations and re-export the public type set from `../shared/ipc-contracts.js`.
 
 Replace `src/types.ts` with type-only re-exports from `../electron/shared/ipc-contracts` so existing renderer imports remain unchanged.
 
-- [ ] **Step 4: Keep preload runtime imports standalone**
+- [x] **Step 4: Keep preload runtime imports standalone**
 
 In `electron/preload/index.cts`, import all API types plus `IpcInvokeChannel` and `IpcEventChannel` with `import type`. Add typed wrappers around `ipcRenderer.invoke`, `ipcRenderer.on`, and `ipcRenderer.removeListener`; keep channel literals in the preload but require them to satisfy the shared channel union. Do not runtime-import `IPC_CHANNELS`, schemas, Zod, or any local module.
 
-- [ ] **Step 5: Use channel constants in the main process**
+- [x] **Step 5: Use channel constants in the main process**
 
 Replace literal invoke and event channel strings in `electron/main/ipc.ts` with `IPC_CHANNELS` and `IPC_EVENT_CHANNELS`. Main is allowed to runtime-import the shared module.
 
-- [ ] **Step 6: Verify source, compiled preload, and commit**
+- [x] **Step 6: Verify source, compiled preload, and commit**
 
 Run:
 
@@ -270,11 +270,11 @@ git commit -m "refactor: share ipc contract types"
 - Modify: `electron/main/ipc.ts`
 - Create: `tests/ipc-handler-boundary.test.ts`
 
-- [ ] **Step 1: Write the failing boundary test**
+- [x] **Step 1: Write the failing boundary test**
 
 Read `electron/main/ipc.ts` and assert it contains no direct `ipcMain.handle(` calls. Read `electron/main/validated-ipc.ts` and assert that it calls `parseIpcRequest(schema, args)` before invoking the business handler. Assert every value from `IPC_CHANNELS` is registered in `ipc.ts` through `handleValidated`.
 
-- [ ] **Step 2: Run it to verify RED**
+- [x] **Step 2: Run it to verify RED**
 
 ```powershell
 npm.cmd test -- tests/ipc-handler-boundary.test.ts
@@ -282,7 +282,7 @@ npm.cmd test -- tests/ipc-handler-boundary.test.ts
 
 Expected: FAIL because direct handlers still exist and `validated-ipc.ts` is missing.
 
-- [ ] **Step 3: Implement the only validated handler wrapper**
+- [x] **Step 3: Implement the only validated handler wrapper**
 
 Create:
 
@@ -300,7 +300,7 @@ export function handleValidated<Output>(
 }
 ```
 
-- [ ] **Step 4: Convert every handler**
+- [x] **Step 4: Convert every handler**
 
 Register all invoke channels through `handleValidated(channel, schema, handler)`. The handler receives normalized schema output, not raw renderer values. Specific requirements:
 
@@ -312,7 +312,7 @@ Register all invoke channels through `handleValidated(channel, schema, handler)`
 - clear-cache account ID remains optional but bounded;
 - settings are strict and proxy URLs are HTTP/HTTPS only.
 
-- [ ] **Step 5: Run focused and full verification**
+- [x] **Step 5: Run focused and full verification**
 
 ```powershell
 npm.cmd test -- tests/ipc-contracts.test.ts tests/ipc-handler-boundary.test.ts
@@ -320,7 +320,7 @@ npm.cmd test
 npm.cmd run typecheck
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add electron/main/validated-ipc.ts electron/main/ipc.ts tests/ipc-handler-boundary.test.ts
@@ -335,7 +335,7 @@ git commit -m "security: validate every ipc request"
 - Modify: `electron/main/settings-store.ts`
 - Modify: `electron/main/ipc.ts`
 
-- [ ] **Step 1: Write failing settings-model tests**
+- [x] **Step 1: Write failing settings-model tests**
 
 Use deterministic injected `encrypt`/`decrypt` functions. Cover:
 
@@ -346,7 +346,7 @@ Use deterministic injected `encrypt`/`decrypt` functions. Cover:
 5. `clearProxyPassword=true` removes the encrypted password.
 6. Direct mode stores `proxy: null`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 npm.cmd test -- tests/settings-model.test.ts
@@ -354,7 +354,7 @@ npm.cmd test -- tests/settings-model.test.ts
 
 Expected: FAIL because `settings-model.ts` does not exist.
 
-- [ ] **Step 3: Implement the pure settings model**
+- [x] **Step 3: Implement the pure settings model**
 
 Use this persisted shape:
 
@@ -381,7 +381,7 @@ export interface SettingsFileV2 {
 
 Export pure functions to migrate unknown/v1 data, apply a validated `AppSettingsUpdate`, project safe public settings, and build runtime settings. The crypto dependency is `{ encrypt(value): string; decrypt(value): string }`. A legacy SOCKS entry may be represented only for migration/UI correction; runtime projection must reject it and no new update may create it.
 
-- [ ] **Step 4: Wire the filesystem store**
+- [x] **Step 4: Wire the filesystem store**
 
 `settings-store.ts` keeps the existing serialized queue and atomic temp-file rename. On first successful v1 read, write version 2 before returning. If encryption is unavailable, migration with a proxy password throws and leaves the original file untouched. Export:
 
@@ -393,7 +393,7 @@ export async function updateSettings(next: AppSettingsUpdate): Promise<{ setting
 
 The IPC `settings:get` handler returns only public settings. The update handler clears token/proxy caches only when `proxyChanged` is true.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```powershell
 npm.cmd test -- tests/settings-model.test.ts tests/ipc-contracts.test.ts
@@ -416,11 +416,11 @@ git commit -m "security: encrypt stored proxy credentials"
 - Modify: `README.md`
 - Create: `tests/error-utils.test.ts`
 
-- [ ] **Step 1: Write the failing redaction test**
+- [x] **Step 1: Write the failing redaction test**
 
 Assert `normalizeError(new Error("proxy http://alice:secret@127.0.0.1:7890 failed"))` contains `alice`, contains `***`, and contains neither `secret` nor its percent-encoded form. Also assert SOCKS legacy URLs and URL-encoded credentials are redacted.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 npm.cmd test -- tests/error-utils.test.ts
@@ -428,11 +428,11 @@ npm.cmd test -- tests/error-utils.test.ts
 
 Expected: FAIL because current normalized errors include the raw proxy password.
 
-- [ ] **Step 3: Redact renderer errors and process logs**
+- [x] **Step 3: Redact renderer errors and process logs**
 
 Call `redactProxyCredentials` before classifying errors in `normalizeError`. Export a `formatErrorForLog(error)` helper that returns a redacted stack/message string. Use it for every `console.warn`/`console.error` call in `electron/main/index.ts` instead of logging raw error objects.
 
-- [ ] **Step 4: Add safe proxy form fields**
+- [x] **Step 4: Add safe proxy form fields**
 
 The renderer default settings include `proxyUsername`, `proxyHasPassword`, and `proxySupported`. `SettingsModal` keeps `proxyPassword` write-only and blank after loading. It shows:
 
@@ -444,11 +444,11 @@ The renderer default settings include `proxyUsername`, `proxyHasPassword`, and `
 
 No password returned by `settings:get` is placed in React state.
 
-- [ ] **Step 5: Correct documentation**
+- [x] **Step 5: Correct documentation**
 
 Replace README and settings copy that promises SOCKS support with HTTP/HTTPS-only wording and a clear note that SOCKS is rejected until all transports support it.
 
-- [ ] **Step 6: Verify UI/types/build and commit**
+- [x] **Step 6: Verify UI/types/build and commit**
 
 ```powershell
 npm.cmd test -- tests/error-utils.test.ts tests/proxy-security.test.ts
@@ -468,11 +468,11 @@ git commit -m "security: redact proxy credentials"
 - Modify: `scripts/verify-release-startup.ps1`
 - Modify: this plan when recording results.
 
-- [ ] **Step 1: Extend the existing CDP expression**
+- [x] **Step 1: Extend the existing CDP expression**
 
 In addition to the existing sandbox/CSP fields, evaluate an oversized/invalid settings update through the public bridge and capture whether it rejects with `IPC request rejected` without crashing the renderer. Then read settings and assert no password-shaped field is returned.
 
-- [ ] **Step 2: Run every gate**
+- [x] **Step 2: Run every gate**
 
 ```powershell
 npm.cmd test
@@ -484,7 +484,7 @@ npm.cmd run dist:win
 
 Expected: all tests pass, both type checks pass, production audit reports zero vulnerabilities, build and Windows packaging exit `0`, and the packaged smoke confirms the bridge remains usable while invalid IPC is rejected and no proxy password is exposed.
 
-- [ ] **Step 3: Record outputs and commit**
+- [x] **Step 3: Record outputs and commit**
 
 Mark all checkboxes complete and append test count, audit result, build result, preload require list, packaged smoke fields, and artifact names. Confirm only the user's `package.json` icon hunk remains unstaged, then commit:
 
@@ -492,3 +492,13 @@ Mark all checkboxes complete and append test count, audit result, build result, 
 git add scripts/verify-release-startup.ps1 docs/superpowers/plans/2026-07-18-ipc-proxy-hardening.md
 git commit -m "test: verify packaged ipc hardening"
 ```
+
+## Verification Results (2026-07-18)
+
+- Tests: `14` files, `55/55` tests passed.
+- Type checks: renderer and Electron TypeScript checks passed.
+- Production audit: `npm@11.18.0 audit --omit=dev` reported `0 vulnerabilities`.
+- Production build: Vite transformed `1,639` modules; renderer and Electron builds completed.
+- Sandboxed preload: compiled `dist-electron/preload/index.cjs` contains only `require("electron")`.
+- Windows packaging: `Outlook Manager 0.1.7.exe` (`79,283,831` bytes) and `Outlook Manager Setup 0.1.7.exe` (`79,458,383` bytes) were generated with the NSIS blockmap.
+- Packaged smoke: bridge/settings readable, invalid IPC rejected, proxy password encrypted through `safeStorage`, no secret field exposed, password input blank, settings modal within viewport, Node globals absent, CSP `object-src 'none'`, database created, and custom icon verified.
