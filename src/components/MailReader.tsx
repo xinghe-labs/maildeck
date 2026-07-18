@@ -1,16 +1,7 @@
-import DOMPurify from "dompurify";
 import { Loader2, Mail } from "lucide-react";
 import type { MailMessageDetail, MailMessageSummary } from "../types";
+import { buildMailHtmlDocument, sanitizeMailHtml } from "../mail-content-security";
 import { addressList, formatDate } from "../ui-utils";
-
-function sanitizeMailHtml(content: string) {
-  return DOMPurify.sanitize(content, {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form", "input", "button", "textarea", "select", "option", "meta", "link", "base"],
-    FORBID_ATTR: ["srcset"],
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|cid):|data:image\/(?:png|gif|jpe?g|webp);base64,)/i
-  });
-}
 
 export function MailReader({
   selectedMessage,
@@ -21,7 +12,8 @@ export function MailReader({
   messageDetail: MailMessageDetail | null;
   loadingDetail: boolean;
 }) {
-  const sanitizedBody = messageDetail?.body.contentType.toLowerCase() === "html" ? sanitizeMailHtml(messageDetail.body.content) : "";
+  const isHtml = messageDetail?.body.contentType.toLowerCase() === "html";
+  const mailDocument = isHtml ? buildMailHtmlDocument(sanitizeMailHtml(messageDetail.body.content)) : "";
 
   return (
     <article className="reader-panel">
@@ -60,8 +52,14 @@ export function MailReader({
 
           <div className="reader-body">
             <div className="mail-paper">
-              {messageDetail.body.contentType.toLowerCase() === "html" ? (
-                <div dangerouslySetInnerHTML={{ __html: sanitizedBody }} />
+              {isHtml ? (
+                <iframe
+                  className="mail-content-frame"
+                  title="邮件正文"
+                  sandbox="allow-popups"
+                  referrerPolicy="no-referrer"
+                  srcDoc={mailDocument}
+                />
               ) : (
                 <pre>{messageDetail.body.content}</pre>
               )}
