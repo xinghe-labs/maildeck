@@ -4,76 +4,80 @@ import type {
   AccountUpdateInput,
   AccountView,
   AppSettings,
+  AppSettingsUpdate,
   GetMessageOptions,
+  IpcEventChannel,
+  IpcInvokeChannel,
   ImportResult,
   ImportPreviewResult,
+  JobKind,
   ListMessagesOptions,
   MailFolder,
   MailListResult,
   MailMessageDetail,
-  MailMessageSummary,
   RefreshManyResult,
   RefreshJobKind,
   TestConnectionResult,
   TestFallbackResult,
   TestManyResult
-} from "../main/types.js";
+} from "../shared/ipc-contracts.js";
+
+function invoke<Output>(channel: IpcInvokeChannel, ...args: unknown[]): Promise<Output> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<Output>;
+}
+
+function onEvent<Payload>(channel: IpcEventChannel, callback: (payload: Payload) => void) {
+  const listener = (_event: Electron.IpcRendererEvent, payload: Payload) => callback(payload);
+  ipcRenderer.on(channel, listener);
+  return () => {
+    ipcRenderer.removeListener(channel, listener);
+  };
+}
 
 const api = {
   accounts: {
-    list: () => ipcRenderer.invoke("accounts:list") as Promise<AccountView[]>,
-    previewImportText: (text: string) => ipcRenderer.invoke("accounts:previewImportText", text) as Promise<ImportPreviewResult>,
-    importText: (text: string) => ipcRenderer.invoke("accounts:importText", text) as Promise<ImportResult>,
-    importFile: () => ipcRenderer.invoke("accounts:importFile") as Promise<ImportResult | null>,
-    upsert: (input: AccountInput) => ipcRenderer.invoke("accounts:upsert", input) as Promise<ImportResult>,
-    update: (input: AccountUpdateInput) => ipcRenderer.invoke("accounts:update", input) as Promise<AccountView>,
-    delete: (accountId: string) => ipcRenderer.invoke("accounts:delete", accountId) as Promise<AccountView[]>,
-    test: (accountId: string) => ipcRenderer.invoke("accounts:test", accountId) as Promise<TestConnectionResult>,
-    testFallback: (accountId: string) => ipcRenderer.invoke("accounts:testFallback", accountId) as Promise<TestFallbackResult>,
-    testMany: (accountIds: string[]) => ipcRenderer.invoke("accounts:testMany", accountIds) as Promise<TestManyResult[]>,
+    list: () => invoke<AccountView[]>("accounts:list"),
+    previewImportText: (text: string) => invoke<ImportPreviewResult>("accounts:previewImportText", text),
+    importText: (text: string) => invoke<ImportResult>("accounts:importText", text),
+    importFile: () => invoke<ImportResult | null>("accounts:importFile"),
+    upsert: (input: AccountInput) => invoke<ImportResult>("accounts:upsert", input),
+    update: (input: AccountUpdateInput) => invoke<AccountView>("accounts:update", input),
+    delete: (accountId: string) => invoke<AccountView[]>("accounts:delete", accountId),
+    test: (accountId: string) => invoke<TestConnectionResult>("accounts:test", accountId),
+    testFallback: (accountId: string) => invoke<TestFallbackResult>("accounts:testFallback", accountId),
+    testMany: (accountIds: string[]) => invoke<TestManyResult[]>("accounts:testMany", accountIds),
     refreshMany: (accountIds: string[], jobKind?: RefreshJobKind) =>
-      ipcRenderer.invoke("mail:refreshMany", accountIds, jobKind) as Promise<RefreshManyResult[]>,
+      jobKind
+        ? invoke<RefreshManyResult[]>("mail:refreshMany", accountIds, jobKind)
+        : invoke<RefreshManyResult[]>("mail:refreshMany", accountIds),
     onRefreshProgress: (
       callback: (
         event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string; metrics?: RefreshManyResult["metrics"] }
       ) => void
     ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string; metrics?: RefreshManyResult["metrics"] }
-      ) => callback(payload);
-      ipcRenderer.on("mail:refreshProgress", listener);
-      return () => {
-        ipcRenderer.removeListener("mail:refreshProgress", listener);
-      };
+      return onEvent("mail:refreshProgress", callback);
     },
     onTestProgress: (
       callback: (event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string }) => void
     ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string }
-      ) => callback(payload);
-      ipcRenderer.on("accounts:testProgress", listener);
-      return () => {
-        ipcRenderer.removeListener("accounts:testProgress", listener);
-      };
+      return onEvent("accounts:testProgress", callback);
     }
   },
   mail: {
-    listFolders: (accountId: string) => ipcRenderer.invoke("mail:listFolders", accountId) as Promise<MailFolder[]>,
-    listMessages: (options: ListMessagesOptions) =>
-      ipcRenderer.invoke("mail:listMessages", options) as Promise<MailListResult>,
-    getMessage: (options: GetMessageOptions) =>
-      ipcRenderer.invoke("mail:getMessage", options) as Promise<MailMessageDetail>,
-    clearCache: (accountId?: string) => ipcRenderer.invoke("mail:clearCache", accountId) as Promise<{ cleared: number | "all" }>
+    listFolders: (accountId: string) => invoke<MailFolder[]>("mail:listFolders", accountId),
+    listMessages: (options: ListMessagesOptions) => invoke<MailListResult>("mail:listMessages", options),
+    getMessage: (options: GetMessageOptions) => invoke<MailMessageDetail>("mail:getMessage", options),
+    clearCache: (accountId?: string) =>
+      accountId
+        ? invoke<{ cleared: number | "all" }>("mail:clearCache", accountId)
+        : invoke<{ cleared: number | "all" }>("mail:clearCache")
   },
   settings: {
-    get: () => ipcRenderer.invoke("settings:get") as Promise<AppSettings>,
-    update: (settings: Partial<AppSettings>) => ipcRenderer.invoke("settings:update", settings) as Promise<AppSettings>
+    get: () => invoke<AppSettings>("settings:get"),
+    update: (settings: AppSettingsUpdate) => invoke<AppSettings>("settings:update", settings)
   },
   jobs: {
-    cancel: (job: "test" | RefreshJobKind) => ipcRenderer.invoke("jobs:cancel", job) as Promise<{ canceled: "test" | RefreshJobKind }>
+    cancel: (job: JobKind) => invoke<{ canceled: JobKind; count: number }>("jobs:cancel", job)
   }
 };
 

@@ -1,6 +1,7 @@
 import { dialog, ipcMain } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { IPC_CHANNELS, IPC_EVENT_CHANNELS } from "../shared/ipc-contracts.js";
 import {
   clearAccountCache,
   clearAllMailCache,
@@ -39,6 +40,7 @@ import type {
   AccountUpdateInput,
   AppErrorCode,
   GetMessageOptions,
+  JobKind,
   ListMessagesOptions,
   MailListResult,
   MailMessageSummary,
@@ -58,8 +60,6 @@ const tokenCache = new Map<
   CachedAccessTokenWithEmail
 >();
 const tokenRefreshes = new Map<string, Promise<CachedAccessTokenWithEmail>>();
-type JobKind = "test" | RefreshJobKind;
-
 const activeJobs = new Map<JobKind, Set<string>>();
 const canceledJobIds = new Set<string>();
 
@@ -492,12 +492,12 @@ async function testHotmailFallback(accountId: string): Promise<TestFallbackResul
 }
 
 export function registerIpcHandlers() {
-  ipcMain.handle("accounts:list", async () => listAccounts());
+  ipcMain.handle(IPC_CHANNELS.accountsList, async () => listAccounts());
 
-  ipcMain.handle("settings:get", async () => getSettings());
+  ipcMain.handle(IPC_CHANNELS.settingsGet, async () => getSettings());
 
   ipcMain.handle(
-    "settings:update",
+    IPC_CHANNELS.settingsUpdate,
     async (
       _event,
       settings: {
@@ -519,23 +519,23 @@ export function registerIpcHandlers() {
     }
   );
 
-  ipcMain.handle("jobs:cancel", async (_event, job: JobKind) => {
+  ipcMain.handle(IPC_CHANNELS.jobsCancel, async (_event, job: JobKind) => {
     return { canceled: job, count: cancelJobs(job) };
   });
 
-  ipcMain.handle("accounts:previewImportText", async (_event, text: string) => {
+  ipcMain.handle(IPC_CHANNELS.accountsPreviewImportText, async (_event, text: string) => {
     const inputs = parseAccountImport(text);
     return previewAccounts(inputs);
   });
 
-  ipcMain.handle("accounts:importText", async (_event, text: string) => {
+  ipcMain.handle(IPC_CHANNELS.accountsImportText, async (_event, text: string) => {
     const inputs = parseAccountImport(text);
     const result = await upsertAccounts(inputs);
     clearTokenCache(result.accounts.map((account) => account.id));
     return result;
   });
 
-  ipcMain.handle("accounts:importFile", async () => {
+  ipcMain.handle(IPC_CHANNELS.accountsImportFile, async () => {
     const result = await dialog.showOpenDialog({
       title: "导入邮箱账号",
       filters: [
@@ -556,26 +556,26 @@ export function registerIpcHandlers() {
     return importResult;
   });
 
-  ipcMain.handle("accounts:upsert", async (_event, input: AccountInput) => {
+  ipcMain.handle(IPC_CHANNELS.accountsUpsert, async (_event, input: AccountInput) => {
     const result = await upsertAccounts([input]);
     clearTokenCache(result.accounts.map((account) => account.id));
     return result;
   });
 
-  ipcMain.handle("accounts:update", async (_event, input: AccountUpdateInput) => {
+  ipcMain.handle(IPC_CHANNELS.accountsUpdate, async (_event, input: AccountUpdateInput) => {
     const account = await updateAccount(input);
     clearTokenCache([account.id]);
     await clearAccountCache(account.id);
     return account;
   });
 
-  ipcMain.handle("accounts:delete", async (_event, accountId: string) => {
+  ipcMain.handle(IPC_CHANNELS.accountsDelete, async (_event, accountId: string) => {
     const accounts = await deleteAccount(accountId);
     clearTokenCache([accountId]);
     return accounts;
   });
 
-  ipcMain.handle("accounts:test", async (_event, accountId: string) => {
+  ipcMain.handle(IPC_CHANNELS.accountsTest, async (_event, accountId: string) => {
     const result = await testAccountConnection(accountId, true);
     return {
       account: result.account,
@@ -585,9 +585,9 @@ export function registerIpcHandlers() {
     };
   });
 
-  ipcMain.handle("accounts:testFallback", async (_event, accountId: string) => testHotmailFallback(accountId));
+  ipcMain.handle(IPC_CHANNELS.accountsTestFallback, async (_event, accountId: string) => testHotmailFallback(accountId));
 
-  ipcMain.handle("accounts:testMany", async (event, accountIds: string[]) => {
+  ipcMain.handle(IPC_CHANNELS.accountsTestMany, async (event, accountIds: string[]) => {
     const jobId = startJob("test");
     const settings = await getSettings();
     let completed = 0;
@@ -601,7 +601,7 @@ export function registerIpcHandlers() {
           completed += 1;
           failed += 1;
           const message = cancelError("test");
-          event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: message });
+          event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: message });
           return { accountId, account: null, ok: false, message, code: "CANCELED" as AppErrorCode };
         }
 
@@ -610,10 +610,10 @@ export function registerIpcHandlers() {
 
         if (result.ok) {
           ok += 1;
-          event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId });
+          event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId });
         } else {
           failed += 1;
-          event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: result.message });
+          event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: result.message });
         }
 
         return result;
@@ -623,7 +623,7 @@ export function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle("mail:listFolders", async (_event, accountId: string) => {
+  ipcMain.handle(IPC_CHANNELS.mailListFolders, async (_event, accountId: string) => {
     const token = await getAccessToken(accountId);
     const settings = await getSettings();
 
@@ -634,7 +634,7 @@ export function registerIpcHandlers() {
     return listMailFolders(token.accessToken, settings.proxyUrl);
   });
 
-  ipcMain.handle("mail:listMessages", async (_event, options: ListMessagesOptions) => {
+  ipcMain.handle(IPC_CHANNELS.mailListMessages, async (_event, options: ListMessagesOptions) => {
     try {
     const search = options.search?.trim() || "";
     const top = options.top || 50;
@@ -778,7 +778,7 @@ export function registerIpcHandlers() {
     }
   });
 
-  ipcMain.handle("mail:getMessage", async (_event, options: GetMessageOptions) => {
+  ipcMain.handle(IPC_CHANNELS.mailGetMessage, async (_event, options: GetMessageOptions) => {
     const settings = await getSettings();
     const isHelperMessage = options.messageId.startsWith("helper:");
     const cached = await getCachedMessageDetail(options.accountId, options.messageId, settings.cacheBodies || isHelperMessage);
@@ -843,7 +843,7 @@ export function registerIpcHandlers() {
     return detail;
   });
 
-  ipcMain.handle("mail:clearCache", async (_event, accountId?: string) => {
+  ipcMain.handle(IPC_CHANNELS.mailClearCache, async (_event, accountId?: string) => {
     if (accountId) {
       await clearAccountCache(accountId);
       return { cleared: 1 };
@@ -853,7 +853,7 @@ export function registerIpcHandlers() {
     return { cleared: "all" };
   });
 
-  ipcMain.handle("mail:refreshMany", async (event, accountIds: string[], requestedJobKind?: RefreshJobKind) => {
+  ipcMain.handle(IPC_CHANNELS.mailRefreshMany, async (event, accountIds: string[], requestedJobKind?: RefreshJobKind) => {
     const jobKind = normalizeRefreshJobKind(requestedJobKind);
     const jobId = startJob(jobKind);
     const appSettings = await getSettings();
@@ -887,7 +887,7 @@ export function registerIpcHandlers() {
           metrics.totalMs = elapsedSince(totalStart);
           ok += 1;
           completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
           return { accountId, ok: true, count: 0, skipped: true, metrics };
         }
 
@@ -897,7 +897,7 @@ export function registerIpcHandlers() {
           const fallback = await finishWithHotmailFallback(accountId, account!, settings, metrics, totalStart, error);
           ok += 1;
           completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
           return { fallback };
         });
         metrics.tokenMs = metrics.tokenMs || elapsedSince(tokenStart);
@@ -951,14 +951,14 @@ export function registerIpcHandlers() {
             metrics.totalMs = elapsedSince(totalStart);
             ok += 1;
             completed += 1;
-            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
             return { accountId, ok: true, count: messages.length, newCount, metrics };
           } catch (error) {
             const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, error);
             const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
             ok += 1;
             completed += 1;
-            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           }
         }
@@ -973,7 +973,7 @@ export function registerIpcHandlers() {
           const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
           ok += 1;
           completed += 1;
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
           return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
         }
 
@@ -985,7 +985,7 @@ export function registerIpcHandlers() {
             const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
             ok += 1;
             completed += 1;
-            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           } catch {
             const stateStart = nowMs();
@@ -998,7 +998,7 @@ export function registerIpcHandlers() {
             metrics.totalMs = elapsedSince(totalStart);
             failed += 1;
             completed += 1;
-            event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND", metrics });
+            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND", metrics });
             return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode, metrics };
           }
         }
@@ -1025,7 +1025,7 @@ export function registerIpcHandlers() {
         metrics.totalMs = elapsedSince(totalStart);
         ok += 1;
         completed += 1;
-        event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
+        event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
         return { accountId, ok: true, count: messages.length, newCount, metrics };
         } catch (error) {
           if (isJobCanceledError(error)) {
@@ -1033,7 +1033,7 @@ export function registerIpcHandlers() {
             failed += 1;
             completed += 1;
             metrics.totalMs = elapsedSince(totalStart);
-            event.sender.send("mail:refreshProgress", {
+            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, {
               completed,
               total,
               ok,
@@ -1063,7 +1063,7 @@ export function registerIpcHandlers() {
           failed += 1;
           completed += 1;
           metrics.totalMs = elapsedSince(totalStart);
-          event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, error: message, code, metrics });
+          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: message, code, metrics });
           return { accountId, ok: false, count: 0, error: message, code, metrics };
         }
       });
