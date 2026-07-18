@@ -65,6 +65,7 @@
     "cross-env": "^7.0.3",
     "electron": "^35.7.5",
     "electron-builder": "26.15.3",
+    "jsdom": "29.1.1",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.10",
