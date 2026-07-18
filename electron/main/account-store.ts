@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { getDatabase, transaction } from "./database.js";
 import { decryptSecret, encryptSecret } from "./token-crypto.js";
+import { resolveRefreshTimestamps } from "./account-refresh-state.js";
 import type { AccountInput, AccountRecord, AccountUpdateInput, AccountView, ImportPreviewResult } from "./types.js";
 
 interface StoreFile {
@@ -566,17 +567,50 @@ export async function updateAccountRefreshState(
     }
 
     const timestamp = nowIso();
+    const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, true);
     const next: AccountRecord = {
       ...account,
       status: values.status,
       lastError: values.lastError,
-      lastCheckedAt: timestamp,
-      lastRefreshedAt: timestamp,
+      lastCheckedAt: refreshTimestamps.lastCheckedAt,
+      lastRefreshedAt: refreshTimestamps.lastRefreshedAt,
       lastInboxCount: values.lastInboxCount,
       lastMailAt: values.lastMailAt,
       lastMailCursor: values.lastMailCursor ?? account.lastMailCursor ?? null,
       inboxFolderId: values.inboxFolderId ?? account.inboxFolderId ?? null,
       graphDeltaLink: values.graphDeltaLink ?? account.graphDeltaLink ?? null,
+      refreshCooldownUntil: values.refreshCooldownUntil ?? account.refreshCooldownUntil ?? null,
+      updatedAt: timestamp
+    };
+
+    insertOrReplaceAccount(next);
+    return toView(next);
+  });
+}
+
+export async function updateAccountRefreshFailure(
+  accountId: string,
+  values: {
+    status: AccountRecord["status"];
+    lastError: string;
+    refreshCooldownUntil?: string | null;
+  }
+): Promise<AccountView> {
+  await migrateLegacyAccountsOnce();
+  return withStoreLock(async () => {
+    const account = getAccountById(accountId);
+    if (!account) {
+      throw new Error("账号不存在");
+    }
+
+    const timestamp = nowIso();
+    const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, false);
+    const next: AccountRecord = {
+      ...account,
+      status: values.status,
+      lastError: values.lastError,
+      lastCheckedAt: refreshTimestamps.lastCheckedAt,
+      lastRefreshedAt: refreshTimestamps.lastRefreshedAt,
       refreshCooldownUntil: values.refreshCooldownUntil ?? account.refreshCooldownUntil ?? null,
       updatedAt: timestamp
     };

@@ -19,6 +19,7 @@ import {
   listAccounts,
   previewAccounts,
   updateAccount,
+  updateAccountRefreshFailure,
   updateAccountRefreshState,
   updateAccountStatus,
   upsertAccounts
@@ -31,6 +32,7 @@ import { countNewMessagesAfterRefresh } from "./mail-refresh-state.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
 import { isJobCanceledError, JobCanceledError } from "./job-errors.js";
+import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
 import type {
   AccessTokenResult,
   AccountInput,
@@ -987,14 +989,9 @@ export function registerIpcHandlers() {
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           } catch {
             const stateStart = nowMs();
-            await updateAccountRefreshState(accountId, {
-              status: "invalid",
+            await updateAccountRefreshFailure(accountId, {
+              status: resolveRefreshFailureStatus(account.status, "MAILBOX_NOT_FOUND"),
               lastError: "未找到收件箱",
-              lastInboxCount: account.lastInboxCount || 0,
-              lastMailAt: account.lastMailAt || null,
-              lastMailCursor: null,
-              inboxFolderId: null,
-              graphDeltaLink: null,
               refreshCooldownUntil: cooldownUntilFor("MAILBOX_NOT_FOUND")
             });
             metrics.stateMs = elapsedSince(stateStart);
@@ -1058,14 +1055,9 @@ export function registerIpcHandlers() {
           }
 
           const { code, message } = normalizeErrorResult(error);
-          await updateAccountRefreshState(accountId, {
-            status: "invalid",
+          await updateAccountRefreshFailure(accountId, {
+            status: resolveRefreshFailureStatus(account?.status || "untested", code),
             lastError: message,
-            lastInboxCount: account?.lastInboxCount || 0,
-            lastMailAt: account?.lastMailAt || null,
-            lastMailCursor: account?.lastMailCursor || null,
-            inboxFolderId: account?.inboxFolderId || null,
-            graphDeltaLink: account?.graphDeltaLink || null,
             refreshCooldownUntil: cooldownUntilFor(code)
           }).catch(() => undefined);
           failed += 1;
