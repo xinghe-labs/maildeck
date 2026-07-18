@@ -40,7 +40,7 @@
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Record the existing no-op type-check behavior**
+- [x] **Step 1: Record the existing no-op type-check behavior**
 
 Run:
 
@@ -51,7 +51,7 @@ $listed.Count
 
 Expected: `0`, proving the root solution config does not check referenced projects.
 
-- [ ] **Step 2: Install Vitest without upgrading unrelated packages**
+- [x] **Step 2: Install Vitest without upgrading unrelated packages**
 
 Run:
 
@@ -61,7 +61,7 @@ npm.cmd install --save-dev vitest@4.1.10 --registry=https://registry.npmjs.org/
 
 Expected: exit code `0`; `package-lock.json` remains lockfile version 3.
 
-- [ ] **Step 3: Add explicit scripts and Vitest configuration**
+- [x] **Step 3: Add explicit scripts and Vitest configuration**
 
 Set these `package.json` scripts while preserving every existing script:
 
@@ -90,7 +90,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 4: Add characterization tests**
+- [x] **Step 4: Add characterization tests**
 
 Create `tests/import-parser.test.ts`:
 
@@ -155,7 +155,7 @@ describe("countNewMessagesAfterRefresh", () => {
 });
 ```
 
-- [ ] **Step 5: Run the baseline tests and both real type checks**
+- [x] **Step 5: Run the baseline tests and both real type checks**
 
 Run:
 
@@ -166,7 +166,7 @@ npm.cmd run typecheck
 
 Expected: all five characterization assertions pass; both TypeScript projects exit `0`.
 
-- [ ] **Step 6: Commit the harness without the user's icon-path hunk**
+- [x] **Step 6: Commit the harness without the user's icon-path hunk**
 
 Stage the new tests, config, lockfile, and only the script/devDependency hunks from `package.json`. Verify `git diff --cached -- package.json` does not include the existing `build.win.icon` change.
 
@@ -187,7 +187,7 @@ git commit -m "test: add verification baseline"
 - Modify: `electron/main/ipc.ts`
 - Modify: `src/App.tsx`
 
-- [ ] **Step 1: Write the failing cancellation test**
+- [x] **Step 1: Write the failing cancellation test**
 
 Create `tests/job-errors.test.ts`:
 
@@ -206,7 +206,7 @@ describe("JobCanceledError", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run:
 
@@ -216,7 +216,7 @@ npm.cmd test -- tests/job-errors.test.ts
 
 Expected: FAIL because `electron/main/job-errors.ts` does not exist.
 
-- [ ] **Step 3: Add the typed cancellation implementation**
+- [x] **Step 3: Add the typed cancellation implementation**
 
 Create `electron/main/job-errors.ts`:
 
@@ -255,7 +255,7 @@ if (isJobCanceledError(error)) {
 
 Use code `CANCELED` for queued batch-test cancellations. Update retry selection and retry-button visibility in `src/App.tsx` to require `!item.ok && !item.canceled`.
 
-- [ ] **Step 4: Run the focused and full tests**
+- [x] **Step 4: Run the focused and full tests**
 
 Run:
 
@@ -267,7 +267,7 @@ npm.cmd run typecheck
 
 Expected: focused test passes, full suite passes, type checks exit `0`.
 
-- [ ] **Step 5: Commit cancellation behavior**
+- [x] **Step 5: Commit cancellation behavior**
 
 ```powershell
 git add electron/main/job-errors.ts electron/main/error-utils.ts electron/main/ipc.ts electron/main/types.ts src/types.ts src/App.tsx tests/job-errors.test.ts
@@ -282,7 +282,7 @@ git commit -m "fix: preserve account state on canceled jobs"
 - Modify: `electron/main/account-store.ts`
 - Modify: `electron/main/ipc.ts`
 
-- [ ] **Step 1: Write the failing timestamp transition tests**
+- [x] **Step 1: Write the failing timestamp transition tests**
 
 Create `tests/account-refresh-state.test.ts`:
 
@@ -313,7 +313,7 @@ describe("resolveRefreshTimestamps", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run:
 
@@ -323,7 +323,7 @@ npm.cmd test -- tests/account-refresh-state.test.ts
 
 Expected: FAIL because `resolveRefreshTimestamps` does not exist.
 
-- [ ] **Step 3: Add the pure transition and failure write path**
+- [x] **Step 3: Add the pure transition and failure write path**
 
 Create `electron/main/account-refresh-state.ts`:
 
@@ -399,7 +399,7 @@ await updateAccountRefreshFailure(accountId, {
 
 Import `resolveRefreshFailureStatus` into `ipc.ts`. Also route the explicit Graph `MAILBOX_NOT_FOUND` failure through `updateAccountRefreshFailure` instead of `updateAccountRefreshState`; a failed mailbox lookup must not advance `lastRefreshedAt`. This keeps `valid` and `untested` accounts unchanged for transient network, parsing, unknown, and cancellation failures while retaining invalid status for credential, permission, and mailbox errors.
 
-- [ ] **Step 4: Run tests and type checks**
+- [x] **Step 4: Run tests and type checks**
 
 Run:
 
@@ -411,7 +411,7 @@ npm.cmd run typecheck
 
 Expected: timestamp tests and full suite pass; type checks exit `0`.
 
-- [ ] **Step 5: Commit refresh timestamp behavior**
+- [x] **Step 5: Commit refresh timestamp behavior**
 
 ```powershell
 git add electron/main/account-refresh-state.ts electron/main/account-store.ts electron/main/ipc.ts tests/account-refresh-state.test.ts
@@ -425,7 +425,7 @@ git commit -m "fix: preserve successful refresh timestamps"
 - Modify: `electron/main/ipc.ts`
 - Modify: `tests/mail-refresh-state.test.ts`
 
-- [ ] **Step 1: Add failing commit-policy tests**
+- [x] **Step 1: Add failing commit-policy tests**
 
 Append to `tests/mail-refresh-state.test.ts`:
 
@@ -444,7 +444,7 @@ describe("shouldCommitMailboxRefreshState", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run:
 
@@ -454,7 +454,7 @@ npm.cmd test -- tests/mail-refresh-state.test.ts
 
 Expected: FAIL because `shouldCommitMailboxRefreshState` is not exported.
 
-- [ ] **Step 3: Implement and use the commit policy**
+- [x] **Step 3: Implement and use the commit policy**
 
 Add to `electron/main/mail-refresh-state.ts`:
 
@@ -472,7 +472,7 @@ if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
 
 Cache page writes remain enabled; only account incremental state is protected.
 
-- [ ] **Step 4: Run tests and type checks**
+- [x] **Step 4: Run tests and type checks**
 
 Run:
 
@@ -484,7 +484,7 @@ npm.cmd run typecheck
 
 Expected: all tests pass and type checks exit `0`.
 
-- [ ] **Step 5: Commit cursor behavior**
+- [x] **Step 5: Commit cursor behavior**
 
 ```powershell
 git add electron/main/mail-refresh-state.ts electron/main/ipc.ts tests/mail-refresh-state.test.ts
@@ -497,7 +497,7 @@ git commit -m "fix: keep pagination from regressing refresh cursors"
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
-- [ ] **Step 1: Capture the failing production audit**
+- [x] **Step 1: Capture the failing production audit**
 
 Run:
 
@@ -507,7 +507,7 @@ npm.cmd audit --omit=dev --json --registry=https://registry.npmjs.org/
 
 Expected: non-zero exit with 4 high and 2 moderate production vulnerability groups before updates.
 
-- [ ] **Step 2: Install only approved compatible versions**
+- [x] **Step 2: Install only approved compatible versions**
 
 Run:
 
@@ -518,7 +518,7 @@ npm.cmd install --save-dev electron-builder@26.15.3 --save-exact --registry=http
 
 Expected: Electron remains on 35.7.5; React, Vite, and TypeScript major versions do not change.
 
-- [ ] **Step 3: Re-run audit and dependency checks**
+- [x] **Step 3: Re-run audit and dependency checks**
 
 Run:
 
@@ -529,7 +529,7 @@ npm.cmd ls dompurify imapflow mailparser undici electron electron-builder
 
 Expected: production audit exits `0`, or any remaining advisory is recorded with the exact dependency path and shipped-code reachability. Installed versions match this task and Electron remains 35.7.5.
 
-- [ ] **Step 4: Run the full baseline**
+- [x] **Step 4: Run the full baseline**
 
 Run:
 
@@ -541,7 +541,7 @@ npm.cmd run build
 
 Expected: tests, both type checks, and production build exit `0`.
 
-- [ ] **Step 5: Commit dependency updates without the user's icon-path hunk**
+- [x] **Step 5: Commit dependency updates without the user's icon-path hunk**
 
 Stage `package-lock.json` and only this task's dependency version hunks from `package.json`. Verify the cached diff excludes `build.win.icon`.
 
@@ -556,7 +556,7 @@ git commit -m "build: patch production dependencies"
 **Files:**
 - Modify only if verification exposes a baseline defect.
 
-- [ ] **Step 1: Build Windows release assets and run the existing isolated startup smoke test**
+- [x] **Step 1: Build Windows release assets and run the existing isolated startup smoke test**
 
 Run:
 
@@ -566,7 +566,7 @@ npm.cmd run dist:win
 
 Expected: Electron Builder produces the portable executable, NSIS installer, and unpacked application; `verify-release-startup.ps1` confirms title, SQLite creation, and icon.
 
-- [ ] **Step 2: Verify artifacts and repository state**
+- [x] **Step 2: Verify artifacts and repository state**
 
 Run:
 
@@ -577,7 +577,7 @@ git status --short
 
 Expected: current release artifacts exist and are non-empty. Only the pre-existing unstaged icon-path change may remain after all planned commits.
 
-- [ ] **Step 3: Record the phase result**
+- [x] **Step 3: Record the phase result**
 
 If every gate passes, update this plan's checkboxes and append a short verification note with test count, audit result, build result, and artifact names. Commit only the plan update:
 
@@ -585,3 +585,15 @@ If every gate passes, update this plan's checkboxes and append a short verificat
 git add docs/superpowers/plans/2026-07-18-verification-security-baseline.md
 git commit -m "docs: record baseline verification"
 ```
+
+## Verification Record (2026-07-18)
+
+- Initial root `tsc --listFiles --noEmit` listed `0` files, confirming the former lint command was a no-op.
+- Vitest `4.1.10`: `5` test files passed, `12` tests passed, `0` failures.
+- Renderer and Electron TypeScript checks both exited `0`.
+- Official-registry production audit: `found 0 vulnerabilities`.
+- Verified direct versions: DOMPurify `3.4.12`, ImapFlow `1.4.7`, Mailparser `3.9.14`, Undici `6.27.0`, Electron Builder `26.15.3`, Electron `35.7.5`.
+- Production build exited `0` with Vite `6.4.2`.
+- Windows release build and startup smoke exited `0`: title `Outlook Manager`, SQLite database created, icon center pixel `ff13514e`.
+- Artifacts: `Outlook Manager 0.1.7.exe` (`78,907,271` bytes), `Outlook Manager Setup 0.1.7.exe` (`79,081,827` bytes), and its blockmap (`84,461` bytes), plus `release/win-unpacked`.
+- Repository state after planned commits contains only the pre-existing unstaged `build.win.icon` path change in `package.json`.
