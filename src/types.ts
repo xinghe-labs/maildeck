@@ -1,5 +1,6 @@
 export type AccountStatus = "untested" | "valid" | "invalid";
 export type AppErrorCode =
+  | "CANCELED"
   | "TOKEN_EXPIRED"
   | "IMAP_AUTH_FAILED"
   | "SCOPE_MISSING"
@@ -138,6 +139,7 @@ export interface RefreshManyResult {
   count: number;
   newCount?: number;
   skipped?: boolean;
+  canceled?: boolean;
   error?: string;
   code?: AppErrorCode;
   metrics?: RefreshMetrics;

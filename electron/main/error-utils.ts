@@ -1,4 +1,5 @@
 import type { AppErrorCode } from "./types.js";
+import { isJobCanceledError } from "./job-errors.js";
 
 export interface NormalizedAppError {
   code: AppErrorCode;
@@ -6,6 +7,10 @@ export interface NormalizedAppError {
 }
 
 export function normalizeError(error: unknown): NormalizedAppError {
+  if (isJobCanceledError(error)) {
+    return { code: "CANCELED", message: error.message };
+  }
+
   const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 

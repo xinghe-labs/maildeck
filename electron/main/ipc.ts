@@ -30,6 +30,7 @@ import { parseAccountImport } from "./import-parser.js";
 import { countNewMessagesAfterRefresh } from "./mail-refresh-state.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
+import { isJobCanceledError, JobCanceledError } from "./job-errors.js";
 import type {
   AccessTokenResult,
   AccountInput,
@@ -599,7 +600,7 @@ export function registerIpcHandlers() {
           failed += 1;
           const message = cancelError("test");
           event.sender.send("accounts:testProgress", { completed, total, ok, failed, accountId, error: message });
-          return { accountId, account: null, ok: false, message, code: "UNKNOWN" as AppErrorCode };
+          return { accountId, account: null, ok: false, message, code: "CANCELED" as AppErrorCode };
         }
 
         const result = await testAccountConnection(accountId, true);
@@ -874,7 +875,7 @@ export function registerIpcHandlers() {
 
         try {
           if (shouldCancel(jobId)) {
-            throw new Error(cancelError(jobKind));
+            throw new JobCanceledError(cancelError(jobKind));
           }
 
         account = await getAccountRecord(accountId);
@@ -1030,6 +1031,32 @@ export function registerIpcHandlers() {
         event.sender.send("mail:refreshProgress", { completed, total, ok, failed, accountId, metrics });
         return { accountId, ok: true, count: messages.length, newCount, metrics };
         } catch (error) {
+          if (isJobCanceledError(error)) {
+            const message = error.message;
+            failed += 1;
+            completed += 1;
+            metrics.totalMs = elapsedSince(totalStart);
+            event.sender.send("mail:refreshProgress", {
+              completed,
+              total,
+              ok,
+              failed,
+              accountId,
+              error: message,
+              code: "CANCELED",
+              metrics
+            });
+            return {
+              accountId,
+              ok: false,
+              canceled: true,
+              count: 0,
+              error: message,
+              code: "CANCELED" as AppErrorCode,
+              metrics
+            };
+          }
+
           const { code, message } = normalizeErrorResult(error);
           await updateAccountRefreshState(accountId, {
             status: "invalid",

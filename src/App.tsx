@@ -647,7 +647,7 @@ export default function App() {
   }
 
   function retryFailedRefresh() {
-    const failedIds = lastRefreshResults.filter((item) => !item.ok).map((item) => item.accountId);
+    const failedIds = lastRefreshResults.filter((item) => !item.ok && !item.canceled).map((item) => item.accountId);
     refreshAccounts(failedIds, "已重试");
   }
 
@@ -882,7 +882,7 @@ export default function App() {
           {bulkProgress ? (
             <div className="progress-line">
               <span>{bulkProgress}</span>
-              {lastRefreshResults.some((item) => !item.ok) ? (
+              {lastRefreshResults.some((item) => !item.ok && !item.canceled) ? (
                 <button type="button" onClick={retryFailedRefresh} disabled={bulkRefreshing}>
                   重试失败
                 </button>
