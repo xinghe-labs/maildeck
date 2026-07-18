@@ -17,7 +17,12 @@
     "preview": "vite preview --host 127.0.0.1",
     "start": "electron .",
     "verify:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release-startup.ps1",
-    "lint": "tsc --noEmit"
+    "typecheck:renderer": "tsc -p tsconfig.app.json --noEmit --pretty false",
+    "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit --pretty false",
+    "typecheck": "npm run typecheck:renderer && npm run typecheck:electron",
+    "lint": "npm run typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "build": {
     "icon": "build/icon.ico",
@@ -62,6 +67,7 @@
     "electron-builder": "^26.8.1",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
+    "vitest": "^4.1.10",
     "wait-on": "^8.0.3"
   }
 }
