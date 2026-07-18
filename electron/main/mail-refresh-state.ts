@@ -23,3 +23,7 @@ export function countNewMessagesAfterRefresh(
 
   return messages.filter((message) => messageTimeMs(message) > refreshTime).length;
 }
+
+export function shouldCommitMailboxRefreshState(options: { search?: string; cursor?: string | null }) {
+  return !options.search?.trim() && !options.cursor;
+}

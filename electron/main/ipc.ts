@@ -28,7 +28,7 @@ import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccess
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled, testHotmailFallbackConnection } from "./hotmail-fallback-client.js";
 import { parseAccountImport } from "./import-parser.js";
-import { countNewMessagesAfterRefresh } from "./mail-refresh-state.js";
+import { countNewMessagesAfterRefresh, shouldCommitMailboxRefreshState } from "./mail-refresh-state.js";
 import { getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
 import { isJobCanceledError, JobCanceledError } from "./job-errors.js";
@@ -689,7 +689,7 @@ export function registerIpcHandlers() {
         );
         const messages = result.messages;
         const nextCursor = nextCursorFor(messages, result.totalCount);
-        if (!search) {
+        if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
           await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
           await updateAccountRefreshState(options.accountId, {
             status: "valid",
@@ -759,7 +759,7 @@ export function registerIpcHandlers() {
     const totalCount = inbox.totalItemCount || messages.length;
     const loadedCount = skip + messages.length;
     const nextCursor = messages.length >= top && loadedCount < totalCount ? String(loadedCount) : null;
-    if (!search) {
+    if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
       await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor);
       await updateAccountRefreshState(options.accountId, {
         status: "valid",
