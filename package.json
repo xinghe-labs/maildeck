@@ -47,13 +47,13 @@
     }
   },
   "dependencies": {
-    "dompurify": "^3.2.6",
-    "imapflow": "^1.1.1",
+    "dompurify": "3.4.12",
+    "imapflow": "1.4.7",
     "lucide-react": "^0.511.0",
-    "mailparser": "^3.7.2",
+    "mailparser": "3.9.14",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "undici": "^6.26.0"
+    "undici": "6.27.0"
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",
@@ -64,7 +64,7 @@
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "electron": "^35.7.5",
-    "electron-builder": "^26.8.1",
+    "electron-builder": "26.15.3",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.10",
