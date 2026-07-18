@@ -498,7 +498,8 @@ git commit -m "test: verify packaged ipc hardening"
 - Tests: `14` files, `55/55` tests passed.
 - Type checks: renderer and Electron TypeScript checks passed.
 - Production audit: `npm@11.18.0 audit --omit=dev` reported `0 vulnerabilities`.
+- Full-tree audit: updated Vite to `6.4.3`, concurrently to `9.2.4`, shell-quote to `1.9.0`, form-data to `4.0.6`, and hasown to `2.0.4`; only the Electron 35 advisory group remains (`1 high`), whose audit remediation requires the intentionally deferred Electron 43 upgrade.
 - Production build: Vite transformed `1,639` modules; renderer and Electron builds completed.
 - Sandboxed preload: compiled `dist-electron/preload/index.cjs` contains only `require("electron")`.
-- Windows packaging: `Outlook Manager 0.1.7.exe` (`79,283,831` bytes) and `Outlook Manager Setup 0.1.7.exe` (`79,458,383` bytes) were generated with the NSIS blockmap.
+- Windows packaging: `Outlook Manager 0.1.7.exe` (`79,283,829` bytes) and `Outlook Manager Setup 0.1.7.exe` (`79,458,385` bytes) were generated with the NSIS blockmap.
 - Packaged smoke: bridge/settings readable, invalid IPC rejected, proxy password encrypted through `safeStorage`, no secret field exposed, password input blank, settings modal within viewport, Node globals absent, CSP `object-src 'none'`, database created, and custom icon verified.
