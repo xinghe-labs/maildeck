@@ -1,26 +1,22 @@
 import { app } from "electron";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AppSettings } from "./types.js";
+import type { AppSettings, AppSettingsUpdate } from "../shared/ipc-contracts.js";
+import {
+  applySettingsUpdate,
+  createDefaultSettingsFile,
+  migrateSettingsFile,
+  projectPublicSettings,
+  projectRuntimeSettings,
+  type RuntimeAppSettings,
+  type SettingsCrypto,
+  type SettingsFileV2
+} from "./settings-model.js";
+import { decryptSecret, encryptSecret } from "./token-crypto.js";
 
-const SETTINGS_VERSION = 1;
-
-interface SettingsFile {
-  version: number;
-  settings: AppSettings;
-}
-
-const defaultSettings: AppSettings = {
-  cacheMessages: true,
-  cacheBodies: true,
-  proxyUrl: "",
-  proxyUsername: "",
-  proxyHasPassword: false,
-  proxySupported: true,
-  batchConcurrency: 4,
-  hotmailFallbackEnabled: true,
-  autoRefreshEnabled: false,
-  autoRefreshIntervalMinutes: 10
+const settingsCrypto: SettingsCrypto = {
+  encrypt: encryptSecret,
+  decrypt: decryptSecret
 };
 
 let settingsQueue = Promise.resolve();
@@ -45,50 +41,30 @@ function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
-function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
-  const batchConcurrency = Number(input?.batchConcurrency);
-  const autoRefreshIntervalMinutes = Number(input?.autoRefreshIntervalMinutes);
-  const legacyInput = input as Partial<AppSettings> & {
-    hotmailHelperFallbackEnabled?: boolean;
-  };
-
-  return {
-    cacheMessages: input?.cacheMessages !== false,
-    cacheBodies: input?.cacheBodies !== false,
-    proxyUrl: input?.proxyUrl?.trim() || "",
-    proxyUsername: input?.proxyUsername?.trim() || "",
-    proxyHasPassword: input?.proxyHasPassword === true,
-    proxySupported: input?.proxySupported !== false,
-    batchConcurrency: Number.isFinite(batchConcurrency) ? Math.min(Math.max(Math.round(batchConcurrency), 1), 12) : 4,
-    hotmailFallbackEnabled: input?.hotmailFallbackEnabled ?? legacyInput.hotmailHelperFallbackEnabled ?? true,
-    autoRefreshEnabled: input?.autoRefreshEnabled === true,
-    autoRefreshIntervalMinutes: Number.isFinite(autoRefreshIntervalMinutes)
-      ? Math.min(Math.max(Math.round(autoRefreshIntervalMinutes), 1), 120)
-      : 10
-  };
-}
-
-async function readSettingsFile(): Promise<SettingsFile> {
+async function readSettingsFile(): Promise<{ file: SettingsFileV2; migrated: boolean }> {
+  let raw: string;
   try {
-    const raw = await readFile(getSettingsPath(), "utf8");
-    const parsed = JSON.parse(raw) as Partial<SettingsFile>;
-    return {
-      version: parsed.version || SETTINGS_VERSION,
-      settings: normalizeSettings(parsed.settings)
-    };
+    raw = await readFile(getSettingsPath(), "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
-      return {
-        version: SETTINGS_VERSION,
-        settings: defaultSettings
-      };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { file: createDefaultSettingsFile(), migrated: false };
     }
-
     throw error;
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return { file: createDefaultSettingsFile(), migrated: false };
+    }
+    throw error;
+  }
+  return migrateSettingsFile(parsed, settingsCrypto);
 }
 
-async function writeSettingsFile(file: SettingsFile) {
+async function writeSettingsFile(file: SettingsFileV2) {
   const filePath = getSettingsPath();
   const tempPath = `${filePath}.tmp`;
   await mkdir(path.dirname(filePath), { recursive: true });
@@ -96,20 +72,32 @@ async function writeSettingsFile(file: SettingsFile) {
   await rename(tempPath, filePath);
 }
 
-export async function getSettings(): Promise<AppSettings> {
-  const file = await readSettingsFile();
-  return file.settings;
+async function readAndPersistMigration() {
+  const result = await readSettingsFile();
+  if (result.migrated) {
+    await writeSettingsFile(result.file);
+  }
+  return result.file;
 }
 
-export async function updateSettings(next: Partial<AppSettings>): Promise<AppSettings> {
+export async function getSettings(): Promise<RuntimeAppSettings> {
+  return withSettingsLock(async () => projectRuntimeSettings(await readAndPersistMigration(), settingsCrypto));
+}
+
+export async function getPublicSettings(): Promise<AppSettings> {
+  return withSettingsLock(async () => projectPublicSettings(await readAndPersistMigration()));
+}
+
+export async function updateSettings(
+  next: AppSettingsUpdate
+): Promise<{ settings: AppSettings; proxyChanged: boolean }> {
   return withSettingsLock(async () => {
-    const file = await readSettingsFile();
-    file.settings = normalizeSettings({
-      ...file.settings,
-      ...next
-    });
-    file.version = SETTINGS_VERSION;
-    await writeSettingsFile(file);
-    return file.settings;
+    const { file } = await readSettingsFile();
+    const updated = applySettingsUpdate(file, next, settingsCrypto);
+    await writeSettingsFile(updated.file);
+    return {
+      settings: projectPublicSettings(updated.file),
+      proxyChanged: updated.proxyChanged
+    };
   });
 }

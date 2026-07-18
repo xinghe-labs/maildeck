@@ -281,10 +281,10 @@ export const appSettingsUpdateSchema = z.strictObject({
   proxyUsername: z.string().trim().max(256).optional(),
   proxyPassword: z.string().max(2_048).optional(),
   clearProxyPassword: z.boolean().optional(),
-  batchConcurrency: z.number().int().min(1).max(32).optional(),
+  batchConcurrency: z.number().int().min(1).max(12).optional(),
   hotmailFallbackEnabled: z.boolean().optional(),
   autoRefreshEnabled: z.boolean().optional(),
-  autoRefreshIntervalMinutes: z.number().int().min(1).max(1_440).optional()
+  autoRefreshIntervalMinutes: z.number().int().min(1).max(120).optional()
 });
 
 export type AppSettingsUpdate = z.input<typeof appSettingsUpdateSchema>;

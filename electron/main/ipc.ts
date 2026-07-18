@@ -30,7 +30,7 @@ import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } f
 import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled, testHotmailFallbackConnection } from "./hotmail-fallback-client.js";
 import { parseAccountImport } from "./import-parser.js";
 import { countNewMessagesAfterRefresh, shouldCommitMailboxRefreshState } from "./mail-refresh-state.js";
-import { getSettings, updateSettings } from "./settings-store.js";
+import { getPublicSettings, getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
 import { isJobCanceledError, JobCanceledError } from "./job-errors.js";
 import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
@@ -486,20 +486,20 @@ async function testHotmailFallback(accountId: string): Promise<TestFallbackResul
 export function registerIpcHandlers() {
   handleValidated(IPC_CHANNELS.accountsList, IPC_REQUEST_SCHEMAS.accountsList, async () => listAccounts());
 
-  handleValidated(IPC_CHANNELS.settingsGet, IPC_REQUEST_SCHEMAS.getSettings, async () => getSettings());
+  handleValidated(IPC_CHANNELS.settingsGet, IPC_REQUEST_SCHEMAS.getSettings, async () => getPublicSettings());
 
   handleValidated(
     IPC_CHANNELS.settingsUpdate,
     IPC_REQUEST_SCHEMAS.updateSettings,
     async (_event, settings) => {
       const next = await updateSettings(settings);
-      if (settings.proxyUrl !== undefined) {
+      if (next.proxyChanged) {
         tokenCache.clear();
         tokenRefreshes.clear();
         clearPersistedAccessTokens();
         closeProxyDispatchers();
       }
-      return next;
+      return next.settings;
     }
   );
 
