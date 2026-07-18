@@ -1,17 +1,23 @@
 import type { AppErrorCode } from "./types.js";
 import { isJobCanceledError } from "./job-errors.js";
+import { redactProxyCredentials } from "../shared/proxy-security.js";
 
 export interface NormalizedAppError {
   code: AppErrorCode;
   message: string;
 }
 
+export function formatErrorForLog(error: unknown): string {
+  const output = error instanceof Error ? error.stack || error.message : String(error);
+  return redactProxyCredentials(output);
+}
+
 export function normalizeError(error: unknown): NormalizedAppError {
+  const message = redactProxyCredentials(error instanceof Error ? error.message : String(error));
   if (isJobCanceledError(error)) {
-    return { code: "CANCELED", message: error.message };
+    return { code: "CANCELED", message };
   }
 
-  const message = error instanceof Error ? error.message : String(error);
   const lower = message.toLowerCase();
 
   if (message.includes("AADSTS7000012") || lower.includes("different tenant")) {

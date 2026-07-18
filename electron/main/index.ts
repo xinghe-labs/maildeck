@@ -2,6 +2,7 @@ import { app, BrowserWindow } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
+import { formatErrorForLog } from "./error-utils.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
@@ -25,21 +26,21 @@ function isRecoverableNetworkError(error: unknown) {
 
 process.on("uncaughtException", (error) => {
   if (isRecoverableNetworkError(error)) {
-    console.warn("Suppressed recoverable network exception", error);
+    console.warn("Suppressed recoverable network exception", formatErrorForLog(error));
     return;
   }
 
-  console.error("Uncaught exception", error);
+  console.error("Uncaught exception", formatErrorForLog(error));
   app.exit(1);
 });
 
 process.on("unhandledRejection", (reason) => {
   if (isRecoverableNetworkError(reason)) {
-    console.warn("Suppressed recoverable network rejection", reason);
+    console.warn("Suppressed recoverable network rejection", formatErrorForLog(reason));
     return;
   }
 
-  console.error("Unhandled rejection", reason);
+  console.error("Unhandled rejection", formatErrorForLog(reason));
 });
 
 if (process.env.OUTLOOK_MANAGER_USER_DATA_DIR) {
