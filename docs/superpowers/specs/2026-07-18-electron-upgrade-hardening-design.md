@@ -6,6 +6,8 @@ Direction approved on 2026-07-18: keep Electron and React, upgrade and harden th
 
 This document defines the implementation scope that must be reviewed before code changes begin.
 
+Implementation note (2026-08-05): the first Refresh Coordinator slice now owns job registration, queued cancellation, and per-account serialization for test and refresh entry points. Credential generations for import/upsert and proxy changes, a global cross-job concurrency limit, and AbortController propagation for work already in progress remain Phase 5 work.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.

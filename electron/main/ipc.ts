@@ -1,5 +1,4 @@
 import { dialog } from "electron";
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { IPC_CHANNELS, IPC_EVENT_CHANNELS, IPC_REQUEST_SCHEMAS, parseIpcRequest } from "../shared/ipc-contracts.js";
 import {
@@ -32,8 +31,8 @@ import { parseAccountImport } from "./import-parser.js";
 import { countNewMessagesAfterRefresh, shouldCommitMailboxRefreshState } from "./mail-refresh-state.js";
 import { getPublicSettings, getSettings, updateSettings } from "./settings-store.js";
 import { normalizeError } from "./error-utils.js";
-import { isJobCanceledError, JobCanceledError } from "./job-errors.js";
 import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
+import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { handleValidated } from "./validated-ipc.js";
 import type {
   AccessTokenResult,
@@ -56,8 +55,7 @@ const tokenCache = new Map<
   CachedAccessTokenWithEmail
 >();
 const tokenRefreshes = new Map<string, Promise<CachedAccessTokenWithEmail>>();
-const activeJobs = new Map<JobKind, Set<string>>();
-const canceledJobIds = new Set<string>();
+const refreshCoordinator = new RefreshCoordinator();
 
 async function refreshAndCacheAccessToken(accountId: string): Promise<CachedAccessTokenWithEmail> {
   const account = await getAccountRecord(accountId);
@@ -158,37 +156,6 @@ function maxCursorFor(messages: MailMessageSummary[]) {
       .filter((value) => Number.isFinite(value) && value > 0)
       .sort((a, b) => b - a)[0]?.toString() || null
   );
-}
-
-function startJob(kind: JobKind) {
-  const jobId = randomUUID();
-  const jobs = activeJobs.get(kind) || new Set<string>();
-  jobs.add(jobId);
-  activeJobs.set(kind, jobs);
-  return jobId;
-}
-
-function finishJob(kind: JobKind, jobId: string) {
-  const jobs = activeJobs.get(kind);
-  jobs?.delete(jobId);
-  canceledJobIds.delete(jobId);
-
-  if (jobs && jobs.size === 0) {
-    activeJobs.delete(kind);
-  }
-}
-
-function cancelJobs(kind: JobKind) {
-  const jobs = activeJobs.get(kind) || new Set<string>();
-  for (const jobId of jobs) {
-    canceledJobIds.add(jobId);
-  }
-
-  return jobs.size;
-}
-
-function shouldCancel(jobId: string) {
-  return canceledJobIds.has(jobId);
 }
 
 function cancelError(job: JobKind) {
@@ -504,7 +471,7 @@ export function registerIpcHandlers() {
   );
 
   handleValidated(IPC_CHANNELS.jobsCancel, IPC_REQUEST_SCHEMAS.cancelJob, async (_event, job) => {
-    return { canceled: job, count: cancelJobs(job) };
+    return { canceled: job, count: refreshCoordinator.cancel(job) };
   });
 
   handleValidated(IPC_CHANNELS.accountsPreviewImportText, IPC_REQUEST_SCHEMAS.importText, async (_event, text) => {
@@ -547,20 +514,24 @@ export function registerIpcHandlers() {
   });
 
   handleValidated(IPC_CHANNELS.accountsUpdate, IPC_REQUEST_SCHEMAS.updateAccount, async (_event, input) => {
-    const account = await updateAccount(input);
-    clearTokenCache([account.id]);
-    await clearAccountCache(account.id);
-    return account;
+    return refreshCoordinator.runAccount(input.id, async () => {
+      const account = await updateAccount(input);
+      clearTokenCache([account.id]);
+      await clearAccountCache(account.id);
+      return account;
+    });
   });
 
   handleValidated(IPC_CHANNELS.accountsDelete, IPC_REQUEST_SCHEMAS.deleteAccount, async (_event, accountId) => {
-    const accounts = await deleteAccount(accountId);
-    clearTokenCache([accountId]);
-    return accounts;
+    return refreshCoordinator.runAccount(accountId, async () => {
+      const accounts = await deleteAccount(accountId);
+      clearTokenCache([accountId]);
+      return accounts;
+    });
   });
 
   handleValidated(IPC_CHANNELS.accountsTest, IPC_REQUEST_SCHEMAS.testAccount, async (_event, accountId) => {
-    const result = await testAccountConnection(accountId, true);
+    const result = await refreshCoordinator.runAccount(accountId, () => testAccountConnection(accountId, true));
     return {
       account: result.account,
       ok: result.ok,
@@ -570,43 +541,44 @@ export function registerIpcHandlers() {
   });
 
   handleValidated(IPC_CHANNELS.accountsTestFallback, IPC_REQUEST_SCHEMAS.testFallback, async (_event, accountId) =>
-    testHotmailFallback(accountId)
+    refreshCoordinator.runAccount(accountId, () => testHotmailFallback(accountId))
   );
 
   handleValidated(IPC_CHANNELS.accountsTestMany, IPC_REQUEST_SCHEMAS.testMany, async (event, accountIds) => {
-    const jobId = startJob("test");
-    const settings = await getSettings();
-    let completed = 0;
-    let ok = 0;
-    let failed = 0;
-    const total = accountIds.length;
+    return refreshCoordinator.runJob("test", async (job) => {
+      const settings = await getSettings();
+      let completed = 0;
+      let ok = 0;
+      let failed = 0;
+      const total = accountIds.length;
 
-    try {
-      return await runLimited(accountIds, resolveBatchLimit(settings.batchConcurrency, total), async (accountId) => {
-        if (shouldCancel(jobId)) {
-          completed += 1;
-          failed += 1;
-          const message = cancelError("test");
-          event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: message });
-          return { accountId, account: null, ok: false, message, code: "CANCELED" as AppErrorCode };
-        }
+      return runLimited(accountIds, resolveBatchLimit(settings.batchConcurrency, total), (accountId) =>
+        job.runAccount(
+          accountId,
+          async () => {
+            const result = await testAccountConnection(accountId, true);
+            completed += 1;
 
-        const result = await testAccountConnection(accountId, true);
-        completed += 1;
+            if (result.ok) {
+              ok += 1;
+              event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId });
+            } else {
+              failed += 1;
+              event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: result.message });
+            }
 
-        if (result.ok) {
-          ok += 1;
-          event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId });
-        } else {
-          failed += 1;
-          event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: result.message });
-        }
-
-        return result;
-      });
-    } finally {
-      finishJob("test", jobId);
-    }
+            return result;
+          },
+          () => {
+            completed += 1;
+            failed += 1;
+            const message = cancelError("test");
+            event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: message });
+            return { accountId, account: null, ok: false, message, code: "CANCELED" as AppErrorCode };
+          }
+        )
+      );
+    });
   });
 
   handleValidated(IPC_CHANNELS.mailListFolders, IPC_REQUEST_SCHEMAS.listFolders, async (_event, accountId) => {
@@ -620,7 +592,8 @@ export function registerIpcHandlers() {
     return listMailFolders(token.accessToken, settings.proxyUrl);
   });
 
-  handleValidated(IPC_CHANNELS.mailListMessages, IPC_REQUEST_SCHEMAS.listMessages, async (_event, options) => {
+  handleValidated(IPC_CHANNELS.mailListMessages, IPC_REQUEST_SCHEMAS.listMessages, (_event, options) =>
+    refreshCoordinator.runAccount(options.accountId, async () => {
     try {
     const search = options.search?.trim() || "";
     const top = options.top || 50;
@@ -762,7 +735,8 @@ export function registerIpcHandlers() {
       const { message } = normalizeErrorResult(error);
       throw new Error(message);
     }
-  });
+    })
+  );
 
   handleValidated(IPC_CHANNELS.mailGetMessage, IPC_REQUEST_SCHEMAS.getMessage, async (_event, options) => {
     const settings = await getSettings();
@@ -841,17 +815,39 @@ export function registerIpcHandlers() {
 
   handleValidated(IPC_CHANNELS.mailRefreshMany, IPC_REQUEST_SCHEMAS.refreshMany, async (event, request) => {
     const { accountIds, jobKind } = request;
-    const jobId = startJob(jobKind);
-    const appSettings = await getSettings();
-    let completed = 0;
-    let ok = 0;
-    let failed = 0;
-    const total = accountIds.length;
-
-    try {
+    return refreshCoordinator.runJob(jobKind, async (job) => {
+      const appSettings = await getSettings();
+      let completed = 0;
+      let ok = 0;
+      let failed = 0;
+      const total = accountIds.length;
       const batchLimit = resolveBatchLimit(appSettings.batchConcurrency, total);
-      const results = await runLimited(accountIds, batchLimit, async (accountId) => {
-        let account: Awaited<ReturnType<typeof getAccountRecord>> | null = null;
+      const canceledResult = (accountId: string, metrics: RefreshMetrics, totalStart: number) => {
+        const message = cancelError(jobKind);
+        failed += 1;
+        completed += 1;
+        metrics.totalMs = elapsedSince(totalStart);
+        event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, {
+          completed,
+          total,
+          ok,
+          failed,
+          accountId,
+          error: message,
+          code: "CANCELED",
+          metrics
+        });
+        return {
+          accountId,
+          ok: false,
+          canceled: true,
+          count: 0,
+          error: message,
+          code: "CANCELED" as AppErrorCode,
+          metrics
+        };
+      };
+      const results = await runLimited(accountIds, batchLimit, (accountId) => {
         const metrics: RefreshMetrics = {
           tokenMs: 0,
           mailMs: 0,
@@ -860,12 +856,10 @@ export function registerIpcHandlers() {
           totalMs: 0
         };
         const totalStart = nowMs();
+        return job.runAccount(accountId, async () => {
+        let account: Awaited<ReturnType<typeof getAccountRecord>> | null = null;
 
         try {
-          if (shouldCancel(jobId)) {
-            throw new JobCanceledError(cancelError(jobKind));
-          }
-
         account = await getAccountRecord(accountId);
         const settings = appSettings;
 
@@ -1014,32 +1008,6 @@ export function registerIpcHandlers() {
         event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
         return { accountId, ok: true, count: messages.length, newCount, metrics };
         } catch (error) {
-          if (isJobCanceledError(error)) {
-            const message = error.message;
-            failed += 1;
-            completed += 1;
-            metrics.totalMs = elapsedSince(totalStart);
-            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, {
-              completed,
-              total,
-              ok,
-              failed,
-              accountId,
-              error: message,
-              code: "CANCELED",
-              metrics
-            });
-            return {
-              accountId,
-              ok: false,
-              canceled: true,
-              count: 0,
-              error: message,
-              code: "CANCELED" as AppErrorCode,
-              metrics
-            };
-          }
-
           const { code, message } = normalizeErrorResult(error);
           await updateAccountRefreshFailure(accountId, {
             status: resolveRefreshFailureStatus(account?.status || "untested", code),
@@ -1052,6 +1020,7 @@ export function registerIpcHandlers() {
           event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: message, code, metrics });
           return { accountId, ok: false, count: 0, error: message, code, metrics };
         }
+        }, () => canceledResult(accountId, metrics, totalStart));
       });
       const slowest = results
         .filter((result) => result.metrics)
@@ -1071,8 +1040,6 @@ export function registerIpcHandlers() {
         slowest
       });
       return results;
-    } finally {
-      finishJob(jobKind, jobId);
-    }
+    });
   });
 }
