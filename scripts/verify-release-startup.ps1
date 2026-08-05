@@ -35,15 +35,54 @@ $process = Start-Process `
   -WindowStyle Hidden
 
 try {
-  Start-Sleep -Seconds 6
-  if ($process.HasExited) {
-    throw "Outlook Manager exited during startup with code $($process.ExitCode)."
-  }
+  $StartupDeadline = (Get-Date).AddSeconds(30)
+  $page = $null
+  do {
+    if ($process.HasExited) {
+      throw "Outlook Manager exited during startup with code $($process.ExitCode)."
+    }
 
-  $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 5
-  $page = $targets | Where-Object { $_.type -eq "page" } | Select-Object -First 1
+    try {
+      $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2
+      $page = $targets |
+        Where-Object { $_.type -eq "page" -and $_.title -eq "Outlook Manager" } |
+        Select-Object -First 1
+    } catch {
+      $page = $null
+    }
+
+    if (-not $page) {
+      Start-Sleep -Milliseconds 500
+    }
+  } while (-not $page -and (Get-Date) -lt $StartupDeadline)
+
   if (-not $page) {
     throw "No browser page target was exposed by the release executable."
+  }
+
+  $RendererDeadline = (Get-Date).AddSeconds(30)
+  $rendererReady = $false
+  $readyExpression = @'
+document.readyState === 'complete' &&
+  typeof window.outlookManager?.settings?.get === 'function' &&
+  Boolean(document.querySelector('.sidebar-actions .square-button:last-child'))
+'@
+  do {
+    if ($process.HasExited) {
+      throw "Outlook Manager exited before the renderer became ready with code $($process.ExitCode)."
+    }
+
+    $readyJson = & node (Join-Path $Root "scripts\evaluate-cdp.mjs") $page.webSocketDebuggerUrl $readyExpression
+    if ($LASTEXITCODE -eq 0) {
+      $rendererReady = $readyJson | ConvertFrom-Json
+    }
+    if (-not $rendererReady) {
+      Start-Sleep -Milliseconds 500
+    }
+  } while (-not $rendererReady -and (Get-Date) -lt $RendererDeadline)
+
+  if (-not $rendererReady) {
+    throw "Renderer bridge and settings controls did not become ready."
   }
 
   $securityExpression = @'

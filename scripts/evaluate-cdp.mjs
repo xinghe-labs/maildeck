@@ -9,7 +9,7 @@ const socket = new WebSocket(endpointUrl);
 
 function withTimeout(promise) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("CDP operation timed out")), 10_000);
+    const timer = setTimeout(() => reject(new Error("CDP operation timed out")), 30_000);
     promise.then(
       (value) => {
         clearTimeout(timer);
