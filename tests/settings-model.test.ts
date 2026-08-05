@@ -127,4 +127,49 @@ describe("settings v2 model", () => {
     });
     expect(projectRuntimeSettings(updated.file, crypto).proxyUrl).toBe("");
   });
+
+  it("does not treat re-encryption of the same proxy password as a proxy change", () => {
+    let nonce = 0;
+    const randomizedCrypto: SettingsCrypto = {
+      encrypt: (value) => `encrypted:${nonce += 1}:${Buffer.from(value, "utf8").toString("base64")}`,
+      decrypt: (value) => Buffer.from(value.split(":").at(-1) || "", "base64").toString("utf8")
+    };
+    const { file } = migrateSettingsFile(
+      v1Settings("http://alice:secret@proxy.example:8080"),
+      randomizedCrypto
+    );
+
+    const updated = applySettingsUpdate(
+      file,
+      {
+        proxyUrl: "http://proxy.example:8080",
+        proxyUsername: "alice",
+        proxyPassword: "secret"
+      },
+      randomizedCrypto
+    );
+
+    expect(updated.proxyChanged).toBe(false);
+  });
+
+  it("allows replacing a proxy password when the old ciphertext can no longer be decrypted", () => {
+    const { file } = migrateSettingsFile(v1Settings("http://alice:secret@proxy.example:8080"), crypto);
+    const damagedFile = {
+      ...file,
+      proxy: file.proxy ? { ...file.proxy, encryptedPassword: "damaged-ciphertext" } : null
+    };
+    const recoveryCrypto: SettingsCrypto = {
+      encrypt: (value) => `recovered:${Buffer.from(value, "utf8").toString("base64")}`,
+      decrypt: () => {
+        throw new Error("ciphertext is unavailable for this OS user");
+      }
+    };
+
+    const updated = applySettingsUpdate(damagedFile, { proxyPassword: "replacement-secret" }, recoveryCrypto);
+
+    expect(updated.proxyChanged).toBe(true);
+    expect(updated.file.proxy?.encryptedPassword).toBe(
+      `recovered:${Buffer.from("replacement-secret", "utf8").toString("base64")}`
+    );
+  });
 });

@@ -10,12 +10,13 @@ import {
   saveCachedMessageDetail,
   saveCachedMessages
 } from "./mail-cache.js";
-import { clearPersistedAccessTokens, getPersistedAccessToken, savePersistedAccessToken } from "./access-token-cache.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import {
+  assertAccountCredentialGeneration,
   deleteAccount,
+  findAccountIdsByEmails,
+  getAccountCredentials,
   getAccountRecord,
-  getRefreshToken,
   listAccounts,
   previewAccounts,
   updateAccount,
@@ -33,9 +34,10 @@ import { getPublicSettings, getSettings, updateSettings } from "./settings-store
 import { normalizeError } from "./error-utils.js";
 import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
 import { RefreshCoordinator } from "./refresh-coordinator.js";
+import { AccessTokenManager } from "./access-token-manager.js";
+import { credentialGenerations } from "./credential-generations.js";
 import { handleValidated } from "./validated-ipc.js";
 import type {
-  AccessTokenResult,
   AppErrorCode,
   JobKind,
   MailListResult,
@@ -45,79 +47,24 @@ import type {
   TestManyResult
 } from "./types.js";
 
-type CachedAccessTokenWithEmail = AccessTokenResult & {
-  email: string;
-  expiresAt: number;
-};
-
-const tokenCache = new Map<
-  string,
-  CachedAccessTokenWithEmail
->();
-const tokenRefreshes = new Map<string, Promise<CachedAccessTokenWithEmail>>();
 const refreshCoordinator = new RefreshCoordinator();
-
-async function refreshAndCacheAccessToken(accountId: string): Promise<CachedAccessTokenWithEmail> {
-  const account = await getAccountRecord(accountId);
-  const refreshToken = await getRefreshToken(accountId);
-  const settings = await getSettings();
-  const token = await refreshAccessToken(account.clientId, refreshToken, settings.proxyUrl);
-  const expiresAt = Date.now() + Math.max((token.expiresIn || 300) - 60, 60) * 1000;
-
-  if (token.refreshToken) {
-    await updateAccountStatus(accountId, "valid", null, token.refreshToken);
+const ACCOUNT_MUTATION_LOCK = Symbol("account-mutation");
+const accessTokenManager = new AccessTokenManager({
+  generations: credentialGenerations,
+  loadCredentials: getAccountCredentials,
+  loadProxyUrl: async () => (await getSettings()).proxyUrl,
+  requestAccessToken: refreshAccessToken,
+  assertCredentialGeneration: assertAccountCredentialGeneration,
+  commitRefreshToken: async (accountId, expectedCredentialGeneration, refreshToken, assertCurrent) => {
+    await updateAccountStatus(accountId, "valid", null, refreshToken, {
+      expectedCredentialGeneration,
+      assertCurrent
+    });
   }
+});
 
-  const result = {
-    ...token,
-    email: account.email,
-    expiresAt
-  };
-
-  tokenCache.set(accountId, result);
-  savePersistedAccessToken(accountId, token, expiresAt);
-  return result;
-}
-
-async function getAccessToken(accountId: string, forceRefresh = false): Promise<AccessTokenResult & { email: string }> {
-  const cached = tokenCache.get(accountId);
-  if (!forceRefresh && cached && cached.expiresAt > Date.now() + 30_000) {
-    return cached;
-  }
-
-  const account = await getAccountRecord(accountId);
-
-  if (!forceRefresh) {
-    const persisted = getPersistedAccessToken(accountId);
-    if (persisted) {
-      const result = {
-        ...persisted,
-        email: account.email
-      };
-      tokenCache.set(accountId, result);
-      return result;
-    }
-  }
-
-  const pending = tokenRefreshes.get(accountId);
-  if (pending) {
-    return pending;
-  }
-
-  const refresh = refreshAndCacheAccessToken(accountId).finally(() => {
-    tokenRefreshes.delete(accountId);
-  });
-  tokenRefreshes.set(accountId, refresh);
-  return refresh;
-}
-
-function clearTokenCache(accountIds: string[]) {
-  for (const accountId of accountIds) {
-    tokenCache.delete(accountId);
-    tokenRefreshes.delete(accountId);
-  }
-
-  clearPersistedAccessTokens(accountIds);
+function getAccessToken(accountId: string, forceRefresh = false) {
+  return accessTokenManager.getAccessToken(accountId, forceRefresh);
 }
 
 function latestMailTime(messages: Array<{ receivedDateTime: string | null; sentDateTime: string | null }>) {
@@ -244,23 +191,36 @@ async function cacheHotmailFallbackResult(
   await Promise.all(result.details.map((detail) => saveCachedMessageDetail(accountId, detail, true)));
 }
 
+async function loadCredentialContext(accountId: string) {
+  const snapshot = credentialGenerations.capture(accountId);
+  const [credentials, settings] = await Promise.all([getAccountCredentials(accountId), getSettings()]);
+  credentialGenerations.assertCurrent(snapshot);
+  return { snapshot, credentials, settings };
+}
+
 async function fetchHotmailFallback(
   accountId: string,
-  account: Awaited<ReturnType<typeof getAccountRecord>>,
-  settings: Awaited<ReturnType<typeof getSettings>>,
   top: number,
   cause: unknown
 ) {
+  const context = await loadCredentialContext(accountId);
+  const { credentials, settings, snapshot } = context;
   if (!isHotmailFallbackEnabled(settings)) {
     throw cause;
   }
 
-  const refreshToken = await getRefreshToken(accountId);
-  const result = await fetchHotmailFallbackMessages(settings, account, refreshToken, top);
+  const result = await fetchHotmailFallbackMessages(settings, credentials.account, credentials.refreshToken, top);
+  credentialGenerations.assertCurrent(snapshot);
+  await assertAccountCredentialGeneration(accountId, credentials.credentialGeneration);
 
   if (result.nextRefreshToken) {
-    await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken);
-    clearTokenCache([accountId]);
+    await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken, {
+      expectedCredentialGeneration: credentials.credentialGeneration,
+      assertCurrent: () => credentialGenerations.assertCurrent(snapshot),
+      afterCommit: () => credentialGenerations.invalidateAccounts([accountId])
+    });
+  } else {
+    credentialGenerations.assertCurrent(snapshot);
   }
 
   return result;
@@ -305,7 +265,7 @@ async function finishWithHotmailFallback(
   cause: unknown
 ) {
   const mailStart = nowMs();
-  const fallback = await fetchHotmailFallback(accountId, account, settings, 20, cause);
+  const fallback = await fetchHotmailFallback(accountId, 20, cause);
   metrics.mailMs += elapsedSince(mailStart);
   metrics.fallback = fallback.transport;
 
@@ -421,11 +381,31 @@ async function testHotmailFallback(accountId: string): Promise<TestFallbackResul
   let account: Awaited<ReturnType<typeof getAccountRecord>> | null = null;
 
   try {
-    account = await getAccountRecord(accountId);
-    const settings = await getSettings();
-    const refreshToken = await getRefreshToken(accountId);
-    const result = await testHotmailFallbackConnection(settings, account, refreshToken, 5);
-    const accountView = await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken || undefined);
+    const context = await loadCredentialContext(accountId);
+    account = context.credentials.account;
+    const result = await testHotmailFallbackConnection(
+      context.settings,
+      account,
+      context.credentials.refreshToken,
+      5
+    );
+    credentialGenerations.assertCurrent(context.snapshot);
+    const accountView = await updateAccountStatus(
+      accountId,
+      "valid",
+      null,
+      result.nextRefreshToken || undefined,
+      {
+        expectedCredentialGeneration: context.credentials.credentialGeneration,
+        assertCurrent: () => credentialGenerations.assertCurrent(context.snapshot),
+        ...(result.nextRefreshToken
+          ? { afterCommit: () => credentialGenerations.invalidateAccounts([accountId]) }
+          : {})
+      }
+    );
+    if (!result.nextRefreshToken) {
+      credentialGenerations.assertCurrent(context.snapshot);
+    }
 
     const elapsedMs = Date.now() - started;
     const count = result.totalCount || result.messages.length;
@@ -450,6 +430,26 @@ async function testHotmailFallback(accountId: string): Promise<TestFallbackResul
   }
 }
 
+function runAccountMutation<T>(
+  resolveAccountIds: () => Iterable<string> | Promise<Iterable<string>>,
+  operation: () => Promise<T>
+): Promise<T> {
+  return refreshCoordinator.runAccount(ACCOUNT_MUTATION_LOCK, async () => {
+    const accountIds = await resolveAccountIds();
+    return refreshCoordinator.runAccounts(accountIds, operation);
+  });
+}
+
+async function upsertAccountsCoordinated(inputs: Parameters<typeof upsertAccounts>[0]) {
+  return runAccountMutation(
+    () => findAccountIdsByEmails(inputs.map((input) => input.email)),
+    async () => {
+      const { affectedAccountIds: _affectedAccountIds, ...result } = await upsertAccounts(inputs);
+      return result;
+    }
+  );
+}
+
 export function registerIpcHandlers() {
   handleValidated(IPC_CHANNELS.accountsList, IPC_REQUEST_SCHEMAS.accountsList, async () => listAccounts());
 
@@ -461,9 +461,6 @@ export function registerIpcHandlers() {
     async (_event, settings) => {
       const next = await updateSettings(settings);
       if (next.proxyChanged) {
-        tokenCache.clear();
-        tokenRefreshes.clear();
-        clearPersistedAccessTokens();
         closeProxyDispatchers();
       }
       return next.settings;
@@ -481,9 +478,7 @@ export function registerIpcHandlers() {
 
   handleValidated(IPC_CHANNELS.accountsImportText, IPC_REQUEST_SCHEMAS.importText, async (_event, text) => {
     const inputs = parseAccountImport(text);
-    const result = await upsertAccounts(inputs);
-    clearTokenCache(result.accounts.map((account) => account.id));
-    return result;
+    return upsertAccountsCoordinated(inputs);
   });
 
   handleValidated(IPC_CHANNELS.accountsImportFile, IPC_REQUEST_SCHEMAS.importFile, async () => {
@@ -502,30 +497,24 @@ export function registerIpcHandlers() {
 
     const text = parseIpcRequest(IPC_REQUEST_SCHEMAS.importText, [await readFile(result.filePaths[0], "utf8")]);
     const inputs = parseAccountImport(text);
-    const importResult = await upsertAccounts(inputs);
-    clearTokenCache(importResult.accounts.map((account) => account.id));
-    return importResult;
+    return upsertAccountsCoordinated(inputs);
   });
 
   handleValidated(IPC_CHANNELS.accountsUpsert, IPC_REQUEST_SCHEMAS.upsertAccount, async (_event, input) => {
-    const result = await upsertAccounts([input]);
-    clearTokenCache(result.accounts.map((account) => account.id));
-    return result;
+    return upsertAccountsCoordinated([input]);
   });
 
   handleValidated(IPC_CHANNELS.accountsUpdate, IPC_REQUEST_SCHEMAS.updateAccount, async (_event, input) => {
-    return refreshCoordinator.runAccount(input.id, async () => {
+    return runAccountMutation(() => [input.id], async () => {
       const account = await updateAccount(input);
-      clearTokenCache([account.id]);
       await clearAccountCache(account.id);
       return account;
     });
   });
 
   handleValidated(IPC_CHANNELS.accountsDelete, IPC_REQUEST_SCHEMAS.deleteAccount, async (_event, accountId) => {
-    return refreshCoordinator.runAccount(accountId, async () => {
+    return runAccountMutation(() => [accountId], async () => {
       const accounts = await deleteAccount(accountId);
-      clearTokenCache([accountId]);
       return accounts;
     });
   });
@@ -618,7 +607,7 @@ export function registerIpcHandlers() {
         throw error;
       }
 
-      const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
+      const fallback = await fetchHotmailFallback(options.accountId, top, error);
       await persistHotmailFallback(options.accountId, account, settings, fallback);
 
       return { fallback };
@@ -667,7 +656,7 @@ export function registerIpcHandlers() {
           throw error;
         }
 
-        const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
+        const fallback = await fetchHotmailFallback(options.accountId, top, error);
         await persistHotmailFallback(options.accountId, account, settings, fallback);
         return fallbackListResult(fallback);
       }
@@ -710,7 +699,7 @@ export function registerIpcHandlers() {
         throw error;
       }
 
-      const fallback = await fetchHotmailFallback(options.accountId, account, settings, top, error);
+      const fallback = await fetchHotmailFallback(options.accountId, top, error);
       await persistHotmailFallback(options.accountId, account, settings, fallback);
       return fallbackListResult(fallback);
     }

@@ -43,6 +43,7 @@ export interface AccountRecord {
   inboxFolderId?: string | null;
   graphDeltaLink?: string | null;
   refreshCooldownUntil?: string | null;
+  credentialGeneration: number;
   createdAt: string;
   updatedAt: string;
 }

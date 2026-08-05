@@ -18,7 +18,7 @@ interface ActiveJob {
 
 export class RefreshCoordinator {
   private readonly activeJobs = new Map<JobKind, Map<string, ActiveJob>>();
-  private readonly accountTails = new Map<string, Promise<void>>();
+  private readonly accountTails = new Map<string | symbol, Promise<void>>();
 
   async runJob<T>(kind: JobKind, operation: (job: CoordinatedJob) => Promise<T>): Promise<T> {
     const jobId = randomUUID();
@@ -68,7 +68,7 @@ export class RefreshCoordinator {
     return jobs.size;
   }
 
-  async runAccount<T>(accountId: string, operation: () => Promise<T>): Promise<T> {
+  async runAccount<T>(accountId: string | symbol, operation: () => Promise<T>): Promise<T> {
     const slot = this.queueAccount(accountId);
     await slot.ready;
 
@@ -77,6 +77,19 @@ export class RefreshCoordinator {
     } finally {
       slot.release();
     }
+  }
+
+  async runAccounts<T>(accountIds: Iterable<string>, operation: () => Promise<T>): Promise<T> {
+    const orderedIds = [...new Set(accountIds)].sort();
+
+    const acquire = (index: number): Promise<T> => {
+      if (index >= orderedIds.length) {
+        return operation();
+      }
+      return this.runAccount(orderedIds[index], () => acquire(index + 1));
+    };
+
+    return acquire(0);
   }
 
   private async runCancelableAccount<T>(
@@ -106,7 +119,7 @@ export class RefreshCoordinator {
     }
   }
 
-  private queueAccount(accountId: string) {
+  private queueAccount(accountId: string | symbol) {
     const previous = this.accountTails.get(accountId) ?? Promise.resolve();
     const ready = previous.catch(() => undefined);
     let release!: () => void;

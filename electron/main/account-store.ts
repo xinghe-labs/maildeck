@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { getDatabase, transaction } from "./database.js";
 import { decryptSecret, encryptSecret } from "./token-crypto.js";
 import { resolveRefreshTimestamps } from "./account-refresh-state.js";
+import { credentialGenerations, CredentialsChangedError } from "./credential-generations.js";
 import type { AccountInput, AccountRecord, AccountUpdateInput, AccountView, ImportPreviewResult } from "./types.js";
 
 interface StoreFile {
@@ -29,6 +30,7 @@ interface AccountRow {
   inbox_folder_id: string | null;
   graph_delta_link: string | null;
   refresh_cooldown_until: string | null;
+  credential_generation: number;
   created_at: string;
   updated_at: string;
 }
@@ -70,7 +72,7 @@ function looksLikeMisparsedLegacyAccount(account: AccountRecord) {
 
 function normalizeLegacyAccount(account: AccountRecord): AccountRecord {
   if (!looksLikeMisparsedLegacyAccount(account)) {
-    return account;
+    return { ...account, credentialGeneration: account.credentialGeneration ?? 0 };
   }
 
   const previousClientId = account.clientId;
@@ -85,6 +87,7 @@ function normalizeLegacyAccount(account: AccountRecord): AccountRecord {
     status: "untested",
     lastCheckedAt: null,
     lastError: null,
+    credentialGeneration: account.credentialGeneration ?? 0,
     updatedAt: nowIso()
   };
 }
@@ -170,6 +173,7 @@ function rowToRecord(row: AccountRow): AccountRecord {
     inboxFolderId: row.inbox_folder_id,
     graphDeltaLink: row.graph_delta_link,
     refreshCooldownUntil: row.refresh_cooldown_until,
+    credentialGeneration: row.credential_generation || 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -225,10 +229,9 @@ function insertOrReplaceAccount(account: AccountRecord) {
         id, email, client_id, encrypted_refresh_token, remark, group_name, status,
         last_checked_at, last_error, last_refreshed_at, last_inbox_count,
         last_mail_at, last_mail_cursor, inbox_folder_id, graph_delta_link,
-        refresh_cooldown_until,
-        created_at, updated_at
+        refresh_cooldown_until, credential_generation, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         email = excluded.email,
         client_id = excluded.client_id,
@@ -245,6 +248,7 @@ function insertOrReplaceAccount(account: AccountRecord) {
         inbox_folder_id = excluded.inbox_folder_id,
         graph_delta_link = excluded.graph_delta_link,
         refresh_cooldown_until = excluded.refresh_cooldown_until,
+        credential_generation = excluded.credential_generation,
         updated_at = excluded.updated_at
     `)
     .run(
@@ -264,6 +268,7 @@ function insertOrReplaceAccount(account: AccountRecord) {
       account.inboxFolderId || null,
       account.graphDeltaLink || null,
       account.refreshCooldownUntil || null,
+      account.credentialGeneration,
       account.createdAt,
       account.updatedAt
     );
@@ -338,9 +343,53 @@ export async function getAccountRecord(accountId: string): Promise<AccountRecord
   return account;
 }
 
+export async function getAccountCredentials(accountId: string) {
+  await migrateLegacyAccountsOnce();
+  return withStoreLock(async () => {
+    const account = getAccountById(accountId);
+    if (!account) {
+      throw new Error("账号不存在");
+    }
+    return {
+      account,
+      accountId: account.id,
+      email: account.email,
+      clientId: account.clientId,
+      refreshToken: decryptSecret(account.encryptedRefreshToken),
+      credentialGeneration: account.credentialGeneration
+    };
+  });
+}
+
 export async function getRefreshToken(accountId: string): Promise<string> {
-  const account = await getAccountRecord(accountId);
-  return decryptSecret(account.encryptedRefreshToken);
+  return (await getAccountCredentials(accountId)).refreshToken;
+}
+
+export async function assertAccountCredentialGeneration(accountId: string, expectedGeneration: number): Promise<void> {
+  await migrateLegacyAccountsOnce();
+  return withStoreLock(async () => {
+    const account = getAccountById(accountId);
+    if (!account) {
+      throw new Error("账号不存在");
+    }
+    if (account.credentialGeneration !== expectedGeneration) {
+      throw new CredentialsChangedError();
+    }
+  });
+}
+
+export async function findAccountIdsByEmails(emails: Iterable<string>): Promise<string[]> {
+  await migrateLegacyAccountsOnce();
+  return withStoreLock(async () => {
+    const accountIds = new Set<string>();
+    for (const email of emails) {
+      const account = getAccountByEmail(normalizeEmail(email));
+      if (account) {
+        accountIds.add(account.id);
+      }
+    }
+    return [...accountIds].sort();
+  });
 }
 
 export async function previewAccounts(inputs: AccountInput[]): Promise<ImportPreviewResult> {
@@ -387,6 +436,7 @@ export async function upsertAccounts(inputs: AccountInput[]) {
     let updated = 0;
     let skipped = 0;
     const errors: string[] = [];
+    const affectedAccountIds: string[] = [];
 
     transaction(() => {
       for (const [index, input] of inputs.entries()) {
@@ -405,6 +455,8 @@ export async function upsertAccounts(inputs: AccountInput[]) {
         const timestamp = nowIso();
 
         if (existing) {
+          credentialGenerations.invalidateAccounts([existing.id]);
+          affectedAccountIds.push(existing.id);
           insertOrReplaceAccount({
             ...existing,
             clientId,
@@ -413,14 +465,18 @@ export async function upsertAccounts(inputs: AccountInput[]) {
             group: input.group?.trim() || existing.group,
             status: "untested",
             lastError: null,
+            credentialGeneration: existing.credentialGeneration + 1,
             updatedAt: timestamp
           });
           updated += 1;
           continue;
         }
 
+        const accountId = crypto.randomUUID();
+        credentialGenerations.invalidateAccounts([accountId]);
+        affectedAccountIds.push(accountId);
         insertOrReplaceAccount({
-          id: crypto.randomUUID(),
+          id: accountId,
           email,
           clientId,
           encryptedRefreshToken: encryptSecret(refreshToken),
@@ -436,6 +492,7 @@ export async function upsertAccounts(inputs: AccountInput[]) {
           inboxFolderId: null,
           graphDeltaLink: null,
           refreshCooldownUntil: null,
+          credentialGeneration: 1,
           createdAt: timestamp,
           updatedAt: timestamp
         });
@@ -448,6 +505,7 @@ export async function upsertAccounts(inputs: AccountInput[]) {
       updated,
       skipped,
       errors,
+      affectedAccountIds: [...new Set(affectedAccountIds)],
       accounts: listAccountRecords().map(toView)
     };
   });
@@ -456,19 +514,17 @@ export async function upsertAccounts(inputs: AccountInput[]) {
 export async function deleteAccount(accountId: string): Promise<AccountView[]> {
   await migrateLegacyAccountsOnce();
   return withStoreLock(async () => {
-    let changes = 0;
+    if (!getAccountById(accountId)) {
+      throw new Error("账号不存在");
+    }
+    credentialGenerations.invalidateAccounts([accountId]);
     transaction(() => {
       const db = getDatabase();
       db.prepare("DELETE FROM mail_messages WHERE account_id = ?").run(accountId);
       db.prepare("DELETE FROM mail_details WHERE account_id = ?").run(accountId);
       db.prepare("DELETE FROM mail_cache_meta WHERE account_id = ?").run(accountId);
-      const result = db.prepare("DELETE FROM accounts WHERE id = ?").run(accountId);
-      changes = Number(result.changes);
+      db.prepare("DELETE FROM accounts WHERE id = ?").run(accountId);
     });
-
-    if (changes === 0) {
-      throw new Error("账号不存在");
-    }
 
     return listAccountRecords().map(toView);
   });
@@ -496,6 +552,7 @@ export async function updateAccount(input: AccountUpdateInput): Promise<AccountV
       throw new Error("邮箱已存在");
     }
 
+    credentialGenerations.invalidateAccounts([account.id]);
     const next: AccountRecord = {
       ...account,
       email,
@@ -504,6 +561,7 @@ export async function updateAccount(input: AccountUpdateInput): Promise<AccountV
       group: input.group?.trim() || "",
       status: "untested",
       lastError: null,
+      credentialGeneration: account.credentialGeneration + 1,
       updatedAt: nowIso()
     };
 
@@ -520,7 +578,12 @@ export async function updateAccountStatus(
   accountId: string,
   status: AccountRecord["status"],
   lastError: string | null,
-  refreshToken?: string
+  refreshToken?: string,
+  options: {
+    expectedCredentialGeneration?: number;
+    assertCurrent?: () => void;
+    afterCommit?: () => void;
+  } = {}
 ): Promise<AccountView> {
   await migrateLegacyAccountsOnce();
   return withStoreLock(async () => {
@@ -529,6 +592,13 @@ export async function updateAccountStatus(
     if (!account) {
       throw new Error("账号不存在");
     }
+    if (
+      options.expectedCredentialGeneration !== undefined &&
+      account.credentialGeneration !== options.expectedCredentialGeneration
+    ) {
+      throw new CredentialsChangedError();
+    }
+    options.assertCurrent?.();
 
     const timestamp = nowIso();
     const next: AccountRecord = {
@@ -541,6 +611,7 @@ export async function updateAccountStatus(
     };
 
     insertOrReplaceAccount(next);
+    options.afterCommit?.();
     return toView(next);
   });
 }
@@ -602,7 +673,6 @@ export async function updateAccountRefreshFailure(
     if (!account) {
       throw new Error("账号不存在");
     }
-
     const timestamp = nowIso();
     const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, false);
     const next: AccountRecord = {

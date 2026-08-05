@@ -300,15 +300,25 @@ export function applySettingsUpdate(
 
   const endpointChanged = !sameEndpoint(current.proxy, nextProxy);
   const usernameChanged = (current.proxy?.username ?? "") !== nextProxy.username;
+  let passwordChanged = false;
   if (update.clearProxyPassword === true) {
+    passwordChanged = Boolean(current.proxy?.encryptedPassword);
     nextProxy.encryptedPassword = "";
   } else if (hasProxyPassword && update.proxyPassword) {
+    try {
+      const currentPassword = current.proxy?.encryptedPassword
+        ? crypto.decrypt(current.proxy.encryptedPassword)
+        : "";
+      passwordChanged = currentPassword !== update.proxyPassword;
+    } catch {
+      passwordChanged = true;
+    }
     nextProxy.encryptedPassword = crypto.encrypt(update.proxyPassword);
   } else if (endpointChanged || usernameChanged) {
     nextProxy.encryptedPassword = "";
   }
 
-  const proxyChanged = JSON.stringify(current.proxy) !== JSON.stringify(nextProxy);
+  const proxyChanged = endpointChanged || usernameChanged || passwordChanged;
   return {
     file: { version: 2, settings, proxy: nextProxy },
     proxyChanged

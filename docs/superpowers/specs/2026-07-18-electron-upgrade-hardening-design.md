@@ -6,7 +6,7 @@ Direction approved on 2026-07-18: keep Electron and React, upgrade and harden th
 
 This document defines the implementation scope that must be reviewed before code changes begin.
 
-Implementation note (2026-08-05): the first Refresh Coordinator slice now owns job registration, queued cancellation, and per-account serialization for test and refresh entry points. Credential generations for import/upsert and proxy changes, a global cross-job concurrency limit, and AbortController propagation for work already in progress remain Phase 5 work.
+Implementation note (2026-08-05): the Refresh Coordinator now owns job registration, queued cancellation, per-account serialization, and stable multi-account locking for imports. Credential generations cover account reimport/edit/delete and proxy changes; access tokens are memory-only and stale token or fallback work cannot commit rotated credentials. Database schema v5 removes the persisted access-token table without removing account or mail data. A global cross-job concurrency limit and AbortController propagation for work already in progress remain Phase 5 work.
 
 ## Context
 

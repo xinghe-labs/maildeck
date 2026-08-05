@@ -74,6 +74,42 @@ describe("RefreshCoordinator", () => {
     await first;
   });
 
+  it("locks a deduplicated account set in stable order", async () => {
+    const coordinator = new RefreshCoordinator();
+    const groupEntered = deferred();
+    const releaseGroup = deferred();
+    const events: string[] = [];
+
+    const group = coordinator.runAccounts(["account-2", "account-1", "account-2"], async () => {
+      events.push("group:start");
+      groupEntered.resolve();
+      await releaseGroup.promise;
+      events.push("group:end");
+    });
+    await groupEntered.promise;
+
+    const single = coordinator.runAccount("account-1", async () => {
+      events.push("single:start");
+    });
+    await Promise.resolve();
+    expect(events).toEqual(["group:start"]);
+
+    releaseGroup.resolve();
+    await Promise.all([group, single]);
+    expect(events).toEqual(["group:start", "group:end", "single:start"]);
+  });
+
+  it("keeps an internal symbol lock isolated from an account id with the same description", async () => {
+    const coordinator = new RefreshCoordinator();
+    const internalLock = Symbol("account-mutation");
+
+    await expect(
+      coordinator.runAccount(internalLock, () =>
+        coordinator.runAccount("account-mutation", async () => "completed")
+      )
+    ).resolves.toBe("completed");
+  });
+
   it("reports all active jobs of the requested kind and cleans them up", async () => {
     const coordinator = new RefreshCoordinator();
     const firstStarted = deferred();

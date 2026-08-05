@@ -13,6 +13,7 @@ import {
   type SettingsFileV2
 } from "./settings-model.js";
 import { decryptSecret, encryptSecret } from "./token-crypto.js";
+import { credentialGenerations } from "./credential-generations.js";
 
 const settingsCrypto: SettingsCrypto = {
   encrypt: encryptSecret,
@@ -94,7 +95,16 @@ export async function updateSettings(
   return withSettingsLock(async () => {
     const { file } = await readSettingsFile();
     const updated = applySettingsUpdate(file, next, settingsCrypto);
-    await writeSettingsFile(updated.file);
+    if (updated.proxyChanged) {
+      credentialGenerations.invalidateProxy();
+    }
+    try {
+      await writeSettingsFile(updated.file);
+    } finally {
+      if (updated.proxyChanged) {
+        credentialGenerations.invalidateProxy();
+      }
+    }
     return {
       settings: projectPublicSettings(updated.file),
       proxyChanged: updated.proxyChanged
