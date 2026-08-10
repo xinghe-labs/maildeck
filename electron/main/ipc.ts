@@ -27,6 +27,7 @@ import {
   upsertAccounts
 } from "./account-store.js";
 import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
+import { isGraphThrottledError } from "./graph-errors.js";
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import {
   fetchHotmailFallbackMessage,
@@ -232,6 +233,9 @@ async function fetchHotmailFallback(
   cause: unknown,
   signal?: AbortSignal
 ) {
+  if (isGraphThrottledError(cause)) {
+    throw cause;
+  }
   const context = await loadCredentialContext(accountId, signal);
   const { credentials, settings, snapshot } = context;
   if (!isHotmailFallbackEnabled(settings)) {
@@ -305,7 +309,7 @@ function shouldTryHotmailFallbackDetail(messageId: string, error: unknown) {
     return false;
   }
   const { code } = normalizeErrorResult(error);
-  return !["CANCELED", "STALE_CREDENTIALS", "ACCOUNT_NOT_FOUND", "MAIL_PARSE_FAILED", "MAIL_TOO_LARGE"].includes(code);
+  return !["CANCELED", "STALE_CREDENTIALS", "THROTTLED", "ACCOUNT_NOT_FOUND", "MAIL_PARSE_FAILED", "MAIL_TOO_LARGE"].includes(code);
 }
 
 function refreshStateFromFallback(
@@ -396,8 +400,11 @@ async function listGraphInboxMessages(
         },
         messages: await listMessages(accessToken, account.inboxFolderId, top, 0, "", since, proxyUrl, signal)
       };
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
+      if (isGraphThrottledError(error)) {
+        throw error;
+      }
       // Folder ids may become stale; discover once and retry below.
     }
   }
@@ -440,8 +447,11 @@ async function deltaGraphInboxMessages(
       messages: result.messages,
       deltaLink: result.deltaLink || result.nextLink || account.graphDeltaLink || null
     };
-  } catch {
+  } catch (error) {
     signal?.throwIfAborted();
+    if (isGraphThrottledError(error)) {
+      throw error;
+    }
     const fallback = await listGraphInboxMessages(accessToken, { ...account, inboxFolderId: inbox.id, graphDeltaLink: null }, top, account.lastMailAt || null, proxyUrl, signal);
     return {
       inbox: fallback.inbox,
@@ -819,8 +829,11 @@ export function registerIpcHandlers() {
       if (inbox) {
         try {
           messages = await listMessages(token.accessToken, inbox.id, top, skip, search, options.since || null, settings.proxyUrl, signal);
-        } catch {
+        } catch (error) {
           signal.throwIfAborted();
+          if (isGraphThrottledError(error)) {
+            throw error;
+          }
           inbox = null;
         }
       }

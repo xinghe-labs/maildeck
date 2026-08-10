@@ -21,6 +21,7 @@ describe("resolveRefreshTimestamps", () => {
 
   it("preserves account health for transient network failures", () => {
     expect(resolveRefreshFailureStatus("valid", "NETWORK_ERROR")).toBe("valid");
+    expect(resolveRefreshFailureStatus("valid", "THROTTLED")).toBe("valid");
   });
 
   it("marks credential and permission failures invalid", () => {

@@ -12,7 +12,10 @@ const state = vi.hoisted(() => {
     resolveStatusWriteStarted: null as (() => void) | null,
     releaseStatusWrite: null as (() => void) | null,
     refreshAccessToken: vi.fn(),
+    getAccountRecord: vi.fn(),
+    deltaMessages: vi.fn(),
     listMailFolders: vi.fn(),
+    listMessages: vi.fn(),
     listImapFolders: vi.fn(),
     listImapMessages: vi.fn(),
     refreshImapInbox: vi.fn(),
@@ -71,24 +74,7 @@ vi.mock("../electron/main/account-store.js", () => ({
       inboxFolderId: "INBOX"
     }
   })),
-  getAccountRecord: vi.fn(async (id: string) => ({
-    id,
-    email: "account@example.com",
-    clientId: "client-id",
-    encryptedRefreshToken: "encrypted",
-    remark: "",
-    group: "",
-    status: "untested",
-    lastCheckedAt: null,
-    lastError: null,
-    lastRefreshedAt: null,
-    lastInboxCount: 0,
-    lastMailAt: null,
-    lastMailCursor: null,
-    inboxFolderId: null,
-    graphDeltaLink: null,
-    refreshCooldownUntil: null
-  })),
+  getAccountRecord: vi.fn(async (id: string) => state.getAccountRecord(id)),
   listAccounts: vi.fn(),
   previewAccounts: vi.fn(),
   updateAccount: vi.fn(),
@@ -100,10 +86,10 @@ vi.mock("../electron/main/account-store.js", () => ({
 }));
 
 vi.mock("../electron/main/graph-client.js", () => ({
-  deltaMessages: vi.fn(),
+  deltaMessages: state.deltaMessages,
   getMessage: state.graphGetMessage,
   listMailFolders: state.listMailFolders,
-  listMessages: vi.fn(),
+  listMessages: state.listMessages,
   refreshAccessToken: state.refreshAccessToken
 }));
 
@@ -156,6 +142,24 @@ beforeEach(() => {
     }
   );
   state.listMailFolders.mockResolvedValue([]);
+  state.getAccountRecord.mockImplementation(async (id: string) => ({
+    id,
+    email: "account@example.com",
+    clientId: "client-id",
+    encryptedRefreshToken: "encrypted",
+    remark: "",
+    group: "",
+    status: "untested",
+    lastCheckedAt: null,
+    lastError: null,
+    lastRefreshedAt: null,
+    lastInboxCount: 0,
+    lastMailAt: null,
+    lastMailCursor: null,
+    inboxFolderId: null,
+    graphDeltaLink: null,
+    refreshCooldownUntil: null
+  }));
   state.listImapFolders.mockResolvedValue([]);
   state.listImapMessages.mockResolvedValue({ messages: [], totalCount: 0 });
   state.refreshImapInbox.mockResolvedValue({
@@ -510,5 +514,105 @@ describe("IPC refresh cancellation", () => {
       undefined,
       expect.any(Object)
     );
+  });
+
+  it("does not bypass Graph throttling through the Hotmail fallback", async () => {
+    const { GraphRequestError } = await import("../electron/main/graph-errors.js");
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "graph-access-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "Mail.Read",
+      authMode: "graph"
+    });
+    state.getAccountRecord.mockImplementation(async (id: string) => ({
+      id,
+      email: "account@example.com",
+      clientId: "client-id",
+      encryptedRefreshToken: "encrypted",
+      remark: "",
+      group: "",
+      status: "valid",
+      lastCheckedAt: null,
+      lastError: null,
+      lastRefreshedAt: null,
+      lastInboxCount: 0,
+      lastMailAt: null,
+      lastMailCursor: null,
+      inboxFolderId: "INBOX",
+      graphDeltaLink: "https://graph.microsoft.com/v1.0/delta",
+      refreshCooldownUntil: null
+    }));
+    state.deltaMessages.mockRejectedValue(new GraphRequestError(
+      429,
+      "Graph 请求失败 429 (TooManyRequests)：Slow down，request-id: throttle-request",
+      "throttle-request",
+      30_000
+    ));
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailRefreshMany);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, ["account-throttled"])).resolves.toMatchObject({
+      ok: true,
+      value: [{
+        accountId: "account-throttled",
+        ok: false,
+        error: { code: "THROTTLED", retryable: true }
+      }]
+    });
+    expect(state.deltaMessages).toHaveBeenCalledTimes(1);
+    expect(state.listMessages).not.toHaveBeenCalled();
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not rediscover a cached Graph inbox after a throttled list request", async () => {
+    const { GraphRequestError } = await import("../electron/main/graph-errors.js");
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "graph-access-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "Mail.Read",
+      authMode: "graph"
+    });
+    state.getAccountRecord.mockImplementation(async (id: string) => ({
+      id,
+      email: "account@example.com",
+      clientId: "client-id",
+      encryptedRefreshToken: "encrypted",
+      remark: "",
+      group: "",
+      status: "valid",
+      lastCheckedAt: null,
+      lastError: null,
+      lastRefreshedAt: null,
+      lastInboxCount: 2,
+      lastMailAt: null,
+      lastMailCursor: null,
+      inboxFolderId: "INBOX",
+      graphDeltaLink: null,
+      refreshCooldownUntil: null
+    }));
+    state.listMessages.mockRejectedValue(new GraphRequestError(
+      429,
+      "Graph 请求失败 429 (TooManyRequests)：Slow down，request-id: list-throttle",
+      "list-throttle",
+      5_000
+    ));
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailListMessages);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, {
+      accountId: "account-throttled-list",
+      forceRefresh: true,
+      search: "invoice"
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "THROTTLED", retryable: true }
+    });
+    expect(state.listMessages).toHaveBeenCalledTimes(1);
+    expect(state.listMailFolders).not.toHaveBeenCalled();
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
   });
 });

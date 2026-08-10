@@ -9,6 +9,10 @@ describe("renderer app errors", () => {
     expect(errorMessage(error)).toBe("邮件正文过大");
   });
 
+  it("recognizes throttling as a stable application error", () => {
+    expect(isAppError({ code: "THROTTLED", message: "请稍后重试", retryable: true })).toBe(true);
+  });
+
   it("still displays local renderer errors", () => {
     expect(errorMessage(new Error("界面状态更新失败"))).toBe("界面状态更新失败");
   });

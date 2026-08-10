@@ -6,6 +6,8 @@ import type {
   MailMessageSummary
 } from "./types.js";
 import { proxiedFetchOptions } from "./proxy-agent.js";
+import { GraphRequestError } from "./graph-errors.js";
+import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
 const TOKEN_ENDPOINTS = [
@@ -84,9 +86,9 @@ export interface GraphDeltaMessagesResult {
   deltaLink: string | null;
 }
 
-function createGraphError(status: number, payload: GraphError | string) {
+function createGraphError(status: number, payload: GraphError | string, retryAfterMs: number | null) {
   if (typeof payload === "string") {
-    return new Error(`Graph 请求失败 ${status}: ${payload}`);
+    return new GraphRequestError(status, `Graph 请求失败 ${status}: ${payload}`, null, retryAfterMs);
   }
 
   const code = payload.error?.code || "unknown";
@@ -94,7 +96,12 @@ function createGraphError(status: number, payload: GraphError | string) {
   const requestId = payload.error?.innerError?.["request-id"] || payload.error?.innerError?.["client-request-id"] || "";
   const suffix = requestId ? `，request-id: ${requestId}` : "";
 
-  return new Error(`Graph 请求失败 ${status} (${code})：${message}${suffix}`);
+  return new GraphRequestError(
+    status,
+    `Graph 请求失败 ${status} (${code})：${message}${suffix}`,
+    requestId || null,
+    retryAfterMs
+  );
 }
 
 async function parseResponse(response: Response) {
@@ -110,48 +117,58 @@ async function parseResponse(response: Response) {
   }
 }
 
-async function graphFetch<T>(accessToken: string, path: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
-  const response = await proxiedFetch(
-    `${GRAPH_ENDPOINT}${path}`,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json"
+function trustedGraphUrl(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.origin !== "https://graph.microsoft.com" || !parsed.pathname.startsWith("/v1.0/")) {
+    throw new Error("不受信任的 Graph 分页地址");
+  }
+  return parsed.toString();
+}
+
+async function graphRequest<T>(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
+  for (let attempt = 0; attempt < GRAPH_MAX_ATTEMPTS; attempt += 1) {
+    signal?.throwIfAborted();
+    const response = await proxiedFetch(
+      url,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json"
+        },
+        signal
       },
-      signal
-    },
-    proxyUrl
-  );
+      proxyUrl
+    );
+    const payload = await parseResponse(response);
 
-  const payload = await parseResponse(response);
+    if (response.ok) {
+      return payload as T;
+    }
 
-  if (!response.ok) {
-    throw createGraphError(response.status, payload as GraphError | string);
+    const retryDelay = calculateGraphRetryDelay({
+      status: response.status,
+      retryAfter: response.headers.get("Retry-After"),
+      retryIndex: attempt,
+      nowMs: Date.now(),
+      randomValue: Math.random()
+    });
+    if (retryDelay !== null && attempt + 1 < GRAPH_MAX_ATTEMPTS) {
+      await waitForGraphRetry(retryDelay, signal);
+      continue;
+    }
+
+    throw createGraphError(response.status, payload as GraphError | string, retryDelay);
   }
 
-  return payload as T;
+  throw new Error("Graph 请求重试状态异常");
+}
+
+async function graphFetch<T>(accessToken: string, path: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
+  return graphRequest<T>(accessToken, `${GRAPH_ENDPOINT}${path}`, proxyUrl, signal);
 }
 
 async function graphFetchUrl<T>(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
-  const response = await proxiedFetch(
-    url,
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json"
-      },
-      signal
-    },
-    proxyUrl
-  );
-
-  const payload = await parseResponse(response);
-
-  if (!response.ok) {
-    throw createGraphError(response.status, payload as GraphError | string);
-  }
-
-  return payload as T;
+  return graphRequest<T>(accessToken, trustedGraphUrl(url), proxyUrl, signal);
 }
 
 function mapAddress(input?: GraphEmailAddress | null): MailAddress | null {

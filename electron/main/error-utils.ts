@@ -4,6 +4,7 @@ import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-error
 import { redactProxyCredentials } from "../shared/proxy-security.js";
 import { isIpcRequestValidationError } from "../shared/ipc-contracts.js";
 import { isCredentialsChangedError } from "./credential-generations.js";
+import { isGraphRequestError } from "./graph-errors.js";
 
 export interface NormalizedAppError {
   code: AppErrorCode;
@@ -75,6 +76,12 @@ export function normalizeError(error: unknown): NormalizedAppError {
   }
   if (isMailParseFailedError(error)) {
     return { code: "MAIL_PARSE_FAILED", message };
+  }
+  if (isGraphRequestError(error) && error.status === 429) {
+    return { code: "THROTTLED", message: `Microsoft Graph 请求过于频繁，请稍后重试。原始错误：${message}` };
+  }
+  if (isGraphRequestError(error) && error.status >= 500) {
+    return { code: "NETWORK_ERROR", message: `Microsoft Graph 服务暂时不可用，请稍后重试。原始错误：${message}` };
   }
 
   if (hasNetworkErrorCode(error)) {
@@ -163,7 +170,7 @@ export function toIpcErrorPayload(error: unknown): AppErrorPayload {
       normalized.code === "UNKNOWN"
         ? "操作失败，请重试；如果问题持续，请检查应用日志。"
         : normalized.message,
-    retryable: normalized.code === "NETWORK_ERROR" || normalized.code === "STALE_CREDENTIALS",
+    retryable: normalized.code === "NETWORK_ERROR" || normalized.code === "STALE_CREDENTIALS" || normalized.code === "THROTTLED",
     ...(requestId ? { diagnostic: { requestId } } : {})
   };
 }

@@ -41,6 +41,7 @@ export type AppErrorCode =
   | "INVALID_REQUEST"
   | "CANCELED"
   | "STALE_CREDENTIALS"
+  | "THROTTLED"
   | "TOKEN_EXPIRED"
   | "IMAP_AUTH_FAILED"
   | "SCOPE_MISSING"
