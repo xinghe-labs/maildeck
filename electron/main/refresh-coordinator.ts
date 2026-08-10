@@ -3,6 +3,7 @@ import type { JobKind } from "../shared/ipc-contracts.js";
 import { JobCanceledError } from "./job-errors.js";
 
 export interface CoordinatedJob {
+  readonly id: string;
   readonly kind: JobKind;
   readonly signal: AbortSignal;
   runAccount<T>(
@@ -62,6 +63,7 @@ export class RefreshCoordinator {
     this.activeJobs.set(kind, jobs);
 
     const job: CoordinatedJob = {
+      id: jobId,
       kind,
       signal: controller.signal,
       runAccount: (accountId, accountOperation, onCanceled) =>

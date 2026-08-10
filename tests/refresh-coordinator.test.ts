@@ -14,6 +14,23 @@ function unexpectedCancellation(): never {
 }
 
 describe("RefreshCoordinator", () => {
+  it("assigns one stable unique id to each coordinated job", async () => {
+    const coordinator = new RefreshCoordinator();
+    const firstIds: string[] = [];
+    const first = await coordinator.runJob("refresh", async (job) => {
+      firstIds.push(job.id);
+      await Promise.resolve();
+      firstIds.push(job.id);
+      return job.id;
+    });
+    const second = await coordinator.runJob("refresh", async (job) => job.id);
+
+    expect(first).toEqual(expect.any(String));
+    expect(first).not.toBe("");
+    expect(firstIds).toEqual([first, first]);
+    expect(second).not.toBe(first);
+  });
+
   it("serializes work for the same account across job kinds", async () => {
     const coordinator = new RefreshCoordinator();
     const firstEntered = deferred();

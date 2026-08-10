@@ -53,8 +53,10 @@ import type {
   MailMessageSummary,
   RefreshManyResult,
   RefreshMetrics,
+  RefreshProgressEvent,
   TestFallbackResult,
-  TestManyResult
+  TestManyResult,
+  TestProgressEvent
 } from "./types.js";
 
 const refreshCoordinator = new RefreshCoordinator();
@@ -675,6 +677,13 @@ export function registerIpcHandlers() {
       let ok = 0;
       let failed = 0;
       const total = accountIds.length;
+      const sendProgress = (payload: Omit<TestProgressEvent, "jobId" | "kind">) => {
+        event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, {
+          ...payload,
+          jobId: job.id,
+          kind: "test" as const
+        });
+      };
 
       return runLimited(accountIds, resolveBatchLimit(settings.batchConcurrency, total), (accountId) =>
         job.runAccount<TestManyResult>(
@@ -685,10 +694,10 @@ export function registerIpcHandlers() {
 
             if (result.ok) {
               ok += 1;
-              event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId });
+              sendProgress({ completed, total, ok, failed, accountId });
             } else {
               failed += 1;
-              event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: result.error });
+              sendProgress({ completed, total, ok, failed, accountId, error: result.error });
             }
 
             return result;
@@ -697,7 +706,7 @@ export function registerIpcHandlers() {
             completed += 1;
             failed += 1;
             const error = canceledError("test");
-            event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error });
+            sendProgress({ completed, total, ok, failed, accountId, error });
             return { accountId, account: null, ok: false as const, error };
           }
         )
@@ -1010,12 +1019,19 @@ export function registerIpcHandlers() {
       let failed = 0;
       const total = accountIds.length;
       const batchLimit = resolveBatchLimit(appSettings.batchConcurrency, total);
+      const sendProgress = (payload: Omit<RefreshProgressEvent, "jobId" | "kind">) => {
+        event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, {
+          ...payload,
+          jobId: job.id,
+          kind: jobKind
+        });
+      };
       const canceledResult = (accountId: string, metrics: RefreshMetrics, totalStart: number): RefreshManyResult => {
         const error = canceledError(jobKind);
         failed += 1;
         completed += 1;
         metrics.totalMs = elapsedSince(totalStart);
-        event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, {
+        sendProgress({
           completed,
           total,
           ok,
@@ -1054,7 +1070,7 @@ export function registerIpcHandlers() {
           metrics.totalMs = elapsedSince(totalStart);
           ok += 1;
           completed += 1;
-          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+          sendProgress({ completed, total, ok, failed, accountId, metrics });
           return { accountId, ok: true, count: 0, skipped: true, metrics };
         }
 
@@ -1065,7 +1081,7 @@ export function registerIpcHandlers() {
           const fallback = await finishWithHotmailFallback(accountId, account!, settings, metrics, totalStart, error, signal);
           ok += 1;
           completed += 1;
-          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+          sendProgress({ completed, total, ok, failed, accountId, metrics });
           return { fallback };
         });
         metrics.tokenMs = metrics.tokenMs || elapsedSince(tokenStart);
@@ -1104,7 +1120,7 @@ export function registerIpcHandlers() {
             const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
             ok += 1;
             completed += 1;
-            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+            sendProgress({ completed, total, ok, failed, accountId, metrics });
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           }
 
@@ -1137,7 +1153,7 @@ export function registerIpcHandlers() {
           metrics.totalMs = elapsedSince(totalStart);
           ok += 1;
           completed += 1;
-          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+          sendProgress({ completed, total, ok, failed, accountId, metrics });
           return { accountId, ok: true, count: messages.length, newCount, metrics };
         }
 
@@ -1152,7 +1168,7 @@ export function registerIpcHandlers() {
           const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
           ok += 1;
           completed += 1;
-          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+          sendProgress({ completed, total, ok, failed, accountId, metrics });
           return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
         }
 
@@ -1165,7 +1181,7 @@ export function registerIpcHandlers() {
             const newCount = countNewMessagesAfterRefresh(fallback.messages, account.lastRefreshedAt);
             ok += 1;
             completed += 1;
-            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+            sendProgress({ completed, total, ok, failed, accountId, metrics });
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           } catch (error) {
             signal.throwIfAborted();
@@ -1182,7 +1198,7 @@ export function registerIpcHandlers() {
             metrics.totalMs = elapsedSince(totalStart);
             failed += 1;
             completed += 1;
-            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: payload, metrics });
+            sendProgress({ completed, total, ok, failed, accountId, error: payload, metrics });
             return { accountId, ok: false as const, count: 0, error: payload, metrics };
           }
         }
@@ -1216,7 +1232,7 @@ export function registerIpcHandlers() {
         metrics.totalMs = elapsedSince(totalStart);
         ok += 1;
         completed += 1;
-        event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+        sendProgress({ completed, total, ok, failed, accountId, metrics });
         return { accountId, ok: true, count: messages.length, newCount, metrics };
         } catch (error) {
           if (signal.aborted) {
@@ -1238,7 +1254,7 @@ export function registerIpcHandlers() {
           failed += 1;
           completed += 1;
           metrics.totalMs = elapsedSince(totalStart);
-          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: payload, metrics });
+          sendProgress({ completed, total, ok, failed, accountId, error: payload, metrics });
           return { accountId, ok: false as const, count: 0, error: payload, metrics };
         }
         }, () => canceledResult(accountId, metrics, totalStart));

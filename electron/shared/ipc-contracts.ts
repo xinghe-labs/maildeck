@@ -209,6 +209,8 @@ export type RefreshManyResult =
     };
 
 export interface TestProgressEvent {
+  jobId: string;
+  kind: "test";
   completed: number;
   total: number;
   ok: number;
@@ -217,7 +219,15 @@ export interface TestProgressEvent {
   error?: AppErrorPayload;
 }
 
-export interface RefreshProgressEvent extends TestProgressEvent {
+export interface RefreshProgressEvent {
+  jobId: string;
+  kind: RefreshJobKind;
+  completed: number;
+  total: number;
+  ok: number;
+  failed: number;
+  accountId: string;
+  error?: AppErrorPayload;
   metrics?: RefreshMetrics;
 }
 

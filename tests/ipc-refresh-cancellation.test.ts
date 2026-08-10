@@ -236,6 +236,8 @@ describe("IPC refresh cancellation", () => {
     );
     expect(progressEvents).toHaveLength(1);
     expect(progressEvents[0]?.[1]).toMatchObject({
+      jobId: expect.any(String),
+      kind: "test",
       failed: 1,
       completed: 1,
       error: { code: "CANCELED", message: "批量测试已取消", retryable: false }
@@ -475,6 +477,8 @@ describe("IPC refresh cancellation", () => {
     expect(event.sender.send).toHaveBeenCalledWith(
       IPC_EVENT_CHANNELS.mailRefreshProgress,
       expect.objectContaining({
+        jobId: expect.any(String),
+        kind: "refresh",
         error: {
           code: "UNKNOWN",
           message: "操作失败，请重试；如果问题持续，请检查应用日志。",

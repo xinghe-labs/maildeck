@@ -27,6 +27,7 @@ import type {
 } from "./types";
 import { formatRelativeTime } from "./ui-utils";
 import { errorMessage } from "./app-error";
+import { shouldDisplayBulkRefreshProgress } from "./job-progress";
 
 const defaultSettings: AppSettings = {
   cacheMessages: true,
@@ -716,7 +717,7 @@ export default function App() {
     }
 
     return api.accounts.onRefreshProgress((progress) => {
-      if (silentRefreshRef.current) {
+      if (silentRefreshRef.current || !shouldDisplayBulkRefreshProgress(progress)) {
         return;
       }
 

@@ -22,6 +22,8 @@ Implementation note (2026-08-10): every invoke-style IPC response now uses a sha
 
 Implementation note (2026-08-10): idempotent Microsoft Graph reads now make at most three total attempts (the initial request plus two retries) for 429, 502, 503, and 504 responses. The retry policy honors `Retry-After` seconds or HTTP dates, adds bounded jitter, declines automatic retry when the requested wait exceeds 30 seconds, and aborts immediately with the owning refresh job. Exhausted 429 responses remain typed as retryable throttling errors and do not trigger Graph rediscovery or Hotmail fallback requests. Graph delta continuation URLs are validated against the HTTPS `graph.microsoft.com/v1.0` boundary before an authorization header is attached.
 
+Implementation note (2026-08-10): refresh and batch-test progress events now carry a main-process `jobId` and closed `kind`. The renderer displays only manual batch-refresh progress, so single-account and background refreshes cannot overwrite the active bulk progress indicator.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.
