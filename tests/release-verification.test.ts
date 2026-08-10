@@ -34,4 +34,9 @@ describe("packaged release verification", () => {
     expect(releaseVerifier).toContain("INVALID_REQUEST");
     expect(releaseVerifier).toContain("invalidIpcRetryable");
   });
+
+  it("exercises the packaged account-list projection through the context bridge", () => {
+    expect(releaseVerifier).toContain("bridge?.accounts?.list()");
+    expect(releaseVerifier).toContain("accountListReadable");
+  });
 });

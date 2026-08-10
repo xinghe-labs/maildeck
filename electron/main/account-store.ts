@@ -6,6 +6,7 @@ import { getDatabase, transaction } from "./database.js";
 import { decryptSecret, encryptSecret } from "./token-crypto.js";
 import { resolveRefreshTimestamps } from "./account-refresh-state.js";
 import { credentialGenerations, CredentialsChangedError } from "./credential-generations.js";
+import { ACCOUNT_VIEW_COLUMNS, type AccountViewRow } from "./account-view-projection.js";
 import type { AccountInput, AccountRecord, AccountUpdateInput, AccountView, ImportPreviewResult } from "./types.js";
 
 interface StoreFile {
@@ -215,11 +216,17 @@ function getAccountByEmail(email: string) {
   return row ? rowToRecord(row) : null;
 }
 
-function listAccountRecords() {
+function listAccountViews() {
   const rows = getDatabase()
-    .prepare("SELECT * FROM accounts ORDER BY email ASC")
-    .all() as unknown as AccountRow[];
-  return rows.map(rowToRecord);
+    .prepare(`SELECT ${ACCOUNT_VIEW_COLUMNS} FROM accounts ORDER BY email ASC`)
+    .all() as unknown as AccountViewRow[];
+  return rows;
+}
+
+function listAccountEmails() {
+  return getDatabase()
+    .prepare("SELECT email FROM accounts")
+    .all() as unknown as Array<{ email: string }>;
 }
 
 function insertOrReplaceAccount(account: AccountRecord) {
@@ -329,7 +336,7 @@ async function migrateLegacyAccountsOnce() {
 
 export async function listAccounts(): Promise<AccountView[]> {
   await migrateLegacyAccountsOnce();
-  return listAccountRecords().map(toView);
+  return listAccountViews();
 }
 
 export async function getAccountRecord(accountId: string): Promise<AccountRecord> {
@@ -394,7 +401,7 @@ export async function findAccountIdsByEmails(emails: Iterable<string>): Promise<
 
 export async function previewAccounts(inputs: AccountInput[]): Promise<ImportPreviewResult> {
   await migrateLegacyAccountsOnce();
-  const existingEmails = new Set(listAccountRecords().map((account) => account.email));
+  const existingEmails = new Set(listAccountEmails().map((account) => account.email));
   const seenEmails = new Set<string>();
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -506,7 +513,7 @@ export async function upsertAccounts(inputs: AccountInput[]) {
       skipped,
       errors,
       affectedAccountIds: [...new Set(affectedAccountIds)],
-      accounts: listAccountRecords().map(toView)
+      accounts: listAccountViews()
     };
   });
 }
@@ -526,7 +533,7 @@ export async function deleteAccount(accountId: string): Promise<AccountView[]> {
       db.prepare("DELETE FROM accounts WHERE id = ?").run(accountId);
     });
 
-    return listAccountRecords().map(toView);
+    return listAccountViews();
   });
 }
 

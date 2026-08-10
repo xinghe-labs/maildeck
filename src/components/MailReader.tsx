@@ -1,9 +1,10 @@
+import { memo, useMemo } from "react";
 import { Loader2, Mail } from "lucide-react";
 import type { MailMessageDetail, MailMessageSummary } from "../types";
 import { buildMailHtmlDocument, isMailHtmlBody, sanitizeMailHtml } from "../mail-content-security";
 import { addressList, formatDate } from "../ui-utils";
 
-export function MailReader({
+export const MailReader = memo(function MailReader({
   selectedMessage,
   messageDetail,
   loadingDetail
@@ -15,9 +16,11 @@ export function MailReader({
   const isHtml = messageDetail
     ? isMailHtmlBody(messageDetail.body.contentType)
     : false;
-  const mailDocument = isHtml && messageDetail
-    ? buildMailHtmlDocument(sanitizeMailHtml(messageDetail.body.content))
-    : "";
+  const bodyContent = messageDetail?.body.content || "";
+  const mailDocument = useMemo(
+    () => isHtml ? buildMailHtmlDocument(sanitizeMailHtml(bodyContent)) : "",
+    [bodyContent, isHtml]
+  );
 
   return (
     <article className="reader-panel">
@@ -73,4 +76,4 @@ export function MailReader({
       ) : null}
     </article>
   );
-}
+});

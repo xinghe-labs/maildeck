@@ -24,6 +24,10 @@ Implementation note (2026-08-10): idempotent Microsoft Graph reads now make at m
 
 Implementation note (2026-08-10): refresh and batch-test progress events now carry a main-process `jobId` and closed `kind`. The renderer displays only manual batch-refresh progress, so single-account and background refreshes cannot overwrite the active bulk progress indicator.
 
+Implementation note (2026-08-10): the required SQLite workload benchmark now seeds 5,000 accounts with 100 cached messages per account and records the runtime versions in its report. Under Electron 43.3.0's Node 24.18.1 and SQLite 3.53.1, SQLite column aliases return the credential-free renderer contract without a 5,000-object JavaScript copy pass; the account list measured 15.83 ms p95 and 17.24 ms maximum. Selected-account mail reads measured 0.22 ms p95 and 100-message cache writes measured 1.33 ms p95. These operations stay synchronous because they are below the 50 ms p95 and 100 ms maximum thresholds. Run `npm.cmd run build:electron`, then set `ELECTRON_RUN_AS_NODE=1` while invoking `node_modules/.bin/electron.cmd scripts/benchmark-sqlite.mjs` to reproduce the production-runtime workload.
+
+Implementation note (2026-08-10): the renderer memoizes sanitized mail documents by content, reuses module-level `Intl.DateTimeFormat` instances, and applies Chromium `content-visibility` containment to account and message rows. Frequent progress updates no longer repeat DOMPurify work or rebuild an unchanged mail iframe, while long lists skip offscreen layout and paint.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.
@@ -163,7 +167,7 @@ Database schema changes use ordered, transactional migrations. The migration run
 
 The first new migration removes persisted access-token data and prepares any new account-state fields required by the Refresh Coordinator. Existing account and mail-cache rows remain intact. Migration tests start from representative v1 through v4 database fixtures and verify the upgraded data.
 
-Synchronous SQLite calls remain in the main process for the first release. Their duration is measured with 5,000 accounts and 100 cached messages per account. Moving SQLite to a worker is considered only if a synchronous operation exceeds 50 ms at p95 or creates a main-process event-loop delay above 100 ms during that workload.
+SQLite operations remain synchronous in the main process while they stay below the measured thresholds. Account lists use a dedicated projection that never opens the encrypted refresh-token or credential-generation columns. The reproducible Electron-runtime workload contains 5,000 accounts and 100 cached messages per account, validates the returned account count, and fails if an operation exceeds 50 ms at p95 or 100 ms maximum. Moving SQLite reads to a worker remains conditional on a future production-runtime threshold regression.
 
 ## Upgrade Sequence
 

@@ -1,6 +1,15 @@
 import { AlertCircle, CheckCircle2, ShieldAlert } from "lucide-react";
 import type { AccountView, MailMessageSummary } from "./types";
 
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit"
+});
+const TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" });
+const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" });
+
 export function formatDate(value: string | null) {
   if (!value) {
     return "-";
@@ -12,12 +21,7 @@ export function formatDate(value: string | null) {
     return value;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+  return DATE_TIME_FORMATTER.format(date);
 }
 
 export function formatDateShort(value: string | null) {
@@ -34,7 +38,7 @@ export function formatDateShort(value: string | null) {
   const now = new Date();
   const sameDay = now.toDateString() === date.toDateString();
 
-  return new Intl.DateTimeFormat("zh-CN", sameDay ? { hour: "2-digit", minute: "2-digit" } : { month: "2-digit", day: "2-digit" }).format(date);
+  return (sameDay ? TIME_FORMATTER : SHORT_DATE_FORMATTER).format(date);
 }
 
 export function formatRelativeTime(value?: string | null) {
@@ -47,12 +51,7 @@ export function formatRelativeTime(value?: string | null) {
     return value;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+  return DATE_TIME_FORMATTER.format(date);
 }
 
 export function senderLabel(message: MailMessageSummary) {

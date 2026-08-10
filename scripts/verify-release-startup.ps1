@@ -124,6 +124,7 @@ document.readyState === 'complete' &&
   }
 
   const settings = await bridge?.settings?.get();
+  const accounts = await bridge?.accounts?.list();
   const forbiddenPasswordFields = Object.keys(settings || {}).filter((key) =>
     ['password', 'proxyPassword', 'encryptedPassword'].includes(key)
   );
@@ -145,6 +146,7 @@ document.readyState === 'complete' &&
     documentReadyState: document.readyState,
     hasBridge,
     settingsReadable: Boolean(settings),
+    accountListReadable: Array.isArray(accounts),
     invalidIpcRejected,
     invalidIpcCode,
     invalidIpcRetryable,
@@ -171,6 +173,7 @@ document.readyState === 'complete' &&
   if (
     -not $security.hasBridge -or
     -not $security.settingsReadable -or
+    -not $security.accountListReadable -or
     -not $security.invalidIpcRejected -or
     $security.invalidIpcCode -ne "INVALID_REQUEST" -or
     $security.invalidIpcRetryable -ne $false -or
@@ -227,7 +230,7 @@ document.readyState === 'complete' &&
     throw "Release executable icon does not look like the custom dark mail icon."
   }
 
-  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcCode=$($security.invalidIpcCode) invalidIpcRetryable=$($security.invalidIpcRetryable) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) geolocation=$($security.geolocationPermission) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True cspWorkerNone=True cspWebSocketExplicit=False db=$databasePath iconCenter=$($center.Name)"
+  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) accounts=$($security.accountListReadable) invalidIpcCode=$($security.invalidIpcCode) invalidIpcRetryable=$($security.invalidIpcRetryable) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) geolocation=$($security.geolocationPermission) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True cspWorkerNone=True cspWebSocketExplicit=False db=$databasePath iconCenter=$($center.Name)"
 } finally {
   if (-not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
