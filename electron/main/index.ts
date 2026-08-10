@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
@@ -7,40 +7,44 @@ import { registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import { SECURE_WEB_PREFERENCES } from "./window-security.js";
+import { configureSessionPermissions } from "./session-security.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
-function isRecoverableNetworkError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("econnreset") ||
-    lower.includes("etimedout") ||
-    lower.includes("econnrefused") ||
-    lower.includes("socket hang up") ||
-    lower.includes("tlswrap") ||
-    lower.includes("network")
-  );
+let fatalExitStarted = false;
+
+function exitAfterFatal(label: string, error: unknown) {
+  if (fatalExitStarted) {
+    app.exit(1);
+    return;
+  }
+  fatalExitStarted = true;
+  try {
+    console.error(label, formatErrorForLog(error));
+  } catch {
+    // Fatal logging must never prevent process termination.
+  }
+
+  try {
+    closeProxyDispatchers();
+  } catch (cleanupError) {
+    console.error("Failed to close proxy dispatchers", formatErrorForLog(cleanupError));
+  }
+  try {
+    closeDatabase();
+  } catch (cleanupError) {
+    console.error("Failed to close database", formatErrorForLog(cleanupError));
+  }
+  app.exit(1);
 }
 
 process.on("uncaughtException", (error) => {
-  if (isRecoverableNetworkError(error)) {
-    console.warn("Suppressed recoverable network exception", formatErrorForLog(error));
-    return;
-  }
-
-  console.error("Uncaught exception", formatErrorForLog(error));
-  app.exit(1);
+  exitAfterFatal("Uncaught exception", error);
 });
 
 process.on("unhandledRejection", (reason) => {
-  if (isRecoverableNetworkError(reason)) {
-    console.warn("Suppressed recoverable network rejection", formatErrorForLog(reason));
-    return;
-  }
-
-  console.error("Unhandled rejection", formatErrorForLog(reason));
+  exitAfterFatal("Unhandled rejection", reason);
 });
 
 if (process.env.OUTLOOK_MANAGER_USER_DATA_DIR) {
@@ -74,6 +78,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  configureSessionPermissions(session.defaultSession);
   getDatabase();
   registerIpcHandlers();
   createWindow();

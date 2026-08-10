@@ -21,4 +21,11 @@ describe("packaged release verification", () => {
   it("allows cold packaged renderers enough time to answer CDP", () => {
     expect(cdpEvaluator).toContain("30_000");
   });
+
+  it("verifies packaged permission denial and the production network policy", () => {
+    expect(releaseVerifier).toContain("geolocationPermission");
+    expect(releaseVerifier).toContain("worker-src 'none'");
+    expect(releaseVerifier).toContain('.Contains("ws://")');
+    expect(releaseVerifier).toContain('.Contains("wss://")');
+  });
 });

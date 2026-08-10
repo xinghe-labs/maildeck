@@ -14,6 +14,8 @@ Implementation note (2026-08-10): Phase 5 now enforces the persisted batch concu
 
 Implementation note (2026-08-10): fallback list refreshes now return summaries without opening up to ten additional IMAP connections for message details. Detail reads are lazy and can retry a numeric IMAP UID through the built-in Hotmail fallback. IMAP reads keep full-MIME charset repair for messages up to 10 MiB; larger messages download only the preferred non-attachment HTML or plain-text part with a 4 MiB decoded-content limit. Rediscovering an Inbox during a detail read no longer advances successful refresh timestamps.
 
+Implementation note (2026-08-10): the default Electron session now denies all Chromium permission checks, requests, and device permissions. Uncaught main-process exceptions and unhandled rejections are fatal after bounded local cleanup instead of being suppressed through error-message matching. The application CSP no longer exposes arbitrary localhost WebSocket endpoints and explicitly disables workers and media.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.

@@ -128,6 +128,12 @@ document.readyState === 'complete' &&
   const modal = document.querySelector('form.modal');
   const modalBounds = modal?.getBoundingClientRect();
   const passwordInput = modal?.querySelector('input[type="password"]');
+  let geolocationPermission = 'error';
+  try {
+    geolocationPermission = (await navigator.permissions.query({ name: 'geolocation' })).state;
+  } catch {
+    geolocationPermission = 'unsupported';
+  }
 
   return {
     documentReadyState: document.readyState,
@@ -142,6 +148,7 @@ document.readyState === 'complete' &&
     settingsModalFitsViewport: Boolean(
       modalBounds && modalBounds.top >= 0 && modalBounds.bottom <= window.innerHeight
     ),
+    geolocationPermission,
     hasNodeProcess: typeof globalThis.process !== 'undefined',
     csp: document.querySelector('meta[http-equiv=Content-Security-Policy]')?.content || ''
   };
@@ -162,6 +169,7 @@ document.readyState === 'complete' &&
     -not $security.passwordInputBlank -or
     -not $security.settingsModalVisible -or
     -not $security.settingsModalFitsViewport -or
+    $security.geolocationPermission -ne "denied" -or
     $security.forbiddenPasswordFields.Count -ne 0 -or
     $security.hasNodeProcess
   ) {
@@ -169,6 +177,12 @@ document.readyState === 'complete' &&
   }
   if (-not $security.csp.Contains("object-src 'none'")) {
     throw "Packaged renderer CSP is missing object-src 'none'."
+  }
+  if (-not $security.csp.Contains("worker-src 'none'")) {
+    throw "Packaged renderer CSP is missing worker-src 'none'."
+  }
+  if ($security.csp.Contains("ws://") -or $security.csp.Contains("wss://")) {
+    throw "Packaged renderer CSP exposes an explicit WebSocket source."
   }
 
   if ($page.title -ne "Outlook Manager") {
@@ -203,7 +217,7 @@ document.readyState === 'complete' &&
     throw "Release executable icon does not look like the custom dark mail icon."
   }
 
-  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcRejected=$($security.invalidIpcRejected) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True db=$databasePath iconCenter=$($center.Name)"
+  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcRejected=$($security.invalidIpcRejected) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) geolocation=$($security.geolocationPermission) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True cspWorkerNone=True cspWebSocketExplicit=False db=$databasePath iconCenter=$($center.Name)"
 } finally {
   if (-not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
