@@ -299,7 +299,7 @@ export async function saveCachedMessages(
   messages: MailMessageSummary[],
   enabled = true,
   nextCursor?: string | null,
-  options: { readBack?: boolean } = {}
+  options: { readBack?: boolean; assertCurrent?: () => void } = {}
 ) {
   await migrateLegacyCacheOnce();
   if (!enabled) {
@@ -307,6 +307,7 @@ export async function saveCachedMessages(
   }
 
   return withCacheLock(async () => {
+    options.assertCurrent?.();
     transaction(() => {
       saveMessagesSync(accountId, messages, nextCursor === undefined ? KEEP_EXISTING_CURSOR : nextCursor);
     });
@@ -380,13 +381,19 @@ export async function getCachedMessageDetail(accountId: string, messageId: strin
   return parseStoredMailDetail(row.detail_json);
 }
 
-export async function saveCachedMessageDetail(accountId: string, detail: MailMessageDetail, enabled = true) {
+export async function saveCachedMessageDetail(
+  accountId: string,
+  detail: MailMessageDetail,
+  enabled = true,
+  options: { assertCurrent?: () => void } = {}
+) {
   await migrateLegacyCacheOnce();
   if (!enabled) {
     return;
   }
 
   return withCacheLock(async () => {
+    options.assertCurrent?.();
     transaction(() => {
       const db = getDatabase();
       db.prepare(`

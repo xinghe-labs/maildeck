@@ -110,14 +110,15 @@ async function parseResponse(response: Response) {
   }
 }
 
-async function graphFetch<T>(accessToken: string, path: string, proxyUrl = ""): Promise<T> {
+async function graphFetch<T>(accessToken: string, path: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
   const response = await proxiedFetch(
     `${GRAPH_ENDPOINT}${path}`,
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json"
-      }
+      },
+      signal
     },
     proxyUrl
   );
@@ -131,14 +132,15 @@ async function graphFetch<T>(accessToken: string, path: string, proxyUrl = ""): 
   return payload as T;
 }
 
-async function graphFetchUrl<T>(accessToken: string, url: string, proxyUrl = ""): Promise<T> {
+async function graphFetchUrl<T>(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
   const response = await proxiedFetch(
     url,
     {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json"
-      }
+      },
+      signal
     },
     proxyUrl
   );
@@ -198,7 +200,12 @@ async function proxiedFetch(url: string, init: RequestInit, proxyUrl = "") {
   return fetch(url, proxiedFetchOptions(init, proxyUrl));
 }
 
-export async function refreshAccessToken(clientId: string, refreshToken: string, proxyUrl = ""): Promise<AccessTokenResult> {
+export async function refreshAccessToken(
+  clientId: string,
+  refreshToken: string,
+  proxyUrl = "",
+  signal?: AbortSignal
+): Promise<AccessTokenResult> {
   let lastError: string | null = null;
 
   for (const endpoint of TOKEN_ENDPOINTS) {
@@ -212,7 +219,8 @@ export async function refreshAccessToken(clientId: string, refreshToken: string,
       headers: {
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body: form
+      body: form,
+      signal
     }, proxyUrl);
 
     const payload = (await parseResponse(response)) as TokenResponse;
@@ -241,11 +249,12 @@ export async function refreshAccessToken(clientId: string, refreshToken: string,
   throw new Error(lastError || "Token 刷新失败");
 }
 
-export async function listMailFolders(accessToken: string, proxyUrl = ""): Promise<MailFolder[]> {
+export async function listMailFolders(accessToken: string, proxyUrl = "", signal?: AbortSignal): Promise<MailFolder[]> {
   const payload = await graphFetch<GraphListResponse<GraphFolder>>(
     accessToken,
     "/me/mailFolders?$top=100&$select=id,displayName,totalItemCount,unreadItemCount",
-    proxyUrl
+    proxyUrl,
+    signal
   );
 
   return (payload.value || []).map((folder) => ({
@@ -263,7 +272,8 @@ export async function listMessages(
   skip = 0,
   search = "",
   since: string | null = null,
-  proxyUrl = ""
+  proxyUrl = "",
+  signal?: AbortSignal
 ): Promise<MailMessageSummary[]> {
   const params = new URLSearchParams();
   params.set("$top", String(Math.min(Math.max(top, 1), 100)));
@@ -288,7 +298,8 @@ export async function listMessages(
   const payload = await graphFetch<GraphListResponse<GraphMessage>>(
     accessToken,
     `/me/mailFolders/${encodeURIComponent(folderId)}/messages?${params.toString()}`,
-    proxyUrl
+    proxyUrl,
+    signal
   );
 
   return (payload.value || []).map(mapMessageSummary);
@@ -300,7 +311,8 @@ export async function deltaMessages(
   top = 20,
   deltaLink: string | null = null,
   maxPages = 1,
-  proxyUrl = ""
+  proxyUrl = "",
+  signal?: AbortSignal
 ): Promise<GraphDeltaMessagesResult> {
   const messages: MailMessageSummary[] = [];
   let nextLink: string | null = deltaLink;
@@ -309,11 +321,12 @@ export async function deltaMessages(
 
   for (let page = 0; page < pageLimit; page += 1) {
     const payload = nextLink
-      ? await graphFetchUrl<GraphDeltaResponse<GraphMessage>>(accessToken, nextLink, proxyUrl)
+      ? await graphFetchUrl<GraphDeltaResponse<GraphMessage>>(accessToken, nextLink, proxyUrl, signal)
       : await graphFetch<GraphDeltaResponse<GraphMessage>>(
           accessToken,
           `/me/mailFolders/${encodeURIComponent(folderId)}/messages/delta?$top=${Math.min(Math.max(top, 1), 100)}&$select=id,subject,from,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,bodyPreview,webLink`,
-          proxyUrl
+          proxyUrl,
+          signal
         );
 
     messages.push(...(payload.value || []).map(mapMessageSummary));
@@ -332,14 +345,24 @@ export async function deltaMessages(
   };
 }
 
-export async function getMessage(accessToken: string, messageId: string, proxyUrl = ""): Promise<MailMessageDetail> {
+export async function getMessage(
+  accessToken: string,
+  messageId: string,
+  proxyUrl = "",
+  signal?: AbortSignal
+): Promise<MailMessageDetail> {
   const params = new URLSearchParams();
   params.set(
     "$select",
     "id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,bodyPreview,webLink,body"
   );
 
-  const message = await graphFetch<GraphMessage>(accessToken, `/me/messages/${encodeURIComponent(messageId)}?${params}`, proxyUrl);
+  const message = await graphFetch<GraphMessage>(
+    accessToken,
+    `/me/messages/${encodeURIComponent(messageId)}?${params}`,
+    proxyUrl,
+    signal
+  );
   const summary = mapMessageSummary(message);
   const content = message.body?.content || "";
 

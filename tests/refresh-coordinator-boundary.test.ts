@@ -16,6 +16,6 @@ describe("refresh coordinator boundary", () => {
   });
 
   it("serializes each account inside both batch jobs", () => {
-    expect(ipcSource.match(/job\.runAccount\(\s*accountId/gu)).toHaveLength(2);
+    expect(ipcSource.match(/job\.runAccount(?:<[^>]+>)?\(\s*accountId/gu)).toHaveLength(2);
   });
 });

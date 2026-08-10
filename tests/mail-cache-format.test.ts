@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MailMessageDetail } from "../electron/shared/ipc-contracts.js";
+import { JobCanceledError } from "../electron/main/job-errors.js";
 
 const electronState = vi.hoisted(() => ({ userDataPath: "" }));
 
@@ -77,5 +78,21 @@ describe("mail detail cache format", () => {
         content: legacy.body.content
       }
     });
+  });
+
+  it("checks cancellation inside the cache lock before writing", async () => {
+    await createTemporaryUserData();
+    const cache = await import("../electron/main/mail-cache.js");
+    const expected = detail("text", "must not be cached");
+    const controller = new AbortController();
+    const canceled = new JobCanceledError("刷新已取消");
+    controller.abort(canceled);
+
+    await expect(
+      cache.saveCachedMessageDetail("account-1", expected, true, {
+        assertCurrent: () => controller.signal.throwIfAborted()
+      })
+    ).rejects.toBe(canceled);
+    await expect(cache.getCachedMessageDetail("account-1", expected.id)).resolves.toBeNull();
   });
 });

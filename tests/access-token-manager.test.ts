@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AccessTokenManager, type AccountCredentials } from "../electron/main/access-token-manager.js";
 import { CredentialGenerations, CredentialsChangedError } from "../electron/main/credential-generations.js";
+import { JobCanceledError } from "../electron/main/job-errors.js";
 import type { AccessTokenResult } from "../electron/main/types.js";
 
 function deferred<T>() {
@@ -40,11 +41,17 @@ interface Harness {
   proxyUrl: string;
   readonly requests: Array<{ clientId: string; refreshToken: string; proxyUrl: string }>;
   readonly committedRefreshTokens: string[];
-  requestAccessToken: (clientId: string, refreshToken: string, proxyUrl: string) => Promise<AccessTokenResult>;
+  requestAccessToken: (
+    clientId: string,
+    refreshToken: string,
+    proxyUrl: string,
+    signal: AbortSignal
+  ) => Promise<AccessTokenResult>;
 }
 
 function createHarness(
-  requestAccessToken: Harness["requestAccessToken"]
+  requestAccessToken: Harness["requestAccessToken"],
+  assertCredentialGeneration?: (accountId: string, expectedGeneration: number) => Promise<void>
 ): Harness {
   const generations = new CredentialGenerations();
   const requests: Harness["requests"] = [];
@@ -69,11 +76,15 @@ function createHarness(
     generations,
     loadCredentials: async () => ({ ...harness.credentials }),
     loadProxyUrl: async () => harness.proxyUrl,
-    requestAccessToken: async (clientId, refreshToken, proxyUrl) => {
+    requestAccessToken: async (clientId, refreshToken, proxyUrl, signal) => {
       requests.push({ clientId, refreshToken, proxyUrl });
-      return requestAccessToken(clientId, refreshToken, proxyUrl);
+      return requestAccessToken(clientId, refreshToken, proxyUrl, signal);
     },
     assertCredentialGeneration: async (_accountId, expectedGeneration) => {
+      if (assertCredentialGeneration) {
+        await assertCredentialGeneration(_accountId, expectedGeneration);
+        return;
+      }
       if (harness.credentials.credentialGeneration !== expectedGeneration) {
         throw new CredentialsChangedError();
       }
@@ -178,6 +189,103 @@ describe("AccessTokenManager", () => {
     firstRequest.reject(new Error("old proxy disconnected"));
 
     await expect(pending).resolves.toMatchObject({ accessToken: "access-after-error" });
+    expect(harness.requests.map((request) => request.refreshToken)).toEqual(["refresh-1", "refresh-2"]);
+  });
+
+  it("aborts the active token request when its caller is canceled", async () => {
+    const requestStarted = deferred<AbortSignal>();
+    const harness = createHarness(async (_clientId, _refreshToken, _proxyUrl, signal) => {
+      requestStarted.resolve(signal);
+      return new Promise<AccessTokenResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const controller = new AbortController();
+    const pending = harness.manager.getAccessToken("account-1", false, controller.signal);
+    const requestSignal = await requestStarted.promise;
+    const canceled = new JobCanceledError("刷新已取消");
+
+    controller.abort(canceled);
+
+    await expect(pending).rejects.toBe(canceled);
+    expect(requestSignal.aborted).toBe(true);
+  });
+
+  it("keeps a shared token request alive when another caller is still waiting", async () => {
+    const requestStarted = deferred<AbortSignal>();
+    const requested = deferred<AccessTokenResult>();
+    const harness = createHarness(async (_clientId, _refreshToken, _proxyUrl, signal) => {
+      requestStarted.resolve(signal);
+      return new Promise<AccessTokenResult>((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        requested.promise.then(resolve, reject);
+      });
+    });
+    const firstController = new AbortController();
+    const first = harness.manager.getAccessToken("account-1", false, firstController.signal);
+    const requestSignal = await requestStarted.promise;
+    const second = harness.manager.getAccessToken("account-1");
+    const canceled = new JobCanceledError("第一个调用已取消");
+
+    firstController.abort(canceled);
+
+    await expect(first).rejects.toBe(canceled);
+    expect(requestSignal.aborted).toBe(false);
+    requested.resolve(token("shared-access"));
+    await expect(second).resolves.toMatchObject({ accessToken: "shared-access" });
+    expect(harness.requests).toHaveLength(1);
+  });
+
+  it("does not commit a rotated refresh token after cancellation during validation", async () => {
+    const validationStarted = deferred<void>();
+    const releaseValidation = deferred<void>();
+    const validationFinished = deferred<void>();
+    const harness = createHarness(
+      async () => token("access-canceled", "rotated-canceled"),
+      async () => {
+        validationStarted.resolve();
+        await releaseValidation.promise;
+        validationFinished.resolve();
+      }
+    );
+    const controller = new AbortController();
+    const pending = harness.manager.getAccessToken("account-1", false, controller.signal);
+    await validationStarted.promise;
+    const canceled = new JobCanceledError("刷新已取消");
+
+    controller.abort(canceled);
+
+    await expect(pending).rejects.toBe(canceled);
+    releaseValidation.resolve();
+    await validationFinished.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.committedRefreshTokens).toEqual([]);
+  });
+
+  it("aborts obsolete token I/O immediately when credentials change", async () => {
+    const firstRequestStarted = deferred<AbortSignal>();
+    const harness = createHarness(async (_clientId, refreshToken, _proxyUrl, signal) => {
+      if (refreshToken !== "refresh-1") {
+        return token("access-current");
+      }
+
+      firstRequestStarted.resolve(signal);
+      return new Promise<AccessTokenResult>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const pending = harness.manager.getAccessToken("account-1");
+    const obsoleteSignal = await firstRequestStarted.promise;
+    harness.credentials = {
+      ...harness.credentials,
+      refreshToken: "refresh-2",
+      credentialGeneration: 2
+    };
+
+    harness.generations.invalidateAccounts(["account-1"]);
+
+    await expect(pending).resolves.toMatchObject({ accessToken: "access-current" });
+    expect(obsoleteSignal.aborted).toBe(true);
     expect(harness.requests.map((request) => request.refreshToken)).toEqual(["refresh-1", "refresh-2"]);
   });
 

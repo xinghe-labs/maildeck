@@ -6,9 +6,11 @@ Direction approved on 2026-07-18: keep Electron and React, upgrade and harden th
 
 This document defines the implementation scope that must be reviewed before code changes begin.
 
-Implementation note (2026-08-05): the Refresh Coordinator now owns job registration, queued cancellation, per-account serialization, and stable multi-account locking for imports. Credential generations cover account reimport/edit/delete and proxy changes; access tokens are memory-only and stale token or fallback work cannot commit rotated credentials. Database schema v5 removes the persisted access-token table without removing account or mail data. A global cross-job concurrency limit and AbortController propagation for work already in progress remain Phase 5 work.
+Implementation note (2026-08-05): the Refresh Coordinator now owns job registration, queued cancellation, per-account serialization, and stable multi-account locking for imports. Credential generations cover account reimport/edit/delete and proxy changes; access tokens are memory-only and stale token or fallback work cannot commit rotated credentials. Database schema v5 removes the persisted access-token table without removing account or mail data.
 
 Implementation note (2026-08-10): Phase 4 upgraded Electron from 35.7.5 to the exact stable target 43.3.0 (Node 24.18.1 and Chromium 150). The project now requires host Node 22.12.0 or newer and explicitly installs and verifies the Electron binary during `npm install` and Windows distribution. The complete dependency audit reports zero vulnerabilities, and the packaged Windows smoke verifies the Electron version, SQLite startup, sandboxed preload, IPC validation, encrypted proxy storage, and CSP. Local portable and NSIS artifacts remain unsigned until a production Authenticode certificate is configured.
+
+Implementation note (2026-08-10): Phase 5 now enforces the persisted batch concurrency as one global limit across batch and single-account network work. Active cancellation propagates through token exchange, Graph, IMAP, and the built-in Hotmail fallback; queued cache and account-state commits recheck cancellation inside their locks. Token refresh deduplication keeps shared requests alive for remaining callers while still aborting obsolete I/O after account, proxy, or final-caller invalidation.
 
 ## Context
 

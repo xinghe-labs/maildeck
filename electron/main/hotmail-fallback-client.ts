@@ -59,11 +59,13 @@ export function isHotmailFallbackEnabled(settings: { hotmailFallbackEnabled?: bo
 export async function refreshHotmailFallbackToken(
   clientId: string,
   refreshToken: string,
-  proxyUrl = ""
+  proxyUrl = "",
+  signal?: AbortSignal
 ): Promise<AccessTokenResult & { endpoint: string }> {
   const errors: string[] = [];
 
   for (const endpoint of TOKEN_ENDPOINTS) {
+    signal?.throwIfAborted();
     const form = new URLSearchParams();
     form.set("client_id", clientId);
     form.set("refresh_token", refreshToken);
@@ -78,9 +80,12 @@ export async function refreshHotmailFallbackToken(
       headers: {
         "Content-Type": "application/x-www-form-urlencoded"
       },
-      body: form
+      body: form,
+      signal
     }, proxyUrl));
+    signal?.throwIfAborted();
     const payload = await parseResponse(response);
+    signal?.throwIfAborted();
 
     if (response.ok && payload.access_token) {
       return {
@@ -104,14 +109,17 @@ async function loadMessageDetails(
   accessToken: string,
   folderId: string,
   messages: MailMessageSummary[],
-  proxyUrl: string
+  proxyUrl: string,
+  signal?: AbortSignal
 ) {
   const details: MailMessageDetail[] = [];
 
   for (const message of messages.slice(0, 10)) {
+    signal?.throwIfAborted();
     try {
-      details.push(await getImapMessage(account.email, accessToken, folderId, message.id, proxyUrl));
+      details.push(await getImapMessage(account.email, accessToken, folderId, message.id, proxyUrl, signal));
     } catch {
+      signal?.throwIfAborted();
       details.push({
         ...message,
         toRecipients: [],
@@ -131,21 +139,23 @@ export async function fetchHotmailFallbackMessages(
   settings: { hotmailFallbackEnabled?: boolean; proxyUrl?: string },
   account: AccountRecord,
   refreshToken: string,
-  top = 20
+  top = 20,
+  signal?: AbortSignal
 ): Promise<HotmailFallbackMessagesResult> {
   if (!isHotmailFallbackEnabled(settings)) {
     throw new Error("内置 Hotmail 兜底未启用");
   }
 
   const proxyUrl = settings.proxyUrl || "";
-  const token = await refreshHotmailFallbackToken(account.clientId, refreshToken, proxyUrl);
-  const result = await refreshImapInbox(account.email, token.accessToken, top, "", account.inboxFolderId || null, proxyUrl);
+  const token = await refreshHotmailFallbackToken(account.clientId, refreshToken, proxyUrl, signal);
+  const result = await refreshImapInbox(account.email, token.accessToken, top, "", account.inboxFolderId || null, proxyUrl, signal);
   const messages = result.messages.length > 0
     ? result.messages
-    : (await listImapMessages(account.email, token.accessToken, result.inboxFolderId || "INBOX", top, "", "", proxyUrl)).messages;
+    : (await listImapMessages(account.email, token.accessToken, result.inboxFolderId || "INBOX", top, "", "", proxyUrl, signal)).messages;
   const details = result.inboxFolderId
-    ? await loadMessageDetails(account, token.accessToken, result.inboxFolderId, messages, proxyUrl)
+    ? await loadMessageDetails(account, token.accessToken, result.inboxFolderId, messages, proxyUrl, signal)
     : [];
+  signal?.throwIfAborted();
 
   return {
     messages,
@@ -162,18 +172,20 @@ export async function testHotmailFallbackConnection(
   settings: { hotmailFallbackEnabled?: boolean; proxyUrl?: string },
   account: AccountRecord,
   refreshToken: string,
-  top = 5
+  top = 5,
+  signal?: AbortSignal
 ): Promise<Omit<HotmailFallbackMessagesResult, "details">> {
   if (!isHotmailFallbackEnabled(settings)) {
     throw new Error("内置 Hotmail 兜底未启用");
   }
 
   const proxyUrl = settings.proxyUrl || "";
-  const token = await refreshHotmailFallbackToken(account.clientId, refreshToken, proxyUrl);
-  const result = await refreshImapInbox(account.email, token.accessToken, top, "", account.inboxFolderId || null, proxyUrl);
+  const token = await refreshHotmailFallbackToken(account.clientId, refreshToken, proxyUrl, signal);
+  const result = await refreshImapInbox(account.email, token.accessToken, top, "", account.inboxFolderId || null, proxyUrl, signal);
   const messages = result.messages.length > 0
     ? result.messages
-    : (await listImapMessages(account.email, token.accessToken, result.inboxFolderId || "INBOX", top, "", "", proxyUrl)).messages;
+    : (await listImapMessages(account.email, token.accessToken, result.inboxFolderId || "INBOX", top, "", "", proxyUrl, signal)).messages;
+  signal?.throwIfAborted();
 
   return {
     messages,

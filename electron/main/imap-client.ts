@@ -42,7 +42,14 @@ function toIsoString(value: string | Date | undefined | null) {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
-async function withClient<T>(email: string, accessToken: string, handler: (client: ImapFlow) => Promise<T>, proxyUrl = "") {
+async function withClient<T>(
+  email: string,
+  accessToken: string,
+  handler: (client: ImapFlow) => Promise<T>,
+  proxyUrl = "",
+  signal?: AbortSignal
+) {
+  signal?.throwIfAborted();
   const client = new ImapFlow({
     host: "outlook.office365.com",
     port: 993,
@@ -59,21 +66,39 @@ async function withClient<T>(email: string, accessToken: string, handler: (clien
   client.on("error", (error) => {
     deferredErrors.push(error instanceof Error ? error : new Error(String(error)));
   });
-
-  await client.connect();
+  const onAbort = () => client.close();
+  signal?.addEventListener("abort", onAbort, { once: true });
 
   try {
+    await client.connect();
+    signal?.throwIfAborted();
     const result = await handler(client);
+    signal?.throwIfAborted();
     if (deferredErrors.length > 0) {
       throw deferredErrors[0];
     }
     return result;
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
   } finally {
-    await client.logout().catch(() => undefined);
+    try {
+      if (!signal?.aborted) {
+        await client.logout().catch(() => undefined);
+      }
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+    signal?.throwIfAborted();
   }
 }
 
-export async function listImapFolders(email: string, accessToken: string, proxyUrl = ""): Promise<MailFolder[]> {
+export async function listImapFolders(
+  email: string,
+  accessToken: string,
+  proxyUrl = "",
+  signal?: AbortSignal
+): Promise<MailFolder[]> {
   return withClient(email, accessToken, async (client) => {
     const mailboxes = await client.list();
     return mailboxes
@@ -84,7 +109,7 @@ export async function listImapFolders(email: string, accessToken: string, proxyU
         totalItemCount: 0,
         unreadItemCount: 0
       }));
-  }, proxyUrl);
+  }, proxyUrl, signal);
 }
 
 export async function listImapMessages(
@@ -94,7 +119,8 @@ export async function listImapMessages(
   top = 30,
   search = "",
   cursor = "",
-  proxyUrl = ""
+  proxyUrl = "",
+  signal?: AbortSignal
 ): Promise<ImapMessageListResult> {
   return withClient(email, accessToken, async (client) => {
     const lock = await client.getMailboxLock(folderId);
@@ -173,7 +199,7 @@ export async function listImapMessages(
     } finally {
       lock.release();
     }
-  }, proxyUrl);
+  }, proxyUrl, signal);
 }
 
 export async function listNewImapMessages(
@@ -182,7 +208,8 @@ export async function listNewImapMessages(
   folderId: string,
   top = 30,
   afterUid = "",
-  proxyUrl = ""
+  proxyUrl = "",
+  signal?: AbortSignal
 ): Promise<ImapMessageListResult> {
   return withClient(email, accessToken, async (client) => {
     const lock = await client.getMailboxLock(folderId);
@@ -239,7 +266,7 @@ export async function listNewImapMessages(
     } finally {
       lock.release();
     }
-  }, proxyUrl);
+  }, proxyUrl, signal);
 }
 
 function isInboxCandidate(folderId: string) {
@@ -305,7 +332,8 @@ export async function refreshImapInbox(
   top = 30,
   afterUid = "",
   cachedFolderId: string | null = null,
-  proxyUrl = ""
+  proxyUrl = "",
+  signal?: AbortSignal
 ): Promise<ImapRefreshResult> {
   return withClient(email, accessToken, async (client) => {
     const inboxFolderId = await resolveInboxPath(client, cachedFolderId);
@@ -345,10 +373,17 @@ export async function refreshImapInbox(
     } finally {
       lock.release();
     }
-  }, proxyUrl);
+  }, proxyUrl, signal);
 }
 
-export async function getImapMessage(email: string, accessToken: string, folderId: string, messageId: string, proxyUrl = "") {
+export async function getImapMessage(
+  email: string,
+  accessToken: string,
+  folderId: string,
+  messageId: string,
+  proxyUrl = "",
+  signal?: AbortSignal
+) {
   return withClient(email, accessToken, async (client): Promise<MailMessageDetail> => {
     const lock = await client.getMailboxLock(folderId);
 
@@ -397,5 +432,5 @@ export async function getImapMessage(email: string, accessToken: string, folderI
     } finally {
       lock.release();
     }
-  }, proxyUrl);
+  }, proxyUrl, signal);
 }

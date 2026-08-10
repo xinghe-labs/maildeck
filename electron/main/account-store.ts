@@ -627,7 +627,8 @@ export async function updateAccountRefreshState(
     inboxFolderId?: string | null;
     graphDeltaLink?: string | null;
     refreshCooldownUntil?: string | null;
-  }
+  },
+  options: { assertCurrent?: () => void } = {}
 ): Promise<AccountView> {
   await migrateLegacyAccountsOnce();
   return withStoreLock(async () => {
@@ -636,6 +637,7 @@ export async function updateAccountRefreshState(
     if (!account) {
       throw new Error("账号不存在");
     }
+    options.assertCurrent?.();
 
     const timestamp = nowIso();
     const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, true);
@@ -665,7 +667,8 @@ export async function updateAccountRefreshFailure(
     status: AccountRecord["status"];
     lastError: string;
     refreshCooldownUntil?: string | null;
-  }
+  },
+  options: { assertCurrent?: () => void } = {}
 ): Promise<AccountView> {
   await migrateLegacyAccountsOnce();
   return withStoreLock(async () => {
@@ -673,6 +676,7 @@ export async function updateAccountRefreshFailure(
     if (!account) {
       throw new Error("账号不存在");
     }
+    options.assertCurrent?.();
     const timestamp = nowIso();
     const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, false);
     const next: AccountRecord = {

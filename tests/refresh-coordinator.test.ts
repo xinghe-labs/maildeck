@@ -74,6 +74,89 @@ describe("RefreshCoordinator", () => {
     await first;
   });
 
+  it("shares one concurrency limit across different job kinds", async () => {
+    const coordinator = new RefreshCoordinator();
+    coordinator.setConcurrency(2);
+    const firstEntered = deferred();
+    const secondEntered = deferred();
+    const releaseActive = deferred();
+    let active = 0;
+    let maxActive = 0;
+    let thirdStarted = false;
+
+    const runBlocked = (entered: ReturnType<typeof deferred>) => async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      entered.resolve();
+      await releaseActive.promise;
+      active -= 1;
+    };
+
+    const refresh = coordinator.runJob("refresh", (job) =>
+      Promise.all([
+        job.runAccount("account-1", runBlocked(firstEntered), unexpectedCancellation),
+        job.runAccount("account-2", runBlocked(secondEntered), unexpectedCancellation)
+      ])
+    );
+    await Promise.all([firstEntered.promise, secondEntered.promise]);
+
+    const test = coordinator.runJob("test", (job) =>
+      job.runAccount(
+        "account-3",
+        async () => {
+          thirdStarted = true;
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          active -= 1;
+        },
+        unexpectedCancellation
+      )
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(thirdStarted).toBe(false);
+    expect(maxActive).toBe(2);
+
+    releaseActive.resolve();
+    await Promise.all([refresh, test]);
+    expect(thirdStarted).toBe(true);
+    expect(maxActive).toBe(2);
+  });
+
+  it("aborts running work and releases its global permit", async () => {
+    const coordinator = new RefreshCoordinator();
+    coordinator.setConcurrency(1);
+    const operationStarted = deferred();
+    let receivedSignal: AbortSignal | null = null;
+
+    const running = coordinator.runJob("refresh", (job) =>
+      job.runAccount(
+        "account-1",
+        async (signal) => {
+          receivedSignal = signal;
+          operationStarted.resolve();
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+          return "completed";
+        },
+        () => "canceled"
+      )
+    );
+
+    await operationStarted.promise;
+    expect(coordinator.cancel("refresh")).toBe(1);
+    await expect(running).resolves.toBe("canceled");
+    expect(receivedSignal?.aborted).toBe(true);
+
+    await expect(
+      coordinator.runJob("test", (job) =>
+        job.runAccount("account-2", async () => "next", unexpectedCancellation)
+      )
+    ).resolves.toBe("next");
+  });
+
   it("locks a deduplicated account set in stable order", async () => {
     const coordinator = new RefreshCoordinator();
     const groupEntered = deferred();
@@ -181,5 +264,36 @@ describe("RefreshCoordinator", () => {
     ).rejects.toThrow("failed");
 
     await expect(coordinator.runAccount("account-1", async () => "recovered")).resolves.toBe("recovered");
+  });
+
+  it("shares the global concurrency limit with single-account network work", async () => {
+    const coordinator = new RefreshCoordinator();
+    coordinator.setConcurrency(1);
+    const batchStarted = deferred();
+    const releaseBatch = deferred();
+    let singleStarted = false;
+
+    const batch = coordinator.runJob("refresh", (job) =>
+      job.runAccount(
+        "account-1",
+        async () => {
+          batchStarted.resolve();
+          await releaseBatch.promise;
+          return "batch";
+        },
+        () => "canceled"
+      )
+    );
+    await batchStarted.promise;
+
+    const single = coordinator.runNetworkAccount("account-2", async () => {
+      singleStarted = true;
+      return "single";
+    });
+    await Promise.resolve();
+    expect(singleStarted).toBe(false);
+
+    releaseBatch.resolve();
+    await expect(Promise.all([batch, single])).resolves.toEqual(["batch", "single"]);
   });
 });

@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { JobCanceledError } from "../electron/main/job-errors.js";
 
 const electronState = vi.hoisted(() => ({ userDataPath: "" }));
 
@@ -220,6 +221,37 @@ describe("credential storage migration", () => {
     await fallbackCommit;
     await staleExpectation;
     await expect(accountStore.getRefreshToken(accountId)).resolves.toBe(fallbackRefreshToken);
+  });
+
+  it("checks cancellation inside the account store lock before refreshing state", async () => {
+    await createTemporaryUserData();
+    const accountStore = await import("../electron/main/account-store.js");
+    const created = await accountStore.upsertAccounts([
+      {
+        email: "person@example.com",
+        clientId: "00000000-0000-4000-8000-000000000001",
+        refreshToken: `M.${"a".repeat(100)}`
+      }
+    ]);
+    const accountId = created.affectedAccountIds[0];
+    const controller = new AbortController();
+    const canceled = new JobCanceledError("刷新已取消");
+    controller.abort(canceled);
+
+    await expect(
+      accountStore.updateAccountRefreshState(accountId, {
+        status: "valid",
+        lastError: null,
+        lastInboxCount: 10,
+        lastMailAt: null
+      }, {
+        assertCurrent: () => controller.signal.throwIfAborted()
+      })
+    ).rejects.toBe(canceled);
+    await expect(accountStore.getAccountRecord(accountId)).resolves.toMatchObject({
+      status: "untested",
+      lastInboxCount: 0
+    });
   });
 
   it("invalidates account generations on edit and delete", async () => {
