@@ -2,6 +2,7 @@ import { Joiner, Splitter, Streamer, type MimeNode, type SplitterChunk } from "@
 import { simpleParser } from "mailparser";
 import { Readable, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { MailParseFailedError, isMailParseFailedError } from "./mail-errors.js";
 
 export interface ParsedMailContentInput {
   html?: string | boolean;
@@ -15,7 +16,7 @@ export interface ParsedMailContent {
   previewText: string;
 }
 
-const MAX_CHARSET_REPAIR_BYTES = 8 * 1024 * 1024;
+const MAX_CHARSET_REPAIR_BYTES = 13 * 1024 * 1024;
 const MAX_MIME_HEADER_BYTES = 1024 * 1024;
 const CHARSET_REPAIR_CANDIDATES = ["utf-8", "gb18030", "windows-1252"] as const;
 
@@ -209,6 +210,13 @@ async function repairMailSourceCharsets(source: Buffer) {
 }
 
 export async function parseMailSourceContent(source: Buffer): Promise<ParsedMailContent> {
-  const parsed = await simpleParser(await repairMailSourceCharsets(source));
-  return selectParsedMailContent(parsed);
+  try {
+    const parsed = await simpleParser(await repairMailSourceCharsets(source));
+    return selectParsedMailContent(parsed);
+  } catch (error) {
+    if (isMailParseFailedError(error)) {
+      throw error;
+    }
+    throw new MailParseFailedError(error);
+  }
 }

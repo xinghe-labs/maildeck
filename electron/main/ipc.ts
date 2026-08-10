@@ -20,6 +20,7 @@ import {
   listAccounts,
   previewAccounts,
   updateAccount,
+  updateAccountInboxFolder,
   updateAccountRefreshFailure,
   updateAccountRefreshState,
   updateAccountStatus,
@@ -27,7 +28,12 @@ import {
 } from "./account-store.js";
 import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
-import { fetchHotmailFallbackMessages, isHotmailFallbackEnabled, testHotmailFallbackConnection } from "./hotmail-fallback-client.js";
+import {
+  fetchHotmailFallbackMessage,
+  fetchHotmailFallbackMessages,
+  isHotmailFallbackEnabled,
+  testHotmailFallbackConnection
+} from "./hotmail-fallback-client.js";
 import { parseAccountImport } from "./import-parser.js";
 import { countNewMessagesAfterRefresh, shouldCommitMailboxRefreshState } from "./mail-refresh-state.js";
 import { getPublicSettings, getSettings, updateSettings } from "./settings-store.js";
@@ -35,12 +41,14 @@ import { normalizeError } from "./error-utils.js";
 import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
 import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { AccessTokenManager } from "./access-token-manager.js";
+import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { credentialGenerations } from "./credential-generations.js";
 import { handleValidated } from "./validated-ipc.js";
 import type {
   AppErrorCode,
   JobKind,
   MailListResult,
+  MailMessageDetail,
   MailMessageSummary,
   RefreshManyResult,
   RefreshMetrics,
@@ -203,10 +211,6 @@ async function cacheHotmailFallbackResult(
     assertCurrent: () => signal?.throwIfAborted()
   });
   signal?.throwIfAborted();
-  await Promise.all(result.details.map((detail) => saveCachedMessageDetail(accountId, detail, true, {
-    assertCurrent: () => signal?.throwIfAborted()
-  })));
-  signal?.throwIfAborted();
 }
 
 async function loadCredentialContext(accountId: string, signal?: AbortSignal) {
@@ -250,6 +254,54 @@ async function fetchHotmailFallback(
   }
 
   return result;
+}
+
+async function fetchHotmailFallbackDetail(
+  accountId: string,
+  messageId: string,
+  cause: unknown,
+  signal?: AbortSignal
+) {
+  const context = await loadCredentialContext(accountId, signal);
+  const { credentials, settings, snapshot } = context;
+  if (!isHotmailFallbackEnabled(settings)) {
+    throw cause;
+  }
+
+  const result = await fetchHotmailFallbackMessage(
+    settings,
+    credentials.account,
+    credentials.refreshToken,
+    messageId,
+    signal
+  );
+  signal?.throwIfAborted();
+  credentialGenerations.assertCurrent(snapshot);
+  await assertAccountCredentialGeneration(accountId, credentials.credentialGeneration);
+  signal?.throwIfAborted();
+
+  if (result.nextRefreshToken) {
+    await updateAccountStatus(accountId, "valid", null, result.nextRefreshToken, {
+      expectedCredentialGeneration: credentials.credentialGeneration,
+      assertCurrent: () => {
+        signal?.throwIfAborted();
+        credentialGenerations.assertCurrent(snapshot);
+      },
+      afterCommit: () => credentialGenerations.invalidateAccounts([accountId])
+    });
+  } else {
+    credentialGenerations.assertCurrent(snapshot);
+  }
+
+  return result;
+}
+
+function shouldTryHotmailFallbackDetail(messageId: string, error: unknown) {
+  if (!/^\d+$/u.test(messageId) || isMailContentTooLargeError(error) || isMailParseFailedError(error)) {
+    return false;
+  }
+  const { code } = normalizeErrorResult(error);
+  return !["CANCELED", "ACCOUNT_NOT_FOUND", "MAIL_PARSE_FAILED", "MAIL_TOO_LARGE"].includes(code);
 }
 
 function refreshStateFromFallback(
@@ -679,6 +731,10 @@ export function registerIpcHandlers() {
     }
 
     if (token.authMode === "imap") {
+      let loaded: {
+        inboxId: string;
+        result: Awaited<ReturnType<typeof listImapMessages>>;
+      } | null = null;
       try {
         const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl, signal);
         const inbox = pickInboxFolder(folders);
@@ -687,38 +743,19 @@ export function registerIpcHandlers() {
           return { messages: [], nextCursor: null, totalCount: 0 } satisfies MailListResult;
         }
 
-        const result = await listImapMessages(
-          token.email,
-          token.accessToken,
-          inbox.id,
-          top,
-          search,
-          options.cursor || "",
-          settings.proxyUrl,
-          signal
-        );
-        const messages = result.messages;
-        const nextCursor = nextCursorFor(messages, result.totalCount);
-        if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
-          signal.throwIfAborted();
-          await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor, {
-            assertCurrent: () => signal.throwIfAborted()
-          });
-          signal.throwIfAborted();
-          await updateAccountRefreshState(options.accountId, {
-            status: "valid",
-            lastError: null,
-            lastInboxCount: result.totalCount,
-            lastMailAt: latestMailTime(messages),
-            lastMailCursor: maxCursorFor(messages),
-            inboxFolderId: inbox.id,
-            graphDeltaLink: null,
-            refreshCooldownUntil: null
-          }, {
-            assertCurrent: () => signal.throwIfAborted()
-          });
-        }
-        return { messages, nextCursor, totalCount: result.totalCount } satisfies MailListResult;
+        loaded = {
+          inboxId: inbox.id,
+          result: await listImapMessages(
+            token.email,
+            token.accessToken,
+            inbox.id,
+            top,
+            search,
+            options.cursor || "",
+            settings.proxyUrl,
+            signal
+          )
+        };
       } catch (error) {
         if (search || options.cursor) {
           throw error;
@@ -729,6 +766,29 @@ export function registerIpcHandlers() {
         await persistHotmailFallback(options.accountId, account, settings, fallback, signal);
         return fallbackListResult(fallback);
       }
+
+      const messages = loaded.result.messages;
+      const nextCursor = nextCursorFor(messages, loaded.result.totalCount);
+      if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
+        signal.throwIfAborted();
+        await saveCachedMessages(options.accountId, messages, settings.cacheMessages, nextCursor, {
+          assertCurrent: () => signal.throwIfAborted()
+        });
+        signal.throwIfAborted();
+        await updateAccountRefreshState(options.accountId, {
+          status: "valid",
+          lastError: null,
+          lastInboxCount: loaded.result.totalCount,
+          lastMailAt: latestMailTime(messages),
+          lastMailCursor: maxCursorFor(messages),
+          inboxFolderId: loaded.inboxId,
+          graphDeltaLink: null,
+          refreshCooldownUntil: null
+        }, {
+          assertCurrent: () => signal.throwIfAborted()
+        });
+      }
+      return { messages, nextCursor, totalCount: loaded.result.totalCount } satisfies MailListResult;
     }
 
     let inbox = account.inboxFolderId
@@ -806,77 +866,102 @@ export function registerIpcHandlers() {
 
   handleValidated(IPC_CHANNELS.mailGetMessage, IPC_REQUEST_SCHEMAS.getMessage, async (_event, options) => {
     return runConfiguredNetworkAccount(options.accountId, async (signal, settings) => {
-    const isHelperMessage = options.messageId.startsWith("helper:");
-    const cached = await getCachedMessageDetail(options.accountId, options.messageId, settings.cacheBodies || isHelperMessage);
-    if (cached) {
-      return cached;
-    }
-
-    if (isHelperMessage) {
-      throw new Error("兜底邮件正文缓存不存在，请刷新邮件后再打开");
-    }
-
-    const token = await getAccessToken(options.accountId, false, signal);
-
-    if (token.authMode === "imap") {
-      const account = await getAccountRecord(options.accountId);
-      const folderIds = account.inboxFolderId ? [account.inboxFolderId] : [];
-
-      if (folderIds.length === 0) {
-        const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl, signal);
-        const inbox = pickInboxFolder(folders);
-        if (inbox) {
-          folderIds.push(inbox.id);
-        }
+      const isHelperMessage = options.messageId.startsWith("helper:");
+      const cached = await getCachedMessageDetail(
+        options.accountId,
+        options.messageId,
+        settings.cacheBodies || isHelperMessage
+      );
+      if (cached) {
+        return cached;
       }
 
-      if (folderIds.length === 0) {
-        throw new Error("未找到收件箱");
+      if (isHelperMessage) {
+        throw new Error("兜底邮件正文缓存不存在，请刷新邮件后再打开");
       }
 
-      let detail;
+      const cacheDetail = async (detail: MailMessageDetail) => {
+        signal.throwIfAborted();
+        await saveCachedMessageDetail(options.accountId, detail, settings.cacheBodies, {
+          assertCurrent: () => signal.throwIfAborted()
+        });
+        return detail;
+      };
+
+      let detail: MailMessageDetail;
+      let rediscoveredInboxId: string | null = null;
       try {
-        detail = await getImapMessage(token.email, token.accessToken, folderIds[0], options.messageId, settings.proxyUrl, signal);
+        const token = await getAccessToken(options.accountId, false, signal);
+
+        if (token.authMode !== "imap") {
+          detail = await getMessage(token.accessToken, options.messageId, settings.proxyUrl, signal);
+        } else {
+          const account = await getAccountRecord(options.accountId);
+          const folderIds = account.inboxFolderId ? [account.inboxFolderId] : [];
+
+          if (folderIds.length === 0) {
+            const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl, signal);
+            const inbox = pickInboxFolder(folders);
+            if (inbox) {
+              folderIds.push(inbox.id);
+            }
+          }
+
+          if (folderIds.length === 0) {
+            throw new Error("未找到收件箱");
+          }
+
+          try {
+            detail = await getImapMessage(
+              token.email,
+              token.accessToken,
+              folderIds[0],
+              options.messageId,
+              settings.proxyUrl,
+              signal
+            );
+          } catch (error) {
+            signal.throwIfAborted();
+            if (!account.inboxFolderId || isMailContentTooLargeError(error)) {
+              throw error;
+            }
+
+            const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl, signal);
+            const inbox = pickInboxFolder(folders);
+            if (!inbox) {
+              throw new Error("未找到收件箱");
+            }
+            detail = await getImapMessage(
+              token.email,
+              token.accessToken,
+              inbox.id,
+              options.messageId,
+              settings.proxyUrl,
+              signal
+            );
+            rediscoveredInboxId = inbox.id;
+          }
+        }
       } catch (error) {
         signal.throwIfAborted();
-        if (!account.inboxFolderId) {
+        if (!shouldTryHotmailFallbackDetail(options.messageId, error)) {
           throw error;
         }
-
-        const folders = await listImapFolders(token.email, token.accessToken, settings.proxyUrl, signal);
-        const inbox = pickInboxFolder(folders);
-        if (!inbox) {
-          throw new Error("未找到收件箱");
-        }
-        detail = await getImapMessage(token.email, token.accessToken, inbox.id, options.messageId, settings.proxyUrl, signal);
+        const fallback = await fetchHotmailFallbackDetail(
+          options.accountId,
+          options.messageId,
+          error,
+          signal
+        );
+        detail = fallback.detail;
+      }
+      if (rediscoveredInboxId) {
         signal.throwIfAborted();
-        await updateAccountRefreshState(options.accountId, {
-          status: "valid",
-          lastError: null,
-          lastInboxCount: account.lastInboxCount || 0,
-          lastMailAt: account.lastMailAt || null,
-          lastMailCursor: account.lastMailCursor || null,
-          inboxFolderId: inbox.id,
-          graphDeltaLink: null,
-          refreshCooldownUntil: null
-        }, {
+        await updateAccountInboxFolder(options.accountId, rediscoveredInboxId, {
           assertCurrent: () => signal.throwIfAborted()
         });
       }
-
-      signal.throwIfAborted();
-      await saveCachedMessageDetail(options.accountId, detail, settings.cacheBodies, {
-        assertCurrent: () => signal.throwIfAborted()
-      });
-      return detail;
-    }
-
-    const detail = await getMessage(token.accessToken, options.messageId, settings.proxyUrl, signal);
-    signal.throwIfAborted();
-    await saveCachedMessageDetail(options.accountId, detail, settings.cacheBodies, {
-      assertCurrent: () => signal.throwIfAborted()
-    });
-    return detail;
+      return cacheDetail(detail);
     });
   });
 
@@ -973,9 +1058,10 @@ export function registerIpcHandlers() {
         }
 
         if (token.authMode === "imap") {
+          let result: Awaited<ReturnType<typeof refreshImapInbox>>;
           try {
             const mailStart = nowMs();
-            const result = await refreshImapInbox(
+            result = await refreshImapInbox(
               token.email,
               token.accessToken,
               20,
@@ -989,38 +1075,6 @@ export function registerIpcHandlers() {
             if (!result.inboxFolderId) {
               throw new Error("未找到收件箱");
             }
-
-            const messages = result.messages;
-            const newCount = countNewMessagesAfterRefresh(messages, account.lastRefreshedAt);
-            if (messages.length > 0) {
-              signal.throwIfAborted();
-              const cacheStart = nowMs();
-              await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages), {
-                readBack: false,
-                assertCurrent: () => signal.throwIfAborted()
-              });
-              metrics.cacheMs = elapsedSince(cacheStart);
-            }
-            signal.throwIfAborted();
-            const stateStart = nowMs();
-            await updateAccountRefreshState(accountId, {
-              status: "valid",
-              lastError: null,
-              lastInboxCount: result.totalCount,
-              lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
-              lastMailCursor: result.cursor || account.lastMailCursor || null,
-              inboxFolderId: result.inboxFolderId,
-              graphDeltaLink: null,
-              refreshCooldownUntil: null
-            }, {
-              assertCurrent: () => signal.throwIfAborted()
-            });
-            metrics.stateMs = elapsedSince(stateStart);
-            metrics.totalMs = elapsedSince(totalStart);
-            ok += 1;
-            completed += 1;
-            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
-            return { accountId, ok: true, count: messages.length, newCount, metrics };
           } catch (error) {
             signal.throwIfAborted();
             const fallback = await finishWithHotmailFallback(accountId, account, settings, metrics, totalStart, error, signal);
@@ -1030,6 +1084,38 @@ export function registerIpcHandlers() {
             event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           }
+
+          const messages = result.messages;
+          const newCount = countNewMessagesAfterRefresh(messages, account.lastRefreshedAt);
+          if (messages.length > 0) {
+            signal.throwIfAborted();
+            const cacheStart = nowMs();
+            await saveCachedMessages(accountId, messages, settings.cacheMessages, nextCursorFor(messages), {
+              readBack: false,
+              assertCurrent: () => signal.throwIfAborted()
+            });
+            metrics.cacheMs = elapsedSince(cacheStart);
+          }
+          signal.throwIfAborted();
+          const stateStart = nowMs();
+          await updateAccountRefreshState(accountId, {
+            status: "valid",
+            lastError: null,
+            lastInboxCount: result.totalCount,
+            lastMailAt: latestMailTime(messages) || account.lastMailAt || null,
+            lastMailCursor: result.cursor || account.lastMailCursor || null,
+            inboxFolderId: result.inboxFolderId,
+            graphDeltaLink: null,
+            refreshCooldownUntil: null
+          }, {
+            assertCurrent: () => signal.throwIfAborted()
+          });
+          metrics.stateMs = elapsedSince(stateStart);
+          metrics.totalMs = elapsedSince(totalStart);
+          ok += 1;
+          completed += 1;
+          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, metrics });
+          return { accountId, ok: true, count: messages.length, newCount, metrics };
         }
 
         let graphResult: Awaited<ReturnType<typeof deltaGraphInboxMessages>> | null = null;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatErrorForLog, normalizeError } from "../electron/main/error-utils.js";
+import { MailContentTooLargeError, MailParseFailedError } from "../electron/main/mail-errors.js";
 
 describe("proxy credential redaction", () => {
   it("redacts HTTP proxy passwords from renderer-visible errors", () => {
@@ -28,5 +29,19 @@ describe("proxy credential redaction", () => {
     expect(output).toContain("alice");
     expect(output).toContain("***");
     expect(output).not.toContain("log-secret");
+  });
+
+  it("classifies bounded mail reads without treating them as a retryable transport error", () => {
+    expect(normalizeError(new MailContentTooLargeError(4 * 1024 * 1024))).toMatchObject({
+      code: "MAIL_TOO_LARGE",
+      message: expect.stringContaining("4 MiB")
+    });
+  });
+
+  it("classifies parser failures by type instead of dependency message text", () => {
+    expect(normalizeError(new MailParseFailedError(new Error("Max allowed child nodes exceeded")))).toMatchObject({
+      code: "MAIL_PARSE_FAILED",
+      message: expect.stringContaining("Max allowed child nodes exceeded")
+    });
   });
 });

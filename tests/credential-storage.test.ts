@@ -254,6 +254,27 @@ describe("credential storage migration", () => {
     });
   });
 
+  it("updates a rediscovered inbox without advancing successful refresh timestamps", async () => {
+    await createTemporaryUserData();
+    const accountStore = await import("../electron/main/account-store.js");
+    const created = await accountStore.upsertAccounts([
+      {
+        email: "person@example.com",
+        clientId: "00000000-0000-4000-8000-000000000001",
+        refreshToken: `M.${"a".repeat(100)}`
+      }
+    ]);
+    const accountId = created.affectedAccountIds[0];
+
+    await accountStore.updateAccountInboxFolder(accountId, "Inbox/Primary");
+
+    await expect(accountStore.getAccountRecord(accountId)).resolves.toMatchObject({
+      inboxFolderId: "Inbox/Primary",
+      lastCheckedAt: null,
+      lastRefreshedAt: null
+    });
+  });
+
   it("invalidates account generations on edit and delete", async () => {
     await createTemporaryUserData();
     const accountStore = await import("../electron/main/account-store.js");

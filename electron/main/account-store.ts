@@ -661,6 +661,30 @@ export async function updateAccountRefreshState(
   });
 }
 
+export async function updateAccountInboxFolder(
+  accountId: string,
+  inboxFolderId: string,
+  options: { assertCurrent?: () => void } = {}
+): Promise<AccountView> {
+  await migrateLegacyAccountsOnce();
+  return withStoreLock(async () => {
+    const account = getAccountById(accountId);
+    if (!account) {
+      throw new Error("账号不存在");
+    }
+    options.assertCurrent?.();
+
+    const next: AccountRecord = {
+      ...account,
+      inboxFolderId,
+      graphDeltaLink: null,
+      updatedAt: nowIso()
+    };
+    insertOrReplaceAccount(next);
+    return toView(next);
+  });
+}
+
 export async function updateAccountRefreshFailure(
   accountId: string,
   values: {

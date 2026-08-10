@@ -44,6 +44,7 @@ export type AppErrorCode =
   | "SCOPE_MISSING"
   | "NETWORK_ERROR"
   | "MAIL_PARSE_FAILED"
+  | "MAIL_TOO_LARGE"
   | "MAILBOX_NOT_FOUND"
   | "ACCOUNT_NOT_FOUND"
   | "UNKNOWN";

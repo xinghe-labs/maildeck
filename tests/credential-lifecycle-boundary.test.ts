@@ -23,7 +23,7 @@ describe("credential lifecycle boundary", () => {
     expect(accountStoreSource).toContain("credentialGenerations.invalidateAccounts(");
     expect(accountStoreSource).toContain("affectedAccountIds");
     expect(settingsStoreSource.match(/credentialGenerations\.invalidateProxy\(\)/gu)).toHaveLength(2);
-    expect(ipcSource.match(/afterCommit: \(\) => credentialGenerations\.invalidateAccounts\(\[accountId\]\)/gu)).toHaveLength(2);
+    expect(ipcSource.match(/afterCommit: \(\) => credentialGenerations\.invalidateAccounts\(\[accountId\]\)/gu)).toHaveLength(3);
   });
 
   it("migrates persisted access tokens out of the database", () => {

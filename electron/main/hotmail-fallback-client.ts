@@ -1,4 +1,4 @@
-import { getImapMessage, listImapMessages, refreshImapInbox } from "./imap-client.js";
+import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import { proxiedFetchOptions } from "./proxy-agent.js";
 import type { AccountRecord, AccessTokenResult, MailMessageDetail, MailMessageSummary } from "./types.js";
 
@@ -22,12 +22,18 @@ const TOKEN_ENDPOINTS = [
 
 export interface HotmailFallbackMessagesResult {
   messages: MailMessageSummary[];
-  details: MailMessageDetail[];
   transport: string;
   nextRefreshToken: string | null;
   totalCount: number;
   inboxFolderId: string | null;
   cursor: string | null;
+}
+
+export interface HotmailFallbackMessageResult {
+  detail: MailMessageDetail;
+  transport: string;
+  nextRefreshToken: string | null;
+  inboxFolderId: string;
 }
 
 interface TokenResponse {
@@ -104,37 +110,6 @@ export async function refreshHotmailFallbackToken(
   throw new Error(`内置 Hotmail 兜底 token 刷新失败：${errors.join(" | ")}`);
 }
 
-async function loadMessageDetails(
-  account: AccountRecord,
-  accessToken: string,
-  folderId: string,
-  messages: MailMessageSummary[],
-  proxyUrl: string,
-  signal?: AbortSignal
-) {
-  const details: MailMessageDetail[] = [];
-
-  for (const message of messages.slice(0, 10)) {
-    signal?.throwIfAborted();
-    try {
-      details.push(await getImapMessage(account.email, accessToken, folderId, message.id, proxyUrl, signal));
-    } catch {
-      signal?.throwIfAborted();
-      details.push({
-        ...message,
-        toRecipients: [],
-        ccRecipients: [],
-        body: {
-          contentType: "text",
-          content: message.bodyPreview || ""
-        }
-      });
-    }
-  }
-
-  return details;
-}
-
 export async function fetchHotmailFallbackMessages(
   settings: { hotmailFallbackEnabled?: boolean; proxyUrl?: string },
   account: AccountRecord,
@@ -152,19 +127,58 @@ export async function fetchHotmailFallbackMessages(
   const messages = result.messages.length > 0
     ? result.messages
     : (await listImapMessages(account.email, token.accessToken, result.inboxFolderId || "INBOX", top, "", "", proxyUrl, signal)).messages;
-  const details = result.inboxFolderId
-    ? await loadMessageDetails(account, token.accessToken, result.inboxFolderId, messages, proxyUrl, signal)
-    : [];
   signal?.throwIfAborted();
 
   return {
     messages,
-    details,
     transport: `builtin-${token.endpoint}`,
     nextRefreshToken: token.refreshToken,
     totalCount: result.totalCount || messages.length,
     inboxFolderId: result.inboxFolderId || null,
     cursor: result.cursor
+  };
+}
+
+export async function fetchHotmailFallbackMessage(
+  settings: { hotmailFallbackEnabled?: boolean; proxyUrl?: string },
+  account: AccountRecord,
+  refreshToken: string,
+  messageId: string,
+  signal?: AbortSignal
+): Promise<HotmailFallbackMessageResult> {
+  if (!isHotmailFallbackEnabled(settings)) {
+    throw new Error("内置 Hotmail 兜底未启用");
+  }
+
+  const proxyUrl = settings.proxyUrl || "";
+  const token = await refreshHotmailFallbackToken(account.clientId, refreshToken, proxyUrl, signal);
+  const folders = await listImapFolders(account.email, token.accessToken, proxyUrl, signal);
+  const cachedInbox = account.inboxFolderId
+    ? folders.find((folder) => folder.id === account.inboxFolderId)
+    : null;
+  const discoveredInbox = folders.find((folder) => {
+    const name = folder.displayName.trim().toLowerCase();
+    return name === "inbox" || name.includes("收件箱");
+  });
+  const inboxFolderId = cachedInbox?.id || discoveredInbox?.id;
+  if (!inboxFolderId) {
+    throw new Error("未找到收件箱");
+  }
+  const detail = await getImapMessage(
+    account.email,
+    token.accessToken,
+    inboxFolderId,
+    messageId,
+    proxyUrl,
+    signal
+  );
+  signal?.throwIfAborted();
+
+  return {
+    detail,
+    transport: `builtin-${token.endpoint}`,
+    nextRefreshToken: token.refreshToken,
+    inboxFolderId
   };
 }
 
@@ -174,7 +188,7 @@ export async function testHotmailFallbackConnection(
   refreshToken: string,
   top = 5,
   signal?: AbortSignal
-): Promise<Omit<HotmailFallbackMessagesResult, "details">> {
+): Promise<HotmailFallbackMessagesResult> {
   if (!isHotmailFallbackEnabled(settings)) {
     throw new Error("内置 Hotmail 兜底未启用");
   }

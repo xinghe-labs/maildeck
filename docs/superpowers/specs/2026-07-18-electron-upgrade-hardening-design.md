@@ -12,6 +12,8 @@ Implementation note (2026-08-10): Phase 4 upgraded Electron from 35.7.5 to the e
 
 Implementation note (2026-08-10): Phase 5 now enforces the persisted batch concurrency as one global limit across batch and single-account network work. Active cancellation propagates through token exchange, Graph, IMAP, and the built-in Hotmail fallback; queued cache and account-state commits recheck cancellation inside their locks. Token refresh deduplication keeps shared requests alive for remaining callers while still aborting obsolete I/O after account, proxy, or final-caller invalidation.
 
+Implementation note (2026-08-10): fallback list refreshes now return summaries without opening up to ten additional IMAP connections for message details. Detail reads are lazy and can retry a numeric IMAP UID through the built-in Hotmail fallback. IMAP reads keep full-MIME charset repair for messages up to 10 MiB; larger messages download only the preferred non-attachment HTML or plain-text part with a 4 MiB decoded-content limit. Rediscovering an Inbox during a detail read no longer advances successful refresh timestamps.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.

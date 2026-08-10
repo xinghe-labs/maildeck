@@ -1,4 +1,6 @@
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type MessageStructureObject } from "imapflow";
+import type { Readable } from "node:stream";
+import { MailContentTooLargeError, isMailContentTooLargeError } from "./mail-errors.js";
 import { parseMailSourceContent } from "./mail-source-parser.js";
 import type { MailFolder, MailMessageDetail, MailMessageSummary } from "./types.js";
 
@@ -11,6 +13,11 @@ interface ImapRefreshResult extends ImapMessageListResult {
   inboxFolderId: string;
   cursor: string | null;
 }
+
+export const IMAP_FULL_SOURCE_MAX_BYTES = 10 * 1024 * 1024;
+export const IMAP_TEXT_PART_MAX_BYTES = 4 * 1024 * 1024;
+const IMAP_TEXT_PART_RAW_MAX_BYTES = IMAP_TEXT_PART_MAX_BYTES * 3;
+const IMAP_PART_HEADER_MAX_BYTES = 64 * 1024;
 
 function cleanText(value: string | undefined | null) {
   return (value || "").replace(/\r/g, "").trim();
@@ -93,6 +100,169 @@ async function withClient<T>(
   }
 }
 
+function mimeType(node: MessageStructureObject) {
+  return node.type.toLowerCase();
+}
+
+function hasAttachmentMetadata(node: MessageStructureObject) {
+  return (
+    node.disposition?.toLowerCase() === "attachment" ||
+    Boolean(node.dispositionParameters?.filename?.trim()) ||
+    Boolean(node.parameters?.name?.trim()) ||
+    mimeType(node) === "message/rfc822"
+  );
+}
+
+function preferredTextParts(root: MessageStructureObject | undefined): MessageStructureObject[] {
+  if (!root || hasAttachmentMetadata(root)) {
+    return [];
+  }
+
+  const type = mimeType(root);
+  if (
+    (type === "text/html" || type === "text/plain") &&
+    (Boolean(root.part) || !(root.childNodes?.length))
+  ) {
+    return [root];
+  }
+
+  const branches = (root.childNodes || []).map((child) => preferredTextParts(child));
+  if (type === "multipart/alternative") {
+    const candidates = branches.flat();
+    return [
+      ...candidates.filter((candidate) => mimeType(candidate) === "text/html"),
+      ...candidates.filter((candidate) => mimeType(candidate) === "text/plain")
+    ];
+  }
+  return branches.find((branch) => branch.length > 0) || [];
+}
+
+function hasAttachment(root: MessageStructureObject | undefined, nested = false): boolean {
+  if (!root) {
+    return false;
+  }
+  const type = mimeType(root);
+  if (
+    hasAttachmentMetadata(root) ||
+    (nested && !type.startsWith("multipart/") && !type.startsWith("text/"))
+  ) {
+    return true;
+  }
+  return (root.childNodes || []).some((child) => hasAttachment(child, true));
+}
+
+async function readBoundedStream(
+  stream: Readable,
+  limitBytes: number,
+  signal?: AbortSignal
+) {
+  const chunks: Buffer[] = [];
+  let total = 0;
+
+  for await (const chunk of stream) {
+    signal?.throwIfAborted();
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    total += bytes.byteLength;
+    if (total > limitBytes) {
+      stream.destroy();
+      throw new MailContentTooLargeError(limitBytes);
+    }
+    chunks.push(bytes);
+  }
+  signal?.throwIfAborted();
+  return Buffer.concat(chunks, total);
+}
+
+async function downloadPreferredTextPart(
+  client: ImapFlow,
+  messageId: string,
+  bodyStructure: MessageStructureObject | undefined,
+  signal?: AbortSignal
+) {
+  const parts = preferredTextParts(bodyStructure);
+  if (parts.length === 0) {
+    throw new MailContentTooLargeError(IMAP_FULL_SOURCE_MAX_BYTES);
+  }
+
+  let lastTooLargeError: MailContentTooLargeError | null = null;
+  for (const part of parts) {
+    try {
+      return await downloadTextPart(client, messageId, bodyStructure, part, signal);
+    } catch (error) {
+      if (!isMailContentTooLargeError(error)) {
+        throw error;
+      }
+      lastTooLargeError = error;
+    }
+  }
+  throw lastTooLargeError || new MailContentTooLargeError(IMAP_TEXT_PART_MAX_BYTES);
+}
+
+async function downloadTextPart(
+  client: ImapFlow,
+  messageId: string,
+  bodyStructure: MessageStructureObject | undefined,
+  part: MessageStructureObject,
+  signal?: AbortSignal
+) {
+  const isSingleNode = part === bodyStructure && !(bodyStructure?.childNodes?.length);
+  const partId = part.part || (isSingleNode ? "1" : "");
+  if (!partId) {
+    throw new Error("邮件正文不存在");
+  }
+  const headerKey = isSingleNode ? "header" : `${partId}.mime`;
+  const bodyKey = isSingleNode ? "text" : partId;
+  const response = await client.fetchOne(messageId, {
+    bodyParts: [
+      { key: headerKey, maxLength: IMAP_PART_HEADER_MAX_BYTES + 1 },
+      { key: bodyKey, maxLength: IMAP_TEXT_PART_RAW_MAX_BYTES + 1 }
+    ]
+  }, { uid: true });
+  signal?.throwIfAborted();
+  if (!response) {
+    throw new Error("邮件正文不存在");
+  }
+
+  const headers = headerKey === "header" ? response.headers : response.bodyParts?.get(headerKey);
+  const body = response.bodyParts?.get(bodyKey);
+  if (!headers || !body) {
+    throw new Error("邮件正文不存在");
+  }
+  if (headers.byteLength > IMAP_PART_HEADER_MAX_BYTES || body.byteLength > IMAP_TEXT_PART_RAW_MAX_BYTES) {
+    throw new MailContentTooLargeError(IMAP_TEXT_PART_MAX_BYTES);
+  }
+
+  const hasSeparator = headers.subarray(-4).equals(Buffer.from("\r\n\r\n", "ascii")) ||
+    headers.subarray(-2).equals(Buffer.from("\n\n", "ascii"));
+  const parsed = await parseMailSourceContent(Buffer.concat([
+    headers,
+    ...(hasSeparator ? [] : [Buffer.from("\r\n\r\n", "ascii")]),
+    body
+  ]));
+  if (Buffer.byteLength(parsed.content, "utf8") > IMAP_TEXT_PART_MAX_BYTES) {
+    throw new MailContentTooLargeError(IMAP_TEXT_PART_MAX_BYTES);
+  }
+  return parsed;
+}
+
+async function downloadFullSource(
+  client: ImapFlow,
+  messageId: string,
+  signal?: AbortSignal
+) {
+  const download = await client.download(messageId, undefined, {
+    uid: true,
+    maxBytes: IMAP_FULL_SOURCE_MAX_BYTES + 1
+  });
+  signal?.throwIfAborted();
+  if (!download?.content) {
+    throw new Error("邮件正文不存在");
+  }
+
+  const source = await readBoundedStream(download.content, IMAP_FULL_SOURCE_MAX_BYTES, signal);
+  return parseMailSourceContent(source);
+}
+
 export async function listImapFolders(
   email: string,
   accessToken: string,
@@ -168,8 +338,7 @@ export async function listImapMessages(
           flags: true,
           envelope: true,
           bodyStructure: true,
-          internalDate: true,
-          source: { maxLength: 0 }
+          internalDate: true
         },
         { uid: true }
       )) {
@@ -182,7 +351,7 @@ export async function listImapMessages(
           sentDateTime: toIsoString(message.envelope?.date),
           isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
           importance: "normal",
-          hasAttachments: Boolean(message.bodyStructure?.childNodes?.some((part) => part.disposition === "attachment")),
+          hasAttachments: hasAttachment(message.bodyStructure),
           bodyPreview: "",
           webLink: null
         });
@@ -236,8 +405,7 @@ export async function listNewImapMessages(
           flags: true,
           envelope: true,
           bodyStructure: true,
-          internalDate: true,
-          source: { maxLength: 0 }
+          internalDate: true
         },
         { uid: true }
       )) {
@@ -249,7 +417,7 @@ export async function listNewImapMessages(
           sentDateTime: toIsoString(message.envelope?.date),
           isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
           importance: "normal",
-          hasAttachments: Boolean(message.bodyStructure?.childNodes?.some((part) => part.disposition === "attachment")),
+          hasAttachments: hasAttachment(message.bodyStructure),
           bodyPreview: "",
           webLink: null
         });
@@ -300,8 +468,7 @@ async function fetchImapSummaries(client: ImapFlow, uidRange: string, limit: num
       flags: true,
       envelope: true,
       bodyStructure: true,
-      internalDate: true,
-      source: { maxLength: 0 }
+      internalDate: true
     },
     { uid: true }
   )) {
@@ -313,7 +480,7 @@ async function fetchImapSummaries(client: ImapFlow, uidRange: string, limit: num
       sentDateTime: toIsoString(message.envelope?.date),
       isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
       importance: "normal",
-      hasAttachments: Boolean(message.bodyStructure?.childNodes?.some((part) => part.disposition === "attachment")),
+      hasAttachments: hasAttachment(message.bodyStructure),
       bodyPreview: "",
       webLink: null
     });
@@ -392,8 +559,9 @@ export async function getImapMessage(
         uid: true,
         flags: true,
         envelope: true,
-        source: true,
-        internalDate: true
+        internalDate: true,
+        size: true,
+        bodyStructure: true
       }, { uid: true });
 
       if (!message) {
@@ -404,8 +572,13 @@ export async function getImapMessage(
       let contentType = "text";
       let previewText = "";
 
-      if (message.source) {
-        const parsed = await parseMailSourceContent(Buffer.from(message.source));
+      if ((message.size || 0) > IMAP_FULL_SOURCE_MAX_BYTES) {
+        const parsed = await downloadPreferredTextPart(client, messageId, message.bodyStructure, signal);
+        content = parsed.content;
+        contentType = parsed.contentType;
+        previewText = parsed.previewText;
+      } else {
+        const parsed = await downloadFullSource(client, messageId, signal);
         content = parsed.content;
         contentType = parsed.contentType;
         previewText = parsed.previewText;
@@ -419,7 +592,7 @@ export async function getImapMessage(
         sentDateTime: toIsoString(message.envelope?.date),
         isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
         importance: "normal",
-        hasAttachments: false,
+        hasAttachments: hasAttachment(message.bodyStructure),
         bodyPreview: cleanText(previewText).slice(0, 180),
         webLink: null,
         toRecipients: headerAddressList(message.envelope?.to),

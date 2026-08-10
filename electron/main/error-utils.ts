@@ -1,5 +1,6 @@
 import type { AppErrorCode } from "./types.js";
 import { isJobCanceledError } from "./job-errors.js";
+import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { redactProxyCredentials } from "../shared/proxy-security.js";
 
 export interface NormalizedAppError {
@@ -16,6 +17,12 @@ export function normalizeError(error: unknown): NormalizedAppError {
   const message = redactProxyCredentials(error instanceof Error ? error.message : String(error));
   if (isJobCanceledError(error)) {
     return { code: "CANCELED", message };
+  }
+  if (isMailContentTooLargeError(error)) {
+    return { code: "MAIL_TOO_LARGE", message };
+  }
+  if (isMailParseFailedError(error)) {
+    return { code: "MAIL_PARSE_FAILED", message };
   }
 
   const lower = message.toLowerCase();
