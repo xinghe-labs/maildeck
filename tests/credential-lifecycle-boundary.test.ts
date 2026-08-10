@@ -5,6 +5,10 @@ const ipcSource = readFileSync(new URL("../electron/main/ipc.ts", import.meta.ur
 const accountStoreSource = readFileSync(new URL("../electron/main/account-store.ts", import.meta.url), "utf8");
 const settingsStoreSource = readFileSync(new URL("../electron/main/settings-store.ts", import.meta.url), "utf8");
 const databaseSource = readFileSync(new URL("../electron/main/database.ts", import.meta.url), "utf8");
+const databaseMigrationsSource = readFileSync(
+  new URL("../electron/main/database-migrations.ts", import.meta.url),
+  "utf8"
+);
 
 describe("credential lifecycle boundary", () => {
   it("keeps access tokens in the dedicated in-memory manager", () => {
@@ -27,8 +31,8 @@ describe("credential lifecycle boundary", () => {
   });
 
   it("migrates persisted access tokens out of the database", () => {
-    expect(databaseSource).toContain("credential_generation INTEGER NOT NULL DEFAULT 0");
-    expect(databaseSource).toContain("DROP TABLE IF EXISTS access_token_cache");
-    expect(databaseSource).not.toContain("CREATE TABLE IF NOT EXISTS access_token_cache");
+    expect(databaseSource).toContain("applyDatabaseMigrations(candidate)");
+    expect(databaseMigrationsSource).toContain('"credential_generation", "INTEGER NOT NULL DEFAULT 0"');
+    expect(databaseMigrationsSource).toContain("DROP TABLE IF EXISTS access_token_cache");
   });
 });

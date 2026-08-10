@@ -16,6 +16,8 @@ Implementation note (2026-08-10): fallback list refreshes now return summaries w
 
 Implementation note (2026-08-10): the default Electron session now denies all Chromium permission checks, requests, and device permissions. Uncaught main-process exceptions and unhandled rejections are fatal after bounded local cleanup instead of being suppressed through error-message matching. The application CSP no longer exposes arbitrary localhost WebSocket endpoints and explicitly disables workers and media.
 
+Implementation note (2026-08-10): SQLite schema upgrades now use ordered v1-v5 migrations inside one immediate transaction, verify every completed step, and reject databases written by a newer application version. Existing databases receive a consistent `VACUUM INTO` backup before the first missing migration; a failed migration rolls back all schema and version changes while preserving that backup for recovery.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.

@@ -1,10 +1,35 @@
 import { app } from "electron";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
+import {
+  applyDatabaseMigrations,
+  CURRENT_SCHEMA_VERSION,
+  readSchemaVersion
+} from "./database-migrations.js";
+
+export { applyDatabaseMigrations } from "./database-migrations.js";
 
 let database: DatabaseSync | null = null;
-const CURRENT_SCHEMA_VERSION = 5;
+
+function hasExistingSchema(target: DatabaseSync) {
+  return Boolean(
+    target
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1")
+      .get()
+  );
+}
+
+function createMigrationBackup(target: DatabaseSync, userDataPath: string) {
+  const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
+  const backupPath = path.join(
+    userDataPath,
+    `outlook-manager.pre-v${CURRENT_SCHEMA_VERSION}.${timestamp}.${randomUUID()}.db.bak`
+  );
+  target.prepare("VACUUM INTO ?").run(backupPath);
+  return backupPath;
+}
 
 export function getDatabase() {
   if (database) {
@@ -13,113 +38,51 @@ export function getDatabase() {
 
   const userDataPath = app.getPath("userData");
   mkdirSync(userDataPath, { recursive: true });
-  database = new DatabaseSync(path.join(userDataPath, "outlook-manager.db"));
-  database.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA busy_timeout = 5000;
-    PRAGMA foreign_keys = ON;
+  const databasePath = path.join(userDataPath, "outlook-manager.db");
+  const candidate = new DatabaseSync(databasePath);
+  let backupPath: string | null = null;
 
-    CREATE TABLE IF NOT EXISTS accounts (
-      id TEXT PRIMARY KEY,
-      email TEXT NOT NULL UNIQUE,
-      client_id TEXT NOT NULL,
-      encrypted_refresh_token TEXT NOT NULL,
-      remark TEXT NOT NULL DEFAULT '',
-      group_name TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'untested',
-      last_checked_at TEXT,
-      last_error TEXT,
-      last_refreshed_at TEXT,
-      last_inbox_count INTEGER NOT NULL DEFAULT 0,
-      last_mail_at TEXT,
-      last_mail_cursor TEXT,
-      inbox_folder_id TEXT,
-      graph_delta_link TEXT,
-      refresh_cooldown_until TEXT,
-      credential_generation INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
+  try {
+    candidate.exec(`
+      PRAGMA busy_timeout = 5000;
+      PRAGMA foreign_keys = ON;
+    `);
 
-    CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
-    CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
-    CREATE INDEX IF NOT EXISTS idx_accounts_group_name ON accounts(group_name);
+    const existingSchema = hasExistingSchema(candidate);
+    let schemaVersion: number;
+    try {
+      schemaVersion = readSchemaVersion(candidate);
+    } catch (error) {
+      if (existingSchema) {
+        backupPath = createMigrationBackup(candidate, userDataPath);
+      }
+      throw error;
+    }
+    if (schemaVersion > CURRENT_SCHEMA_VERSION) {
+      throw new Error(
+        `Database schema version ${schemaVersion} is newer than the supported version ${CURRENT_SCHEMA_VERSION}`
+      );
+    }
 
-    CREATE TABLE IF NOT EXISTS mail_cache_meta (
-      account_id TEXT PRIMARY KEY,
-      next_cursor TEXT,
-      updated_at TEXT
-    );
+    if (schemaVersion < CURRENT_SCHEMA_VERSION && existingSchema) {
+      backupPath = createMigrationBackup(candidate, userDataPath);
+    }
 
-    CREATE TABLE IF NOT EXISTS mail_messages (
-      account_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      from_name TEXT,
-      from_address TEXT,
-      received_date_time TEXT,
-      sent_date_time TEXT,
-      is_read INTEGER NOT NULL DEFAULT 0,
-      importance TEXT NOT NULL DEFAULT 'normal',
-      has_attachments INTEGER NOT NULL DEFAULT 0,
-      body_preview TEXT,
-      web_link TEXT,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, message_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_mail_messages_account_updated ON mail_messages(account_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_mail_messages_account_received ON mail_messages(account_id, received_date_time);
-
-    CREATE TABLE IF NOT EXISTS mail_details (
-      account_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      detail_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, message_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      version INTEGER NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-  `);
-
-  const columns = database.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>;
-  const columnNames = new Set(columns.map((column) => column.name));
-  if (!columnNames.has("inbox_folder_id")) {
-    database.exec("ALTER TABLE accounts ADD COLUMN inbox_folder_id TEXT");
+    applyDatabaseMigrations(candidate);
+    candidate.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA foreign_keys = ON;
+    `);
+    database = candidate;
+    return database;
+  } catch (error) {
+    candidate.close();
+    if (backupPath) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Database migration failed; backup preserved at ${backupPath}. ${reason}`, { cause: error });
+    }
+    throw error;
   }
-  if (!columnNames.has("graph_delta_link")) {
-    database.exec("ALTER TABLE accounts ADD COLUMN graph_delta_link TEXT");
-  }
-  if (!columnNames.has("refresh_cooldown_until")) {
-    database.exec("ALTER TABLE accounts ADD COLUMN refresh_cooldown_until TEXT");
-  }
-  if (!columnNames.has("credential_generation")) {
-    database.exec("ALTER TABLE accounts ADD COLUMN credential_generation INTEGER NOT NULL DEFAULT 0");
-  }
-
-  database.exec("DROP TABLE IF EXISTS access_token_cache");
-
-  database
-    .prepare(`
-      INSERT INTO schema_migrations (id, version, updated_at)
-      VALUES (1, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        version = CASE
-          WHEN schema_migrations.version < excluded.version THEN excluded.version
-          ELSE schema_migrations.version
-        END,
-        updated_at = CASE
-          WHEN schema_migrations.version < excluded.version THEN excluded.updated_at
-          ELSE schema_migrations.updated_at
-        END
-    `)
-    .run(CURRENT_SCHEMA_VERSION, new Date().toISOString());
-
-  return database;
 }
 
 export function closeDatabase() {

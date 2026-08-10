@@ -59,6 +59,9 @@ describe("credential storage migration", () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE INDEX idx_accounts_email ON accounts(email);
+      CREATE INDEX idx_accounts_status ON accounts(status);
+      CREATE INDEX idx_accounts_group_name ON accounts(group_name);
       INSERT INTO accounts (
         id, email, client_id, encrypted_refresh_token, created_at, updated_at
       ) VALUES (
@@ -89,6 +92,8 @@ describe("credential storage migration", () => {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (account_id, message_id)
       );
+      CREATE INDEX idx_mail_messages_account_updated ON mail_messages(account_id, updated_at);
+      CREATE INDEX idx_mail_messages_account_received ON mail_messages(account_id, received_date_time);
       INSERT INTO mail_messages (
         account_id, message_id, subject, body_preview, updated_at
       ) VALUES (

@@ -43,8 +43,14 @@ describe("Electron runtime security", () => {
     expect(mainSource).not.toContain("isRecoverableNetworkError");
     expect(mainSource).not.toContain("Suppressed recoverable");
     expect(mainSource.match(/process\.on\("(?:uncaughtException|unhandledRejection)"/gu)).toHaveLength(2);
-    expect(mainSource.match(/exitAfterFatal\(/gu)).toHaveLength(3);
+    expect(mainSource.match(/exitAfterFatal\(/gu)).toHaveLength(4);
     expect(mainSource.match(/app\.exit\(1\)/gu)).toHaveLength(2);
+  });
+
+  it("shows a recovery message when the local database cannot be opened or upgraded", () => {
+    expect(mainSource).toMatch(/dialog\.showErrorBox\(\s*"数据库启动失败"/u);
+    expect(mainSource).toContain("数据库备份");
+    expect(mainSource).toMatch(/try\s*\{\s*getDatabase\(\);\s*\}\s*catch/u);
   });
 
   it("does not expose arbitrary localhost WebSocket connections in the application CSP", () => {

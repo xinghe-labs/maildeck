@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session } from "electron";
+import { app, BrowserWindow, dialog, session } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
@@ -79,7 +79,21 @@ function createWindow() {
 
 app.whenReady().then(() => {
   configureSessionPermissions(session.defaultSession);
-  getDatabase();
+  try {
+    getDatabase();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    try {
+      dialog.showErrorBox(
+        "数据库启动失败",
+        `无法打开或升级本地数据库，应用将退出。数据库文件未被覆盖；如果错误信息中包含数据库备份路径，请保留该文件用于恢复。\n\n${reason}`
+      );
+    } catch (dialogError) {
+      console.error("Failed to show database recovery dialog", formatErrorForLog(dialogError));
+    }
+    exitAfterFatal("Database startup failed", error);
+    return;
+  }
   registerIpcHandlers();
   createWindow();
 
