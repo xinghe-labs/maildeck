@@ -1,5 +1,5 @@
 import { ImapFlow } from "imapflow";
-import { simpleParser } from "mailparser";
+import { parseMailSourceContent } from "./mail-source-parser.js";
 import type { MailFolder, MailMessageDetail, MailMessageSummary } from "./types.js";
 
 interface ImapMessageListResult {
@@ -367,20 +367,13 @@ export async function getImapMessage(email: string, accessToken: string, folderI
 
       let content = "";
       let contentType = "text";
+      let previewText = "";
 
       if (message.source) {
-        const parsed = await simpleParser(Buffer.from(message.source));
-
-        if (parsed.html) {
-          if (typeof parsed.html === "string") {
-            content = parsed.html;
-          } else {
-            content = String(parsed.html);
-          }
-          contentType = "html";
-        } else {
-          content = parsed.textAsHtml || parsed.text || "";
-        }
+        const parsed = await parseMailSourceContent(Buffer.from(message.source));
+        content = parsed.content;
+        contentType = parsed.contentType;
+        previewText = parsed.previewText;
       }
 
       return {
@@ -392,7 +385,7 @@ export async function getImapMessage(email: string, accessToken: string, folderI
         isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
         importance: "normal",
         hasAttachments: false,
-        bodyPreview: cleanText(content).slice(0, 180),
+        bodyPreview: cleanText(previewText).slice(0, 180),
         webLink: null,
         toRecipients: headerAddressList(message.envelope?.to),
         ccRecipients: headerAddressList(message.envelope?.cc),

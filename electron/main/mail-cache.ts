@@ -44,6 +44,11 @@ interface MailDetailRow {
   updated_at: string | null;
 }
 
+interface StoredMailDetailV2 {
+  version: 2;
+  detail: MailMessageDetail;
+}
+
 const CACHE_VERSION = 1;
 const MAX_MESSAGES_PER_ACCOUNT = 100;
 const MAX_DETAILS_PER_ACCOUNT = 40;
@@ -310,6 +315,55 @@ export async function saveCachedMessages(
   });
 }
 
+function looksLikeLegacyTextAsHtml(detail: MailMessageDetail) {
+  if (detail.body.contentType.toLowerCase() === "html") {
+    return false;
+  }
+
+  const value = detail.body.content.trim();
+  if (!/^<p>[\s\S]*<\/p>$/iu.test(value)) {
+    return false;
+  }
+
+  const remainingMarkup = value
+    .replace(/<\/?p>/giu, "")
+    .replace(/<br\s*\/?\s*>/giu, "")
+    .replace(/<a\b[^>]*>|<\/a>/giu, "");
+  return !/<\/?[a-z][^>]*>/iu.test(remainingMarkup);
+}
+
+function isStoredMailDetailV2(value: unknown): value is StoredMailDetailV2 {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    "version" in value &&
+    value.version === 2 &&
+    "detail" in value &&
+    value.detail &&
+    typeof value.detail === "object"
+  );
+}
+
+function parseStoredMailDetail(value: string) {
+  const stored = JSON.parse(value) as unknown;
+  if (isStoredMailDetailV2(stored)) {
+    return stored.detail;
+  }
+
+  const detail = stored as MailMessageDetail;
+  if (looksLikeLegacyTextAsHtml(detail)) {
+    return {
+      ...detail,
+      body: { ...detail.body, contentType: "html" }
+    };
+  }
+  return detail;
+}
+
+function serializeMailDetail(detail: MailMessageDetail) {
+  return JSON.stringify({ version: 2, detail } satisfies StoredMailDetailV2);
+}
+
 export async function getCachedMessageDetail(accountId: string, messageId: string, enabled = true) {
   await migrateLegacyCacheOnce();
   if (!enabled) {
@@ -323,7 +377,7 @@ export async function getCachedMessageDetail(accountId: string, messageId: strin
     return null;
   }
 
-  return JSON.parse(row.detail_json) as MailMessageDetail;
+  return parseStoredMailDetail(row.detail_json);
 }
 
 export async function saveCachedMessageDetail(accountId: string, detail: MailMessageDetail, enabled = true) {
@@ -341,7 +395,7 @@ export async function saveCachedMessageDetail(accountId: string, detail: MailMes
         ON CONFLICT(account_id, message_id) DO UPDATE SET
           detail_json = excluded.detail_json,
           updated_at = excluded.updated_at
-      `).run(accountId, detail.id, JSON.stringify(detail), nowIso());
+      `).run(accountId, detail.id, serializeMailDetail(detail), nowIso());
 
       const staleRows = db
         .prepare(`

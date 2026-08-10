@@ -1,7 +1,12 @@
 /** @vitest-environment jsdom */
 
 import { describe, expect, it } from "vitest";
-import { buildMailHtmlDocument, sanitizeMailHtml, sanitizeMailStyle } from "../src/mail-content-security";
+import {
+  buildMailHtmlDocument,
+  isMailHtmlBody,
+  sanitizeMailHtml,
+  sanitizeMailStyle
+} from "../src/mail-content-security";
 
 describe("sanitizeMailHtml", () => {
   it("blocks executable markup and remote tracking resources", () => {
@@ -43,5 +48,10 @@ describe("mail document policy", () => {
     expect(documentHtml).toContain("default-src 'none'");
     expect(documentHtml).toContain("img-src data: cid:");
     expect(documentHtml).toContain('<meta name="referrer" content="no-referrer">');
+  });
+
+  it("uses the normalized content type instead of guessing from plaintext markup", () => {
+    expect(isMailHtmlBody("text")).toBe(false);
+    expect(isMailHtmlBody("HTML")).toBe(true);
   });
 });

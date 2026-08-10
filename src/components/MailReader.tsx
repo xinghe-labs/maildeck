@@ -1,6 +1,6 @@
 import { Loader2, Mail } from "lucide-react";
 import type { MailMessageDetail, MailMessageSummary } from "../types";
-import { buildMailHtmlDocument, sanitizeMailHtml } from "../mail-content-security";
+import { buildMailHtmlDocument, isMailHtmlBody, sanitizeMailHtml } from "../mail-content-security";
 import { addressList, formatDate } from "../ui-utils";
 
 export function MailReader({
@@ -12,8 +12,12 @@ export function MailReader({
   messageDetail: MailMessageDetail | null;
   loadingDetail: boolean;
 }) {
-  const isHtml = messageDetail?.body.contentType.toLowerCase() === "html";
-  const mailDocument = isHtml ? buildMailHtmlDocument(sanitizeMailHtml(messageDetail.body.content)) : "";
+  const isHtml = messageDetail
+    ? isMailHtmlBody(messageDetail.body.contentType)
+    : false;
+  const mailDocument = isHtml && messageDetail
+    ? buildMailHtmlDocument(sanitizeMailHtml(messageDetail.body.content))
+    : "";
 
   return (
     <article className="reader-panel">

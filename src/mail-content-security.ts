@@ -8,6 +8,10 @@ const EXTERNAL_LINK = /^(?:https?|mailto|tel):/i;
 export const MAIL_DOCUMENT_CSP =
   "default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
+export function isMailHtmlBody(contentType: string) {
+  return contentType.toLowerCase() === "html";
+}
+
 export function sanitizeMailStyle(value: string) {
   return value
     .split(";")
