@@ -8,6 +8,8 @@ This document defines the implementation scope that must be reviewed before code
 
 Implementation note (2026-08-05): the Refresh Coordinator now owns job registration, queued cancellation, per-account serialization, and stable multi-account locking for imports. Credential generations cover account reimport/edit/delete and proxy changes; access tokens are memory-only and stale token or fallback work cannot commit rotated credentials. Database schema v5 removes the persisted access-token table without removing account or mail data. A global cross-job concurrency limit and AbortController propagation for work already in progress remain Phase 5 work.
 
+Implementation note (2026-08-10): Phase 4 upgraded Electron from 35.7.5 to the exact stable target 43.3.0 (Node 24.18.1 and Chromium 150). The project now requires host Node 22.12.0 or newer and explicitly installs and verifies the Electron binary during `npm install` and Windows distribution. The complete dependency audit reports zero vulnerabilities, and the packaged Windows smoke verifies the Electron version, SQLite startup, sandboxed preload, IPC validation, encrypted proxy storage, and CSP. Local portable and NSIS artifacts remain unsigned until a production Authenticode certificate is configured.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.

@@ -5,6 +5,11 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $ReleaseExe = Join-Path $Root "release\win-unpacked\Outlook Manager.exe"
 $UserData = Join-Path $Root "tmp-release-verify-user-data"
 $Port = 9340
+$PackageJson = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
+$ExpectedElectronVersion = [string]$PackageJson.devDependencies.electron
+if ($ExpectedElectronVersion -notmatch '^\d+\.\d+\.\d+$') {
+  throw "Electron must be pinned to an exact release version before packaging."
+}
 
 function Stop-VerifyProcesses {
   Get-CimInstance Win32_Process |
@@ -58,6 +63,12 @@ try {
 
   if (-not $page) {
     throw "No browser page target was exposed by the release executable."
+  }
+
+  $browserVersion = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/version" -TimeoutSec 5
+  $runtimeUserAgent = [string]$browserVersion.'User-Agent'
+  if (-not $runtimeUserAgent.Contains("Electron/$ExpectedElectronVersion")) {
+    throw "Packaged Electron version does not match $ExpectedElectronVersion`: $runtimeUserAgent"
   }
 
   $RendererDeadline = (Get-Date).AddSeconds(30)
@@ -192,7 +203,7 @@ document.readyState === 'complete' &&
     throw "Release executable icon does not look like the custom dark mail icon."
   }
 
-  Write-Output "release startup ok: title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcRejected=$($security.invalidIpcRejected) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True db=$databasePath iconCenter=$($center.Name)"
+  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcRejected=$($security.invalidIpcRejected) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True db=$databasePath iconCenter=$($center.Name)"
 } finally {
   if (-not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue

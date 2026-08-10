@@ -23,6 +23,8 @@
 
 ## 开发运行
 
+需要 Node.js `22.12.0` 或更高版本。`npm install` 会显式下载并校验当前锁定的 Electron 二进制；网络受限环境可通过 Electron 支持的 `ELECTRON_MIRROR` 环境变量配置下载源。
+
 ```powershell
 npm install
 npm run dev
