@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IPC_CHANNELS } from "../electron/shared/ipc-contracts.js";
+import { IPC_CHANNELS, IPC_EVENT_CHANNELS } from "../electron/shared/ipc-contracts.js";
 
 const state = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -187,8 +187,14 @@ describe("IPC refresh cancellation", () => {
     const pending = refreshHandler!(event, ["account-1"], "refresh") as Promise<Array<{ canceled?: boolean; code?: string }>>;
     const requestSignal = await state.tokenStarted!;
 
-    await expect(cancelHandler!(event, "refresh")).resolves.toEqual({ canceled: "refresh", count: 1 });
-    await expect(pending).resolves.toMatchObject([{ canceled: true, code: "CANCELED" }]);
+    await expect(cancelHandler!(event, "refresh")).resolves.toEqual({
+      ok: true,
+      value: { canceled: "refresh", count: 1 }
+    });
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+      value: [{ canceled: true, error: { code: "CANCELED", retryable: false } }]
+    });
     expect(requestSignal.aborted).toBe(true);
     expect(state.saveCachedMessages).not.toHaveBeenCalled();
     expect(state.saveCachedMessageDetail).not.toHaveBeenCalled();
@@ -217,12 +223,19 @@ describe("IPC refresh cancellation", () => {
     await cancelHandler!(event, "test");
     state.releaseStatusWrite?.();
 
-    await expect(pending).resolves.toMatchObject([{ code: "CANCELED" }]);
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+      value: [{ error: { code: "CANCELED", retryable: false } }]
+    });
     const progressEvents = event.sender.send.mock.calls.filter(
       ([channel]) => channel === "accounts:testProgress"
     );
     expect(progressEvents).toHaveLength(1);
-    expect(progressEvents[0]?.[1]).toMatchObject({ failed: 1, completed: 1, error: "批量测试已取消" });
+    expect(progressEvents[0]?.[1]).toMatchObject({
+      failed: 1,
+      completed: 1,
+      error: { code: "CANCELED", message: "批量测试已取消", retryable: false }
+    });
   });
 
   it("loads and caches one fallback detail when a numeric IMAP message is opened", async () => {
@@ -262,7 +275,7 @@ describe("IPC refresh cancellation", () => {
     await expect(handler!({ sender: { send: vi.fn() } }, {
       accountId: "account-detail",
       messageId: "42"
-    })).resolves.toEqual(detail);
+    })).resolves.toEqual({ ok: true, value: detail });
     expect(state.fallbackGetMessage).toHaveBeenCalledTimes(1);
     expect(state.saveCachedMessageDetail).toHaveBeenCalledWith(
       "account-detail",
@@ -303,7 +316,14 @@ describe("IPC refresh cancellation", () => {
     await expect(handler!({ sender: { send: vi.fn() } }, {
       accountId: "account-list",
       forceRefresh: true
-    })).rejects.toThrow("cache disk full");
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "UNKNOWN",
+        message: "操作失败，请重试；如果问题持续，请检查应用日志。",
+        retryable: false
+      }
+    });
     expect(state.fallbackGetMessages).not.toHaveBeenCalled();
   });
 
@@ -332,8 +352,69 @@ describe("IPC refresh cancellation", () => {
     await expect(handler!({ sender: { send: vi.fn() } }, {
       accountId: "account-parse",
       messageId: "42"
-    })).rejects.toThrow("Max allowed child nodes exceeded");
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "MAIL_PARSE_FAILED",
+        message: expect.stringContaining("Max allowed child nodes exceeded"),
+        retryable: false
+      }
+    });
     expect(state.fallbackGetMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not start a fallback after credentials become stale", async () => {
+    const { CredentialsChangedError } = await import("../electron/main/credential-generations.js");
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "imap-access-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "IMAP.AccessAsUser.All",
+      authMode: "imap"
+    });
+    state.listImapFolders.mockResolvedValue([{
+      id: "INBOX",
+      displayName: "Inbox",
+      totalItemCount: 1,
+      unreadItemCount: 0
+    }]);
+    state.imapGetMessage.mockRejectedValue(new CredentialsChangedError());
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailGetMessage);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, {
+      accountId: "account-stale",
+      messageId: "42"
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "STALE_CREDENTIALS",
+        retryable: true
+      }
+    });
+    expect(state.fallbackGetMessage).not.toHaveBeenCalled();
+  });
+
+  it("preserves stale credential errors from a searched message list", async () => {
+    const { CredentialsChangedError } = await import("../electron/main/credential-generations.js");
+    state.refreshAccessToken.mockRejectedValue(new CredentialsChangedError());
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailListMessages);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, {
+      accountId: "account-stale-list",
+      forceRefresh: true,
+      search: "invoice"
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "STALE_CREDENTIALS",
+        retryable: true
+      }
+    });
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
   });
 
   it("does not start a network fallback when an IMAP refresh cache write fails", async () => {
@@ -374,9 +455,60 @@ describe("IPC refresh cancellation", () => {
     registerIpcHandlers();
     const handler = state.handlers.get(IPC_CHANNELS.mailRefreshMany);
 
-    await expect(handler!({ sender: { send: vi.fn() } }, ["account-refresh"])).resolves.toMatchObject([
-      { accountId: "account-refresh", ok: false, error: "refresh cache disk full" }
-    ]);
+    const event = { sender: { send: vi.fn() } };
+    await expect(handler!(event, ["account-refresh"])).resolves.toMatchObject({
+      ok: true,
+      value: [{
+        accountId: "account-refresh",
+        ok: false,
+        error: {
+          code: "UNKNOWN",
+          message: "操作失败，请重试；如果问题持续，请检查应用日志。",
+          retryable: false
+        }
+      }]
+    });
+    expect(event.sender.send).toHaveBeenCalledWith(
+      IPC_EVENT_CHANNELS.mailRefreshProgress,
+      expect.objectContaining({
+        error: {
+          code: "UNKNOWN",
+          message: "操作失败，请重试；如果问题持续，请检查应用日志。",
+          retryable: false
+        }
+      })
+    );
+    expect(state.updateAccountRefreshFailure).toHaveBeenCalledWith(
+      "account-refresh",
+      expect.objectContaining({
+        lastError: "操作失败，请重试；如果问题持续，请检查应用日志。"
+      }),
+      expect.any(Object)
+    );
     expect(state.fallbackGetMessages).not.toHaveBeenCalled();
+  });
+
+  it("keeps an account usable when a connection test hits a retryable network error", async () => {
+    state.refreshAccessToken.mockRejectedValue(Object.assign(new Error("request failed"), { code: "ENOTFOUND" }));
+    state.updateAccountStatus.mockResolvedValue({ id: "account-network", status: "untested" });
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.accountsTest);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, "account-network")).resolves.toMatchObject({
+      ok: true,
+      value: {
+        ok: false,
+        account: { id: "account-network" },
+        error: { code: "NETWORK_ERROR", retryable: true }
+      }
+    });
+    expect(state.updateAccountStatus).toHaveBeenCalledWith(
+      "account-network",
+      "untested",
+      expect.stringContaining("网络连接失败"),
+      undefined,
+      expect.any(Object)
+    );
   });
 });

@@ -14,6 +14,8 @@ describe("validated IPC handler boundary", () => {
   it("parses positional arguments before invoking a handler", () => {
     expect(validatedIpcSource).toMatch(/ipcMain\.handle\(channel,[\s\S]*parseIpcRequest\(schema,\s*args\)/u);
     expect(validatedIpcSource).toMatch(/handler\(event,\s*parseIpcRequest\(schema,\s*args\)\)/u);
+    expect(validatedIpcSource).toContain("ok: true");
+    expect(validatedIpcSource).toContain("ok: false");
   });
 
   it("registers every public invoke channel through handleValidated", () => {

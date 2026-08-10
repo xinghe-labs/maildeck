@@ -1,6 +1,7 @@
 import { Loader2, Plus, X } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { getDesktopApi } from "../desktop-api";
+import { errorMessage } from "../app-error";
 import type { AccountInput, ImportPreviewResult, ImportResult } from "../types";
 
 const emptyAccountForm: AccountInput = {
@@ -54,7 +55,7 @@ export function ImportModal({
       onImported(result);
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      setError(errorMessage(submitError));
     } finally {
       setLoading(false);
     }

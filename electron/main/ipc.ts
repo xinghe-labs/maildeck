@@ -37,7 +37,7 @@ import {
 import { parseAccountImport } from "./import-parser.js";
 import { countNewMessagesAfterRefresh, shouldCommitMailboxRefreshState } from "./mail-refresh-state.js";
 import { getPublicSettings, getSettings, updateSettings } from "./settings-store.js";
-import { normalizeError } from "./error-utils.js";
+import { normalizeError, reportIpcError } from "./error-utils.js";
 import { resolveRefreshFailureStatus } from "./account-refresh-state.js";
 import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { AccessTokenManager } from "./access-token-manager.js";
@@ -116,6 +116,10 @@ function maxCursorFor(messages: MailMessageSummary[]) {
 
 function cancelError(job: JobKind) {
   return job === "test" ? "批量测试已取消" : "刷新已取消";
+}
+
+function canceledError(job: JobKind) {
+  return { code: "CANCELED" as const, message: cancelError(job), retryable: false };
 }
 
 function normalizeErrorResult(error: unknown) {
@@ -301,7 +305,7 @@ function shouldTryHotmailFallbackDetail(messageId: string, error: unknown) {
     return false;
   }
   const { code } = normalizeErrorResult(error);
-  return !["CANCELED", "ACCOUNT_NOT_FOUND", "MAIL_PARSE_FAILED", "MAIL_TOO_LARGE"].includes(code);
+  return !["CANCELED", "STALE_CREDENTIALS", "ACCOUNT_NOT_FOUND", "MAIL_PARSE_FAILED", "MAIL_TOO_LARGE"].includes(code);
 }
 
 function refreshStateFromFallback(
@@ -466,17 +470,31 @@ async function testAccountConnection(accountId: string, forceRefresh = true, sig
     return { accountId, account, ok: true, message: "连接成功" };
   } catch (error) {
     signal?.throwIfAborted();
-    const { code, message } = normalizeErrorResult(error);
+    const payload = reportIpcError(error, `Account connection test ${accountId}`);
+    let currentStatus: Awaited<ReturnType<typeof getAccountRecord>>["status"] = "untested";
+    try {
+      currentStatus = (await getAccountRecord(accountId)).status;
+    } catch (statusError) {
+      signal?.throwIfAborted();
+      reportIpcError(statusError, `Read account status ${accountId}`);
+    }
     let account = null;
     try {
-      account = await updateAccountStatus(accountId, "invalid", message, undefined, {
+      account = await updateAccountStatus(
+        accountId,
+        resolveRefreshFailureStatus(currentStatus, payload.code),
+        payload.message,
+        undefined,
+        {
         assertCurrent: () => signal?.throwIfAborted()
-      });
-    } catch {
+        }
+      );
+    } catch (statusError) {
       signal?.throwIfAborted();
+      reportIpcError(statusError, `Persist account test status ${accountId}`);
     }
     signal?.throwIfAborted();
-    return { accountId, account, ok: false, message, code };
+    return { accountId, account, ok: false, error: payload };
   }
 }
 
@@ -529,12 +547,10 @@ async function testHotmailFallback(accountId: string, signal?: AbortSignal): Pro
     };
   } catch (error) {
     signal?.throwIfAborted();
-    const { code, message } = normalizeErrorResult(error);
     return {
       account: null,
       ok: false,
-      message,
-      code,
+      error: reportIpcError(error, `Hotmail fallback test ${accountId}`),
       elapsedMs: Date.now() - started
     };
   }
@@ -632,12 +648,9 @@ export function registerIpcHandlers() {
 
   handleValidated(IPC_CHANNELS.accountsTest, IPC_REQUEST_SCHEMAS.testAccount, async (_event, accountId) => {
     const result = await runConfiguredNetworkAccount(accountId, (signal) => testAccountConnection(accountId, true, signal));
-    return {
-      account: result.account,
-      ok: result.ok,
-      message: result.message,
-      code: result.code
-    };
+    return result.ok
+      ? { account: result.account, ok: true as const, message: result.message }
+      : { account: result.account, ok: false as const, error: result.error };
   });
 
   handleValidated(IPC_CHANNELS.accountsTestFallback, IPC_REQUEST_SCHEMAS.testFallback, async (_event, accountId) =>
@@ -654,7 +667,7 @@ export function registerIpcHandlers() {
       const total = accountIds.length;
 
       return runLimited(accountIds, resolveBatchLimit(settings.batchConcurrency, total), (accountId) =>
-        job.runAccount(
+        job.runAccount<TestManyResult>(
           accountId,
           async (signal) => {
             const result = await testAccountConnection(accountId, true, signal);
@@ -665,7 +678,7 @@ export function registerIpcHandlers() {
               event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId });
             } else {
               failed += 1;
-              event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: result.message });
+              event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: result.error });
             }
 
             return result;
@@ -673,9 +686,9 @@ export function registerIpcHandlers() {
           () => {
             completed += 1;
             failed += 1;
-            const message = cancelError("test");
-            event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error: message });
-            return { accountId, account: null, ok: false, message, code: "CANCELED" as AppErrorCode };
+            const error = canceledError("test");
+            event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, { completed, total, ok, failed, accountId, error });
+            return { accountId, account: null, ok: false as const, error };
           }
         )
       );
@@ -858,8 +871,7 @@ export function registerIpcHandlers() {
     }
     return { messages, nextCursor, totalCount } satisfies MailListResult;
     } catch (error) {
-      const { message } = normalizeErrorResult(error);
-      throw new Error(message);
+      throw error;
     }
     })
   );
@@ -986,7 +998,7 @@ export function registerIpcHandlers() {
       const total = accountIds.length;
       const batchLimit = resolveBatchLimit(appSettings.batchConcurrency, total);
       const canceledResult = (accountId: string, metrics: RefreshMetrics, totalStart: number): RefreshManyResult => {
-        const message = cancelError(jobKind);
+        const error = canceledError(jobKind);
         failed += 1;
         completed += 1;
         metrics.totalMs = elapsedSince(totalStart);
@@ -996,8 +1008,7 @@ export function registerIpcHandlers() {
           ok,
           failed,
           accountId,
-          error: message,
-          code: "CANCELED",
+          error,
           metrics
         });
         return {
@@ -1005,8 +1016,7 @@ export function registerIpcHandlers() {
           ok: false,
           canceled: true,
           count: 0,
-          error: message,
-          code: "CANCELED" as AppErrorCode,
+          error,
           metrics
         };
       };
@@ -1146,11 +1156,12 @@ export function registerIpcHandlers() {
             return { accountId, ok: true, count: fallback.messages.length, newCount, metrics };
           } catch (error) {
             signal.throwIfAborted();
+            const payload = reportIpcError(new Error("未找到收件箱"), `Refresh account ${accountId}`);
             const stateStart = nowMs();
             await updateAccountRefreshFailure(accountId, {
-              status: resolveRefreshFailureStatus(account.status, "MAILBOX_NOT_FOUND"),
-              lastError: "未找到收件箱",
-              refreshCooldownUntil: cooldownUntilFor("MAILBOX_NOT_FOUND")
+              status: resolveRefreshFailureStatus(account.status, payload.code),
+              lastError: payload.message,
+              refreshCooldownUntil: cooldownUntilFor(payload.code)
             }, {
               assertCurrent: () => signal.throwIfAborted()
             });
@@ -1158,8 +1169,8 @@ export function registerIpcHandlers() {
             metrics.totalMs = elapsedSince(totalStart);
             failed += 1;
             completed += 1;
-            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND", metrics });
-            return { accountId, ok: false, count: 0, error: "未找到收件箱", code: "MAILBOX_NOT_FOUND" as AppErrorCode, metrics };
+            event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: payload, metrics });
+            return { accountId, ok: false as const, count: 0, error: payload, metrics };
           }
         }
 
@@ -1198,12 +1209,12 @@ export function registerIpcHandlers() {
           if (signal.aborted) {
             throw signal.reason;
           }
-          const { code, message } = normalizeErrorResult(error);
+          const payload = reportIpcError(error, `Refresh account ${accountId}`);
           try {
             await updateAccountRefreshFailure(accountId, {
-              status: resolveRefreshFailureStatus(account?.status || "untested", code),
-              lastError: message,
-              refreshCooldownUntil: cooldownUntilFor(code)
+              status: resolveRefreshFailureStatus(account?.status || "untested", payload.code),
+              lastError: payload.message,
+              refreshCooldownUntil: cooldownUntilFor(payload.code)
             }, {
               assertCurrent: () => signal.throwIfAborted()
             });
@@ -1214,8 +1225,8 @@ export function registerIpcHandlers() {
           failed += 1;
           completed += 1;
           metrics.totalMs = elapsedSince(totalStart);
-          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: message, code, metrics });
-          return { accountId, ok: false, count: 0, error: message, code, metrics };
+          event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, { completed, total, ok, failed, accountId, error: payload, metrics });
+          return { accountId, ok: false as const, count: 0, error: payload, metrics };
         }
         }, () => canceledResult(accountId, metrics, totalStart));
       });

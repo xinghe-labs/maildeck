@@ -3,11 +3,13 @@ import type {
   AccountInput,
   AccountUpdateInput,
   AccountView,
+  AppErrorPayload,
   AppSettings,
   AppSettingsUpdate,
   GetMessageOptions,
   IpcEventChannel,
   IpcInvokeChannel,
+  IpcResult,
   ImportResult,
   ImportPreviewResult,
   JobKind,
@@ -16,14 +18,63 @@ import type {
   MailListResult,
   MailMessageDetail,
   RefreshManyResult,
+  RefreshProgressEvent,
   RefreshJobKind,
   TestConnectionResult,
   TestFallbackResult,
-  TestManyResult
+  TestManyResult,
+  TestProgressEvent
 } from "../shared/ipc-contracts.js";
 
-function invoke<Output>(channel: IpcInvokeChannel, ...args: unknown[]): Promise<Output> {
-  return ipcRenderer.invoke(channel, ...args) as Promise<Output>;
+const APP_ERROR_CODES = new Set([
+  "INVALID_REQUEST",
+  "CANCELED",
+  "STALE_CREDENTIALS",
+  "TOKEN_EXPIRED",
+  "IMAP_AUTH_FAILED",
+  "SCOPE_MISSING",
+  "NETWORK_ERROR",
+  "MAIL_PARSE_FAILED",
+  "MAIL_TOO_LARGE",
+  "MAILBOX_NOT_FOUND",
+  "ACCOUNT_NOT_FOUND",
+  "UNKNOWN"
+]);
+
+function isAppErrorPayload(value: unknown): value is AppErrorPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<AppErrorPayload>;
+  const diagnosticIsValid = candidate.diagnostic === undefined || (
+    candidate.diagnostic !== null &&
+    typeof candidate.diagnostic === "object" &&
+    (candidate.diagnostic.requestId === undefined || typeof candidate.diagnostic.requestId === "string")
+  );
+  return typeof candidate.code === "string" && APP_ERROR_CODES.has(candidate.code) &&
+    typeof candidate.message === "string" && typeof candidate.retryable === "boolean" && diagnosticIsValid;
+}
+
+function transportError(): AppErrorPayload {
+  return { code: "UNKNOWN", message: "主进程通信失败，请重试。", retryable: true };
+}
+
+async function invoke<Output>(channel: IpcInvokeChannel, ...args: unknown[]): Promise<Output> {
+  try {
+    const result = (await ipcRenderer.invoke(channel, ...args)) as IpcResult<Output>;
+    if (result?.ok === true) {
+      return result.value;
+    }
+    if (result?.ok === false && isAppErrorPayload(result.error)) {
+      throw result.error;
+    }
+    throw transportError();
+  } catch (error) {
+    if (isAppErrorPayload(error)) {
+      throw error;
+    }
+    throw transportError();
+  }
 }
 
 function onEvent<Payload>(channel: IpcEventChannel, callback: (payload: Payload) => void) {
@@ -50,16 +101,10 @@ const api = {
       jobKind
         ? invoke<RefreshManyResult[]>("mail:refreshMany", accountIds, jobKind)
         : invoke<RefreshManyResult[]>("mail:refreshMany", accountIds),
-    onRefreshProgress: (
-      callback: (
-        event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string; metrics?: RefreshManyResult["metrics"] }
-      ) => void
-    ) => {
+    onRefreshProgress: (callback: (event: RefreshProgressEvent) => void) => {
       return onEvent("mail:refreshProgress", callback);
     },
-    onTestProgress: (
-      callback: (event: { completed: number; total: number; ok: number; failed: number; accountId: string; error?: string }) => void
-    ) => {
+    onTestProgress: (callback: (event: TestProgressEvent) => void) => {
       return onEvent("accounts:testProgress", callback);
     }
   },

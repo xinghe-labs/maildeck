@@ -1,6 +1,7 @@
 import { Loader2, Settings, X } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { getDesktopApi } from "../desktop-api";
+import { errorMessage } from "../app-error";
 import type { AppSettings, AppSettingsUpdate } from "../types";
 
 interface SettingsFormState {
@@ -81,7 +82,7 @@ export function SettingsModal({
       onSaved(await api.settings.update(update));
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : String(submitError));
+      setError(errorMessage(submitError));
     } finally {
       setLoading(false);
     }

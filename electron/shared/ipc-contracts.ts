@@ -38,7 +38,9 @@ export type IpcEventChannel = (typeof IPC_EVENT_CHANNELS)[keyof typeof IPC_EVENT
 
 export type AccountStatus = "untested" | "valid" | "invalid";
 export type AppErrorCode =
+  | "INVALID_REQUEST"
   | "CANCELED"
+  | "STALE_CREDENTIALS"
   | "TOKEN_EXPIRED"
   | "IMAP_AUTH_FAILED"
   | "SCOPE_MISSING"
@@ -48,6 +50,27 @@ export type AppErrorCode =
   | "MAILBOX_NOT_FOUND"
   | "ACCOUNT_NOT_FOUND"
   | "UNKNOWN";
+
+export interface AppErrorPayload {
+  code: AppErrorCode;
+  message: string;
+  retryable: boolean;
+  diagnostic?: {
+    requestId?: string;
+  };
+}
+
+export type IpcResult<Output> =
+  | { ok: true; value: Output }
+  | { ok: false; error: AppErrorPayload };
+
+export class IpcRequestValidationError extends Error {
+  override readonly name = "IpcRequestValidationError";
+}
+
+export function isIpcRequestValidationError(error: unknown): error is IpcRequestValidationError {
+  return error instanceof IpcRequestValidationError;
+}
 
 export interface AccountInput {
   email: string;
@@ -138,30 +161,24 @@ export interface ImportPreviewResult {
   warnings: string[];
 }
 
-export interface TestConnectionResult {
-  account: AccountView;
-  ok: boolean;
-  message: string;
-  code?: AppErrorCode;
-}
+export type TestConnectionResult =
+  | { account: AccountView; ok: true; message: string }
+  | { account: AccountView | null; ok: false; error: AppErrorPayload };
 
-export interface TestFallbackResult {
-  account: AccountView | null;
-  ok: boolean;
-  message: string;
-  code?: AppErrorCode;
-  transport?: string;
-  count?: number;
-  elapsedMs?: number;
-}
+export type TestFallbackResult =
+  | {
+      account: AccountView;
+      ok: true;
+      message: string;
+      transport: string;
+      count: number;
+      elapsedMs: number;
+    }
+  | { account: null; ok: false; error: AppErrorPayload; elapsedMs: number };
 
-export interface TestManyResult {
-  accountId: string;
-  account: AccountView | null;
-  ok: boolean;
-  message: string;
-  code?: AppErrorCode;
-}
+export type TestManyResult =
+  | { accountId: string; account: AccountView; ok: true; message: string }
+  | { accountId: string; account: AccountView | null; ok: false; error: AppErrorPayload };
 
 export interface RefreshMetrics {
   tokenMs: number;
@@ -172,15 +189,34 @@ export interface RefreshMetrics {
   fallback?: string;
 }
 
-export interface RefreshManyResult {
+export type RefreshManyResult =
+  | {
+      accountId: string;
+      ok: true;
+      count: number;
+      newCount?: number;
+      skipped?: boolean;
+      metrics?: RefreshMetrics;
+    }
+  | {
+      accountId: string;
+      ok: false;
+      count: number;
+      canceled?: boolean;
+      error: AppErrorPayload;
+      metrics?: RefreshMetrics;
+    };
+
+export interface TestProgressEvent {
+  completed: number;
+  total: number;
+  ok: number;
+  failed: number;
   accountId: string;
-  ok: boolean;
-  count: number;
-  newCount?: number;
-  skipped?: boolean;
-  canceled?: boolean;
-  error?: string;
-  code?: AppErrorCode;
+  error?: AppErrorPayload;
+}
+
+export interface RefreshProgressEvent extends TestProgressEvent {
   metrics?: RefreshMetrics;
 }
 
@@ -340,5 +376,5 @@ export function parseIpcRequest<Output>(schema: z.ZodType<Output>, args: unknown
   const details = result.error.issues
     .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "request"}: ${issue.message}`)
     .join("; ");
-  throw new Error(`IPC request rejected: ${details}`);
+  throw new IpcRequestValidationError(`IPC request rejected: ${details}`);
 }

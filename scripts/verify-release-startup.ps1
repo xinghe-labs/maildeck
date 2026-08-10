@@ -107,6 +107,8 @@ document.readyState === 'complete' &&
   });
 
   let invalidIpcRejected = false;
+  let invalidIpcCode = '';
+  let invalidIpcRetryable = null;
   try {
     await bridge?.settings?.update({
       batchConcurrency: 99,
@@ -114,7 +116,11 @@ document.readyState === 'complete' &&
       unexpected: true
     });
   } catch (error) {
-    invalidIpcRejected = String(error?.message || error).includes('IPC request rejected');
+    invalidIpcCode = String(error?.code || '');
+    invalidIpcRetryable = error?.retryable;
+    invalidIpcRejected = invalidIpcCode === 'INVALID_REQUEST' &&
+      invalidIpcRetryable === false &&
+      String(error?.message || error).includes('IPC request rejected');
   }
 
   const settings = await bridge?.settings?.get();
@@ -140,6 +146,8 @@ document.readyState === 'complete' &&
     hasBridge,
     settingsReadable: Boolean(settings),
     invalidIpcRejected,
+    invalidIpcCode,
+    invalidIpcRetryable,
     forbiddenPasswordFields,
     proxyHasPassword: settings?.proxyHasPassword === true,
     settingsButtonFound: Boolean(settingsButton),
@@ -164,6 +172,8 @@ document.readyState === 'complete' &&
     -not $security.hasBridge -or
     -not $security.settingsReadable -or
     -not $security.invalidIpcRejected -or
+    $security.invalidIpcCode -ne "INVALID_REQUEST" -or
+    $security.invalidIpcRetryable -ne $false -or
     -not $security.proxyHasPassword -or
     -not $security.settingsButtonFound -or
     -not $security.passwordInputBlank -or
@@ -217,7 +227,7 @@ document.readyState === 'complete' &&
     throw "Release executable icon does not look like the custom dark mail icon."
   }
 
-  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcRejected=$($security.invalidIpcRejected) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) geolocation=$($security.geolocationPermission) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True cspWorkerNone=True cspWebSocketExplicit=False db=$databasePath iconCenter=$($center.Name)"
+  Write-Output "release startup ok: electron=$ExpectedElectronVersion title=$($page.title) bridge=$($security.hasBridge) settings=$($security.settingsReadable) invalidIpcCode=$($security.invalidIpcCode) invalidIpcRetryable=$($security.invalidIpcRetryable) proxyEncrypted=True passwordExposed=False passwordInputBlank=$($security.passwordInputBlank) settingsModalFits=$($security.settingsModalFitsViewport) geolocation=$($security.geolocationPermission) nodeProcess=$($security.hasNodeProcess) cspObjectNone=True cspWorkerNone=True cspWebSocketExplicit=False db=$databasePath iconCenter=$($center.Name)"
 } finally {
   if (-not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue

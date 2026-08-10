@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatErrorForLog, normalizeError } from "../electron/main/error-utils.js";
+import { formatErrorForLog, normalizeError, toIpcErrorPayload } from "../electron/main/error-utils.js";
 import { MailContentTooLargeError, MailParseFailedError } from "../electron/main/mail-errors.js";
 
 describe("proxy credential redaction", () => {
@@ -29,6 +29,55 @@ describe("proxy credential redaction", () => {
     expect(output).toContain("alice");
     expect(output).toContain("***");
     expect(output).not.toContain("log-secret");
+  });
+
+  it("redacts authorization headers and Microsoft token-shaped secrets", () => {
+    const bearer = `eyJ${"a".repeat(80)}.${"b".repeat(80)}.${"c".repeat(80)}`;
+    const refreshToken = `M.${"r".repeat(120)}`;
+    const accessToken = `Ew${"x".repeat(120)}`;
+    const result = normalizeError(
+      new Error(
+        `Authorization: Bearer ${bearer}; refresh_token=${refreshToken}; {"access_token":"${accessToken}"}`
+      )
+    );
+
+    expect(result.message).toContain("***");
+    expect(result.message).not.toContain(bearer);
+    expect(result.message).not.toContain(refreshToken);
+    expect(result.message).not.toContain(accessToken);
+  });
+
+  it("redacts quoted authorization headers and camelCase credential fields", () => {
+    const result = formatErrorForLog(new Error(
+      '{"Authorization":"Bearer opaque-bearer","accessToken":"opaque-access","refreshToken":"opaque-refresh","clientSecret":"opaque-client"}'
+    ));
+
+    expect(result).toContain("***");
+    expect(result).not.toContain("opaque-bearer");
+    expect(result).not.toContain("opaque-access");
+    expect(result).not.toContain("opaque-refresh");
+    expect(result).not.toContain("opaque-client");
+  });
+
+  it.each(["ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "ENETUNREACH"])(
+    "classifies Node network error code %s as retryable",
+    (code) => {
+      const error = Object.assign(new Error("request failed"), { code });
+
+      expect(toIpcErrorPayload(error)).toMatchObject({
+        code: "NETWORK_ERROR",
+        retryable: true
+      });
+    }
+  );
+
+  it("classifies a network error code from the cause chain", () => {
+    const cause = Object.assign(new Error("dns lookup failed"), { code: "EAI_AGAIN" });
+
+    expect(toIpcErrorPayload(new Error("fetch failed", { cause }))).toMatchObject({
+      code: "NETWORK_ERROR",
+      retryable: true
+    });
   });
 
   it("classifies bounded mail reads without treating them as a retryable transport error", () => {

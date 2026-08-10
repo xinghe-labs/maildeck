@@ -26,6 +26,7 @@ import type {
   RefreshManyResult
 } from "./types";
 import { formatRelativeTime } from "./ui-utils";
+import { errorMessage } from "./app-error";
 
 const defaultSettings: AppSettings = {
   cacheMessages: true,
@@ -42,14 +43,6 @@ const defaultSettings: AppSettings = {
 
 function replaceAccount(accounts: AccountView[], next: AccountView) {
   return accounts.map((account) => (account.id === next.id ? next : account));
-}
-
-function errorMessage(error: unknown) {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/^Error invoking remote method '[^']+': Error:\s*/i, "")
-    .replace(/^Error invoking remote method \"[^\"]+\": Error:\s*/i, "")
-    .replace(/^Error:\s*/i, "");
 }
 
 function EditAccountModal({
@@ -434,8 +427,14 @@ export default function App() {
 
     try {
       const result = await api.accounts.test(accountId);
-      setAccounts((current) => replaceAccount(current, result.account));
-      setToast(result.message);
+      if (result.account) {
+        setAccounts((current) => replaceAccount(current, result.account!));
+      }
+      if (result.ok) {
+        setToast(result.message);
+      } else {
+        setError(result.error.message);
+      }
     } catch (testError) {
       setError(errorMessage(testError));
     } finally {
@@ -457,12 +456,11 @@ export default function App() {
 
     try {
       const result = await api.accounts.testFallback(accountId);
-      if (result.account) {
-        setAccounts((current) => replaceAccount(current, result.account!));
-      }
-      setToast(result.message);
-      if (!result.ok) {
-        setError(result.message);
+      if (result.ok) {
+        setAccounts((current) => replaceAccount(current, result.account));
+        setToast(result.message);
+      } else {
+        setError(result.error.message);
       }
     } catch (fallbackError) {
       setError(errorMessage(fallbackError));
@@ -583,7 +581,7 @@ export default function App() {
         return;
       }
 
-      setError(result?.error || "刷新账号失败");
+      setError(result?.error.message || "刷新账号失败");
     } catch (refreshError) {
       setError(errorMessage(refreshError));
     } finally {

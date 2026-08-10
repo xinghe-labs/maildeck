@@ -28,4 +28,10 @@ describe("packaged release verification", () => {
     expect(releaseVerifier).toContain('.Contains("ws://")');
     expect(releaseVerifier).toContain('.Contains("wss://")');
   });
+
+  it("verifies structured IPC error codes through the packaged context bridge", () => {
+    expect(releaseVerifier).toContain("invalidIpcCode");
+    expect(releaseVerifier).toContain("INVALID_REQUEST");
+    expect(releaseVerifier).toContain("invalidIpcRetryable");
+  });
 });

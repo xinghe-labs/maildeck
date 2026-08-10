@@ -18,6 +18,8 @@ Implementation note (2026-08-10): the default Electron session now denies all Ch
 
 Implementation note (2026-08-10): SQLite schema upgrades now use ordered v1-v5 migrations inside one immediate transaction, verify every completed step, and reject databases written by a newer application version. Existing databases receive a consistent `VACUUM INTO` backup before the first missing migration; a failed migration rolls back all schema and version changes while preserving that backup for recovery.
 
+Implementation note (2026-08-10): every invoke-style IPC response now uses a shared success/error envelope. Errors expose a stable code, safe message, retryability, and optional request ID; unknown implementation failures remain generic in React while their main-process logs redact authorization headers, Microsoft token shapes, and proxy credentials. The sandboxed preload validates and unwraps the envelope, including transport-failure sanitization.
+
 ## Context
 
 Outlook Manager is a Windows-focused Electron desktop application with a React renderer. The Electron main process owns Microsoft token exchange, Graph and IMAP access, SQLite storage, account encryption, proxy handling, caching, background refresh, and release verification.

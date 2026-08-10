@@ -1,28 +1,84 @@
-import type { AppErrorCode } from "./types.js";
+import type { AppErrorCode, AppErrorPayload } from "./types.js";
 import { isJobCanceledError } from "./job-errors.js";
 import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { redactProxyCredentials } from "../shared/proxy-security.js";
+import { isIpcRequestValidationError } from "../shared/ipc-contracts.js";
+import { isCredentialsChangedError } from "./credential-generations.js";
 
 export interface NormalizedAppError {
   code: AppErrorCode;
   message: string;
 }
 
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT"
+]);
+
+function hasNetworkErrorCode(error: unknown): boolean {
+  const visited = new Set<object>();
+  let current = error;
+
+  for (let depth = 0; depth < 6 && current && typeof current === "object"; depth += 1) {
+    if (visited.has(current)) {
+      return false;
+    }
+    visited.add(current);
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string" && NETWORK_ERROR_CODES.has(candidate.code.toUpperCase())) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+
+  return false;
+}
+
+export function redactSensitiveText(value: string): string {
+  return redactProxyCredentials(value)
+    .replace(/(["']?\bauthorization\b["']?\s*[:=]\s*["']?\s*(?:bearer\s+)?)[^"'\s,;}]+/giu, "$1***")
+    .replace(
+      /(["']?(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|proxy[_-]?password|password)["']?\s*[:=]\s*["']?)[^"'\s&,;}]+/giu,
+      "$1***"
+    )
+    .replace(/\bM\.[A-Za-z0-9._~+/=-]{40,}\b/gu, "***")
+    .replace(/\beyJ[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{20,}){1,2}\b/gu, "***")
+    .replace(/\bEw[A-Za-z0-9._~+/=-]{60,}\b/gu, "***");
+}
+
 export function formatErrorForLog(error: unknown): string {
   const output = error instanceof Error ? error.stack || error.message : String(error);
-  return redactProxyCredentials(output);
+  return redactSensitiveText(output);
 }
 
 export function normalizeError(error: unknown): NormalizedAppError {
-  const message = redactProxyCredentials(error instanceof Error ? error.message : String(error));
+  const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
+  if (isIpcRequestValidationError(error)) {
+    return { code: "INVALID_REQUEST", message };
+  }
   if (isJobCanceledError(error)) {
     return { code: "CANCELED", message };
+  }
+  if (isCredentialsChangedError(error)) {
+    return { code: "STALE_CREDENTIALS", message };
   }
   if (isMailContentTooLargeError(error)) {
     return { code: "MAIL_TOO_LARGE", message };
   }
   if (isMailParseFailedError(error)) {
     return { code: "MAIL_PARSE_FAILED", message };
+  }
+
+  if (hasNetworkErrorCode(error)) {
+    return { code: "NETWORK_ERROR", message: `网络连接失败：请检查代理、DNS 或 Microsoft 服务连接。原始错误：${message}` };
   }
 
   const lower = message.toLowerCase();
@@ -95,4 +151,27 @@ export function normalizeError(error: unknown): NormalizedAppError {
   }
 
   return { code: "UNKNOWN", message };
+}
+
+export function toIpcErrorPayload(error: unknown): AppErrorPayload {
+  const normalized = normalizeError(error);
+  const requestId = normalized.message.match(/request-id:\s*([a-z0-9-]+)/iu)?.[1];
+
+  return {
+    code: normalized.code,
+    message:
+      normalized.code === "UNKNOWN"
+        ? "操作失败，请重试；如果问题持续，请检查应用日志。"
+        : normalized.message,
+    retryable: normalized.code === "NETWORK_ERROR" || normalized.code === "STALE_CREDENTIALS",
+    ...(requestId ? { diagnostic: { requestId } } : {})
+  };
+}
+
+export function reportIpcError(error: unknown, context: string): AppErrorPayload {
+  const payload = toIpcErrorPayload(error);
+  if (payload.code === "UNKNOWN") {
+    console.error(`${context} failed`, formatErrorForLog(error));
+  }
+  return payload;
 }

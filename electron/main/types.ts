@@ -5,6 +5,7 @@ export type {
   AccountStatus,
   AccountUpdateInput,
   AccountView,
+  AppErrorPayload,
   AppErrorCode,
   AppSettings,
   AppSettingsUpdate,
@@ -21,9 +22,11 @@ export type {
   RefreshJobKind,
   RefreshManyResult,
   RefreshMetrics,
+  RefreshProgressEvent,
   TestConnectionResult,
   TestFallbackResult,
-  TestManyResult
+  TestManyResult,
+  TestProgressEvent
 } from "../shared/ipc-contracts.js";
 
 export interface AccountRecord {
