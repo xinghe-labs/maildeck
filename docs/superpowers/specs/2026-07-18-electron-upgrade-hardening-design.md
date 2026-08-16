@@ -28,6 +28,8 @@ Implementation note (2026-08-10): the required SQLite workload benchmark now see
 
 Implementation note (2026-08-15): large account lists now use an 80px fixed-row virtual window with an 8px gap in the Renderer. A 5,000-account mailbox keeps the full scroll geometry while rendering only the viewport plus overscan (10 rows at the packaged 754px content height; 14 after scrolling to account 100). Batch test account updates use one ID map and one ordered pass instead of repeated full-list replacement. The fixed shell uses `body { min-height: 100vh }`, and the packaged Electron check confirms document `scrollHeight` equals the content viewport height.
 
+Implementation note (2026-08-16): mail text normalization is shared by MIME parsing, Graph responses, IMAP headers, and cache reads. It repairs common valid-UTF-8 Windows-1252/Latin-1 mojibake, keeps intentional replacement characters, normalizes body content types, and defensively handles older cache records with incomplete recipient fields.
+
 Implementation note (2026-08-10): the renderer memoizes sanitized mail documents by content, reuses module-level `Intl.DateTimeFormat` instances, and applies Chromium `content-visibility` containment to account and message rows. Frequent progress updates no longer repeat DOMPurify work or rebuild an unchanged mail iframe, while long lists skip offscreen layout and paint.
 
 ## Context

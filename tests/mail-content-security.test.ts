@@ -53,5 +53,6 @@ describe("mail document policy", () => {
   it("uses the normalized content type instead of guessing from plaintext markup", () => {
     expect(isMailHtmlBody("text")).toBe(false);
     expect(isMailHtmlBody("HTML")).toBe(true);
+    expect(isMailHtmlBody("text/html; charset=utf-8")).toBe(true);
   });
 });

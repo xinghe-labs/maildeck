@@ -2,6 +2,7 @@ import { app } from "electron";
 import { copyFile, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { getDatabase, transaction } from "./database.js";
+import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 import type { MailMessageDetail, MailMessageSummary } from "./types.js";
 
 interface CacheRecord {
@@ -116,14 +117,14 @@ function isFresh(updatedAt: string | null) {
 function rowToMessage(row: MailMessageRow): MailMessageSummary {
   return {
     id: row.message_id,
-    subject: row.subject,
-    from: row.from_name || row.from_address ? { name: row.from_name || "", address: row.from_address || "" } : null,
+    subject: normalizeMailText(row.subject),
+    from: row.from_name || row.from_address ? { name: normalizeMailText(row.from_name), address: row.from_address || "" } : null,
     receivedDateTime: row.received_date_time,
     sentDateTime: row.sent_date_time,
     isRead: Boolean(row.is_read),
     importance: row.importance || "normal",
     hasAttachments: Boolean(row.has_attachments),
-    bodyPreview: row.body_preview || "",
+    bodyPreview: normalizeMailText(row.body_preview),
     webLink: row.web_link
   };
 }
@@ -348,10 +349,10 @@ function isStoredMailDetailV2(value: unknown): value is StoredMailDetailV2 {
 function parseStoredMailDetail(value: string) {
   const stored = JSON.parse(value) as unknown;
   if (isStoredMailDetailV2(stored)) {
-    return stored.detail;
+    return normalizeCachedDetail(stored.detail);
   }
 
-  const detail = stored as MailMessageDetail;
+  const detail = normalizeCachedDetail(stored as MailMessageDetail);
   if (looksLikeLegacyTextAsHtml(detail)) {
     return {
       ...detail,
@@ -359,6 +360,25 @@ function parseStoredMailDetail(value: string) {
     };
   }
   return detail;
+}
+
+function normalizeCachedDetail(detail: MailMessageDetail): MailMessageDetail {
+  const body = detail.body || { contentType: "text", content: "" };
+  const toRecipients = Array.isArray(detail.toRecipients) ? detail.toRecipients : [];
+  const ccRecipients = Array.isArray(detail.ccRecipients) ? detail.ccRecipients : [];
+  return {
+    ...detail,
+    subject: normalizeMailText(detail.subject),
+    bodyPreview: normalizeMailText(detail.bodyPreview),
+    from: detail.from ? { ...detail.from, name: normalizeMailText(detail.from.name), address: detail.from.address || "" } : null,
+    toRecipients: toRecipients.map((item) => ({ ...item, name: normalizeMailText(item.name), address: item.address || "" })),
+    ccRecipients: ccRecipients.map((item) => ({ ...item, name: normalizeMailText(item.name), address: item.address || "" })),
+    body: {
+      ...body,
+      contentType: normalizeMailContentType(body.contentType),
+      content: normalizeMailText(body.content)
+    }
+  };
 }
 
 function serializeMailDetail(detail: MailMessageDetail) {

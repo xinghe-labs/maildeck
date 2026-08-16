@@ -9,7 +9,8 @@ export const MAIL_DOCUMENT_CSP =
   "default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 export function isMailHtmlBody(contentType: string) {
-  return contentType.toLowerCase() === "html";
+  const token = contentType.split(";", 1)[0].trim().toLowerCase();
+  return token === "html" || token === "text/html";
 }
 
 export function sanitizeMailStyle(value: string) {

@@ -107,6 +107,16 @@ describe("mail source parser", () => {
     });
   });
 
+  it("repairs valid UTF-8 mojibake after the MIME parser has decoded it", async () => {
+    const source = rawMessage("text/plain; charset=utf-8", Buffer.from("ä½ å¥½ï¼Œä¸–ç•Œ", "utf8"));
+
+    await expect(parseMailSourceContent(source)).resolves.toMatchObject({
+      contentType: "text",
+      content: "你好，世界",
+      previewText: "你好，世界"
+    });
+  });
+
   it("does not rewrite correctly declared Western European text", async () => {
     const latin1Body = Buffer.from([0x47, 0x72, 0xfc, 0xdf, 0x65]);
 

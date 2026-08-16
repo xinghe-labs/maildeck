@@ -80,6 +80,22 @@ describe("mail detail cache format", () => {
     });
   });
 
+  it("repairs mojibake in details that were cached by an older build", async () => {
+    await createTemporaryUserData();
+    const { getDatabase } = await import("../electron/main/database.js");
+    const legacy = detail("text", "ä½ å¥½ï¼Œä¸–ç•Œ");
+    legacy.subject = "CafÃ©";
+    getDatabase()
+      .prepare("INSERT INTO mail_details (account_id, message_id, detail_json, updated_at) VALUES (?, ?, ?, ?)")
+      .run("account-1", legacy.id, JSON.stringify(legacy), new Date().toISOString());
+    const cache = await import("../electron/main/mail-cache.js");
+
+    await expect(cache.getCachedMessageDetail("account-1", legacy.id)).resolves.toMatchObject({
+      subject: "Café",
+      body: { contentType: "text", content: "你好，世界" }
+    });
+  });
+
   it("checks cancellation inside the cache lock before writing", async () => {
     await createTemporaryUserData();
     const cache = await import("../electron/main/mail-cache.js");

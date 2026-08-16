@@ -8,6 +8,7 @@ import type {
 import { proxiedFetchOptions } from "./proxy-agent.js";
 import { GraphRequestError } from "./graph-errors.js";
 import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
+import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
 const TOKEN_ENDPOINTS = [
@@ -179,7 +180,7 @@ function mapAddress(input?: GraphEmailAddress | null): MailAddress | null {
     return null;
   }
 
-  return { name, address };
+  return { name: normalizeMailText(name), address };
 }
 
 function mapAddressList(input?: GraphEmailAddress[]) {
@@ -189,14 +190,14 @@ function mapAddressList(input?: GraphEmailAddress[]) {
 function mapMessageSummary(message: GraphMessage): MailMessageSummary {
   return {
     id: message.id,
-    subject: message.subject || "(无主题)",
+    subject: normalizeMailText(message.subject) || "(无主题)",
     from: mapAddress(message.from),
     receivedDateTime: message.receivedDateTime || null,
     sentDateTime: message.sentDateTime || null,
     isRead: Boolean(message.isRead),
     importance: message.importance || "normal",
     hasAttachments: Boolean(message.hasAttachments),
-    bodyPreview: message.bodyPreview || "",
+    bodyPreview: normalizeMailText(message.bodyPreview),
     webLink: message.webLink || null
   };
 }
@@ -381,14 +382,14 @@ export async function getMessage(
     signal
   );
   const summary = mapMessageSummary(message);
-  const content = message.body?.content || "";
+  const content = normalizeMailText(message.body?.content);
 
   return {
     ...summary,
     toRecipients: mapAddressList(message.toRecipients),
     ccRecipients: mapAddressList(message.ccRecipients),
     body: {
-      contentType: message.body?.contentType || "text",
+      contentType: normalizeMailContentType(message.body?.contentType),
       content
     }
   };

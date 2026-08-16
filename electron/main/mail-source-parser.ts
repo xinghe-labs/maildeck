@@ -3,6 +3,7 @@ import { simpleParser } from "mailparser";
 import { Readable, Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { MailParseFailedError, isMailParseFailedError } from "./mail-errors.js";
+import { mojibakeScore, normalizeMailText } from "./mail-text-normalizer.js";
 
 export interface ParsedMailContentInput {
   html?: string | boolean;
@@ -20,14 +21,10 @@ const MAX_CHARSET_REPAIR_BYTES = 13 * 1024 * 1024;
 const MAX_MIME_HEADER_BYTES = 1024 * 1024;
 const CHARSET_REPAIR_CANDIDATES = ["utf-8", "gb18030", "windows-1252"] as const;
 
-function normalizeText(value: string | undefined) {
-  return (value || "").replace(/^\uFEFF/u, "").replace(/\u0000/gu, "").normalize("NFC");
-}
-
 export function selectParsedMailContent(parsed: ParsedMailContentInput): ParsedMailContent {
-  const html = typeof parsed.html === "string" ? normalizeText(parsed.html) : "";
-  const text = normalizeText(parsed.text);
-  const textAsHtml = normalizeText(parsed.textAsHtml);
+  const html = typeof parsed.html === "string" ? normalizeMailText(parsed.html) : "";
+  const text = normalizeMailText(parsed.text);
+  const textAsHtml = normalizeMailText(parsed.textAsHtml);
 
   if (html) {
     return { contentType: "html", content: html, previewText: text };
@@ -39,21 +36,6 @@ export function selectParsedMailContent(parsed: ParsedMailContentInput): ParsedM
     return { contentType: "html", content: textAsHtml, previewText: "" };
   }
   return { contentType: "text", content: "", previewText: "" };
-}
-
-function countMatches(value: string, pattern: RegExp) {
-  return value.match(pattern)?.length ?? 0;
-}
-
-function decodingQualityScore(value: string) {
-  return (
-    countMatches(value, /\uFFFD/gu) * 20 +
-    countMatches(value, /[\u0080-\u009F]/gu) * 8 +
-    countMatches(value, /(?:Ã|Â)[\u0080-\u00BF€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]/gu) * 5 +
-    countMatches(value, /â[\u0080-\u00BF€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]{1,2}/gu) * 5 +
-    countMatches(value, /[äåæçé][\u0080-\u00BF€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]{2}/gu) * 5 +
-    countMatches(value, /(?:ï¿½|锟斤拷)/gu) * 10
-  );
 }
 
 function normalizeCharset(charset: string | false) {
@@ -90,7 +72,7 @@ function chooseRepairCharset(bytes: Buffer, declaredCharset: string | false) {
     return null;
   }
 
-  const currentScore = decodingQualityScore(currentText);
+  const currentScore = mojibakeScore(currentText);
   if (currentScore === 0) {
     return null;
   }
@@ -105,7 +87,7 @@ function chooseRepairCharset(bytes: Buffer, declaredCharset: string | false) {
     if (candidate === null) {
       continue;
     }
-    const score = decodingQualityScore(candidate);
+    const score = mojibakeScore(candidate);
     if (score < bestScore) {
       bestCharset = charset;
       bestScore = score;

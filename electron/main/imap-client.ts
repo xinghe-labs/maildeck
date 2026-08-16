@@ -2,6 +2,7 @@ import { ImapFlow, type MessageStructureObject } from "imapflow";
 import type { Readable } from "node:stream";
 import { MailContentTooLargeError, isMailContentTooLargeError } from "./mail-errors.js";
 import { parseMailSourceContent } from "./mail-source-parser.js";
+import { normalizeMailText } from "./mail-text-normalizer.js";
 import type { MailFolder, MailMessageDetail, MailMessageSummary } from "./types.js";
 
 interface ImapMessageListResult {
@@ -20,7 +21,7 @@ const IMAP_TEXT_PART_RAW_MAX_BYTES = IMAP_TEXT_PART_MAX_BYTES * 3;
 const IMAP_PART_HEADER_MAX_BYTES = 64 * 1024;
 
 function cleanText(value: string | undefined | null) {
-  return (value || "").replace(/\r/g, "").trim();
+  return normalizeMailText(value).replace(/\r/g, "").trim();
 }
 
 function headerAddress(address: { name?: string; address?: string } | undefined | null) {
@@ -29,14 +30,14 @@ function headerAddress(address: { name?: string; address?: string } | undefined 
   }
 
   return {
-    name: address.name || "",
+    name: normalizeMailText(address.name),
     address: address.address || ""
   };
 }
 
 function headerAddressList(items: Array<{ name?: string; address?: string }> | undefined) {
   return (items || []).map((item) => ({
-    name: item.name || "",
+    name: normalizeMailText(item.name),
     address: item.address || ""
   }));
 }
