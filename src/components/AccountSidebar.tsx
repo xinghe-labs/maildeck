@@ -1,6 +1,11 @@
 import { FileUp, Inbox, Loader2, Mail, Plus, RefreshCw, Search, Settings } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
 import type { AccountView } from "../types";
 import { accountMailStats, statusMeta } from "../ui-utils";
+
+const ACCOUNT_ROW_HEIGHT = 88;
+const DEFAULT_VIEWPORT_HEIGHT = 660;
 
 export function AccountSidebar({
   accounts,
@@ -37,6 +42,59 @@ export function AccountSidebar({
   refreshingAccountIds?: Set<string>;
   onRefreshAccount: (accountId: string) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
+  const virtualWindow = resolveFixedVirtualWindow({
+    itemCount: filteredAccounts.length,
+    itemHeight: ACCOUNT_ROW_HEIGHT,
+    scrollTop,
+    viewportHeight
+  });
+  const visibleAccounts = useMemo(
+    () => filteredAccounts.slice(virtualWindow.startIndex, virtualWindow.endIndex),
+    [filteredAccounts, virtualWindow.startIndex, virtualWindow.endIndex]
+  );
+
+  useLayoutEffect(() => {
+    const scrollArea = scrollRef.current;
+    if (!scrollArea) {
+      return;
+    }
+
+    const measure = () => {
+      if (scrollArea.clientHeight > 0) {
+        setViewportHeight(scrollArea.clientHeight);
+      }
+    };
+
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(scrollArea);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  useLayoutEffect(() => {
+    const scrollArea = scrollRef.current;
+    if (scrollArea && scrollArea.scrollTop !== virtualWindow.scrollTop) {
+      scrollArea.scrollTop = virtualWindow.scrollTop;
+      setScrollTop(virtualWindow.scrollTop);
+    }
+  }, [virtualWindow.scrollTop]);
+
+  useLayoutEffect(() => {
+    const scrollArea = scrollRef.current;
+    if (scrollArea) {
+      scrollArea.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [accountQuery, statusFilter]);
+
   return (
     <aside className="sidebar">
       <div className="brand-block">
@@ -91,66 +149,81 @@ export function AccountSidebar({
         </button>
       </div>
 
-      <div className="account-scroll">
+      <div
+        ref={scrollRef}
+        className="account-scroll"
+        aria-busy={loadingAccounts}
+        aria-label="邮箱账号"
+        role="region"
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      >
         {loadingAccounts ? (
-          <div className="panel-empty">
+          <div className="panel-empty account-scroll-state">
             <Loader2 size={22} className="spin" />
             <p>加载账号</p>
           </div>
         ) : null}
 
         {!loadingAccounts && filteredAccounts.length === 0 ? (
-          <div className="panel-empty">
+          <div className="panel-empty account-scroll-state">
             <Inbox size={24} />
             <p>没有符合条件的邮箱</p>
           </div>
         ) : null}
 
-        {filteredAccounts.map((account) => {
-          const meta = statusMeta(account);
-          const StatusIcon = meta.icon;
-          const newCount = newMailCounts?.[account.id] || 0;
-          const isRefreshing = refreshingAccountIds?.has(account.id) || false;
+        {filteredAccounts.length > 0 ? (
+          <div className="account-virtual-space" style={{ height: virtualWindow.totalHeight }}>
+            <div className="account-virtual-window" style={{ transform: `translateY(${virtualWindow.offsetTop}px)` }}>
+              {visibleAccounts.map((account, visibleIndex) => {
+                const meta = statusMeta(account);
+                const StatusIcon = meta.icon;
+                const newCount = newMailCounts?.[account.id] || 0;
+                const isRefreshing = refreshingAccountIds?.has(account.id) || false;
+                const accountIndex = virtualWindow.startIndex + visibleIndex;
 
-          return (
-            <div
-              key={account.id}
-              className={`account-row ${account.id === selectedAccountId ? "selected" : ""}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => onSelectAccount(account.id)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onSelectAccount(account.id);
-                }
-              }}
-            >
-              <div className="account-text">
-                <strong>{account.email}</strong>
-                <div className="account-meta-row">
-                  <span>{account.remark || "Hotmail OAuth"}</span>
-                  <span>{accountMailStats(account)}</span>
-                </div>
-              </div>
-              <div className="account-badges">
-                {newCount > 0 ? <span className="new-mail-chip">+{newCount}</span> : null}
-                <button
-                  type="button"
-                  className={`${meta.className} account-refresh-status`}
-                  title={`${meta.label}，点击刷新账号`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRefreshAccount(account.id);
-                  }}
-                  disabled={isRefreshing}
-                >
-                  {isRefreshing ? <Loader2 size={12} className="spin" /> : <StatusIcon size={12} />}
-                </button>
-              </div>
+                return (
+                  <div
+                    key={account.id}
+                    className={`account-row ${account.id === selectedAccountId ? "selected" : ""}`}
+                    data-account-index={accountIndex}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onSelectAccount(account.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelectAccount(account.id);
+                      }
+                    }}
+                  >
+                    <div className="account-text">
+                      <strong>{account.email}</strong>
+                      <div className="account-meta-row">
+                        <span>{account.remark || "Hotmail OAuth"}</span>
+                        <span>{accountMailStats(account)}</span>
+                      </div>
+                    </div>
+                    <div className="account-badges">
+                      {newCount > 0 ? <span className="new-mail-chip">+{newCount}</span> : null}
+                      <button
+                        type="button"
+                        className={`${meta.className} account-refresh-status`}
+                        title={`${meta.label}，点击刷新账号`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onRefreshAccount(account.id);
+                        }}
+                        disabled={isRefreshing}
+                      >
+                        {isRefreshing ? <Loader2 size={12} className="spin" /> : <StatusIcon size={12} />}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </div>
+        ) : null}
       </div>
     </aside>
   );

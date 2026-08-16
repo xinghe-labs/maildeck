@@ -44,4 +44,12 @@ describe("renderer performance invariants", () => {
     expect(messageRule).toContain("content-visibility: auto");
     expect(messageRule).toContain("contain-intrinsic-size:");
   });
+
+  it("lets the fixed Electron shell fit the actual content viewport", async () => {
+    const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+    const bodyRule = css.match(/body\s*\{([^}]*)\}/u)?.[1] || "";
+
+    expect(bodyRule).toContain("min-height: 100vh");
+    expect(bodyRule).not.toContain("min-height: 760px");
+  });
 });

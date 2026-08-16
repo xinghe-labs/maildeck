@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AccountSidebar } from "./components/AccountSidebar";
+import { mergeTestedAccounts } from "./account-result-merge";
 import { ImportModal } from "./components/ImportModal";
 import { MailReader } from "./components/MailReader";
 import { MessageList } from "./components/MessageList";
@@ -487,9 +488,7 @@ export default function App() {
       setBulkProgress(`测试中 0/${filteredAccounts.length} · 可用 0 · 失效 0`);
       const results = await api.accounts.testMany(filteredAccounts.map((account) => account.id));
       const validCount = results.filter((item) => item.ok).length;
-      setAccounts((current) =>
-        results.reduce((nextAccounts, result) => (result.account ? replaceAccount(nextAccounts, result.account) : nextAccounts), current)
-      );
+      setAccounts((current) => mergeTestedAccounts(current, results));
       setToast(`已测试 ${validCount}/${results.length} 个账号`);
       setBulkProgress(`测试完成 ${validCount}/${results.length}`);
     } catch (testError) {

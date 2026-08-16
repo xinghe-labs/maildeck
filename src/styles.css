@@ -17,7 +17,7 @@
 body {
   margin: 0;
   min-width: 1280px;
-  min-height: 760px;
+  min-height: 100vh;
   background: #eef3ef;
 }
 
@@ -208,23 +208,43 @@ button:disabled {
 }
 
 .account-scroll {
+  position: relative;
   min-height: 0;
   flex: 1;
+  padding-right: 6px;
+}
+
+.account-scroll-state {
+  position: absolute;
+  inset: 0 6px 0 0;
+  z-index: 2;
+  background: #f7faf7;
+}
+
+.account-virtual-space {
+  position: relative;
+  width: 100%;
+}
+
+.account-virtual-window {
+  position: absolute;
+  inset: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding-right: 6px;
+  will-change: transform;
 }
 
 .account-row {
   content-visibility: auto;
-  contain-intrinsic-size: auto 66px;
+  contain-intrinsic-size: auto 80px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 66px;
+  height: 80px;
+  min-height: 80px;
   border: 1px solid #e1e7e3;
   border-radius: 9px;
   background: #fff;
