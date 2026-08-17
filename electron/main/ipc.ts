@@ -44,7 +44,7 @@ import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { AccessTokenManager } from "./access-token-manager.js";
 import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { credentialGenerations } from "./credential-generations.js";
-import { handleValidated } from "./validated-ipc.js";
+import { handleValidated, sendValidatedEvent } from "./validated-ipc.js";
 import type {
   AppErrorCode,
   JobKind,
@@ -678,7 +678,7 @@ export function registerIpcHandlers() {
       let failed = 0;
       const total = accountIds.length;
       const sendProgress = (payload: Omit<TestProgressEvent, "jobId" | "kind">) => {
-        event.sender.send(IPC_EVENT_CHANNELS.accountsTestProgress, {
+        sendValidatedEvent(event.sender, IPC_EVENT_CHANNELS.accountsTestProgress, {
           ...payload,
           jobId: job.id,
           kind: "test" as const
@@ -1020,7 +1020,7 @@ export function registerIpcHandlers() {
       const total = accountIds.length;
       const batchLimit = resolveBatchLimit(appSettings.batchConcurrency, total);
       const sendProgress = (payload: Omit<RefreshProgressEvent, "jobId" | "kind">) => {
-        event.sender.send(IPC_EVENT_CHANNELS.mailRefreshProgress, {
+        sendValidatedEvent(event.sender, IPC_EVENT_CHANNELS.mailRefreshProgress, {
           ...payload,
           jobId: job.id,
           kind: jobKind

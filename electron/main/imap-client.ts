@@ -3,6 +3,7 @@ import type { Readable } from "node:stream";
 import { MailContentTooLargeError, isMailContentTooLargeError } from "./mail-errors.js";
 import { parseMailSourceContent } from "./mail-source-parser.js";
 import { normalizeMailText } from "./mail-text-normalizer.js";
+import { normalizeMailDate } from "./mail-date-normalizer.js";
 import type { MailFolder, MailMessageDetail, MailMessageSummary } from "./types.js";
 
 interface ImapMessageListResult {
@@ -40,14 +41,6 @@ function headerAddressList(items: Array<{ name?: string; address?: string }> | u
     name: normalizeMailText(item.name),
     address: item.address || ""
   }));
-}
-
-function toIsoString(value: string | Date | undefined | null) {
-  if (!value) {
-    return null;
-  }
-
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
 async function withClient<T>(
@@ -348,8 +341,8 @@ export async function listImapMessages(
           id: String(message.uid),
           subject,
           from: headerAddress(message.envelope?.from?.[0]),
-          receivedDateTime: toIsoString(message.internalDate),
-          sentDateTime: toIsoString(message.envelope?.date),
+          receivedDateTime: normalizeMailDate(message.internalDate),
+          sentDateTime: normalizeMailDate(message.envelope?.date),
           isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
           importance: "normal",
           hasAttachments: hasAttachment(message.bodyStructure),
@@ -414,8 +407,8 @@ export async function listNewImapMessages(
           id: String(message.uid),
           subject: cleanText(message.envelope?.subject) || "(无主题)",
           from: headerAddress(message.envelope?.from?.[0]),
-          receivedDateTime: toIsoString(message.internalDate),
-          sentDateTime: toIsoString(message.envelope?.date),
+          receivedDateTime: normalizeMailDate(message.internalDate),
+          sentDateTime: normalizeMailDate(message.envelope?.date),
           isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
           importance: "normal",
           hasAttachments: hasAttachment(message.bodyStructure),
@@ -477,8 +470,8 @@ async function fetchImapSummaries(client: ImapFlow, uidRange: string, limit: num
       id: String(message.uid),
       subject: cleanText(message.envelope?.subject) || "(无主题)",
       from: headerAddress(message.envelope?.from?.[0]),
-      receivedDateTime: toIsoString(message.internalDate),
-      sentDateTime: toIsoString(message.envelope?.date),
+      receivedDateTime: normalizeMailDate(message.internalDate),
+      sentDateTime: normalizeMailDate(message.envelope?.date),
       isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
       importance: "normal",
       hasAttachments: hasAttachment(message.bodyStructure),
@@ -589,8 +582,8 @@ export async function getImapMessage(
         id: String(message.uid),
         subject: cleanText(message.envelope?.subject) || "(无主题)",
         from: headerAddress(message.envelope?.from?.[0]),
-        receivedDateTime: toIsoString(message.internalDate),
-        sentDateTime: toIsoString(message.envelope?.date),
+        receivedDateTime: normalizeMailDate(message.internalDate),
+        sentDateTime: normalizeMailDate(message.envelope?.date),
         isRead: Array.isArray(message.flags) ? message.flags.includes("\\Seen") : false,
         importance: "normal",
         hasAttachments: hasAttachment(message.bodyStructure),

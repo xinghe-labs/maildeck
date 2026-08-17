@@ -1,6 +1,13 @@
-import { ipcMain, type IpcMainInvokeEvent } from "electron";
+import { ipcMain, type IpcMainInvokeEvent, type WebContents } from "electron";
 import type { z } from "zod";
-import { parseIpcRequest, type IpcInvokeChannel, type IpcResult } from "../shared/ipc-contracts.js";
+import {
+  parseIpcEvent,
+  parseIpcRequest,
+  type IpcEventChannel,
+  type IpcEventPayloadMap,
+  type IpcInvokeChannel,
+  type IpcResult
+} from "../shared/ipc-contracts.js";
 import { reportIpcError } from "./error-utils.js";
 
 export function handleValidated<Output>(
@@ -16,4 +23,12 @@ export function handleValidated<Output>(
       return { ok: false, error: reportIpcError(error, `IPC ${channel}`) };
     }
   });
+}
+
+export function sendValidatedEvent<Channel extends IpcEventChannel>(
+  target: Pick<WebContents, "send">,
+  channel: Channel,
+  payload: IpcEventPayloadMap[Channel]
+) {
+  target.send(channel, parseIpcEvent(channel, payload));
 }

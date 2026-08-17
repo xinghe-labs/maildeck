@@ -30,6 +30,8 @@ Implementation note (2026-08-15): large account lists now use an 80px fixed-row 
 
 Implementation note (2026-08-16): mail text normalization is shared by MIME parsing, Graph responses, IMAP headers, and cache reads. It repairs common valid-UTF-8 Windows-1252/Latin-1 mojibake, keeps intentional replacement characters, normalizes body content types, and defensively handles older cache records with incomplete recipient fields.
 
+Implementation note (2026-08-17): outbound batch-test and refresh progress events now pass through the same runtime contract boundary as invoke requests. Event schemas reject unknown fields, invalid job kinds, oversized error payloads, and contradictory counters before `webContents.send`. Public IPC error messages and diagnostic request IDs are bounded at their producer. Microsoft token and Graph success/error payloads are parsed from `unknown` with Zod before mapping, while Graph and IMAP dates share a canonical parser that degrades invalid values to `null` instead of failing a complete mailbox read.
+
 Implementation note (2026-08-10): the renderer memoizes sanitized mail documents by content, reuses module-level `Intl.DateTimeFormat` instances, and applies Chromium `content-visibility` containment to account and message rows. Frequent progress updates no longer repeat DOMPurify work or rebuild an unchanged mail iframe, while long lists skip offscreen layout and paint.
 
 ## Context
@@ -88,7 +90,7 @@ The renderer never receives refresh tokens or access tokens. Network access to M
 
 ### Shared IPC contracts
 
-A pure TypeScript shared contract module becomes the source of truth for IPC channel names, request types, response types, and runtime schemas. Zod 4 is the selected runtime schema implementation. Runtime validation occurs in the main process before business modules are called.
+A pure TypeScript shared contract module becomes the source of truth for IPC channel names, request types, response types, event types, and runtime schemas. Zod 4 is the selected runtime schema implementation. Runtime validation occurs in the main process before business modules are called and before progress payloads are emitted to the renderer.
 
 Validation limits include:
 
@@ -254,7 +256,7 @@ Before a release containing database migrations, the startup path creates a time
 - Existing accounts and cached mail survive database migration.
 - No known high or critical production audit issue remains without a documented, path-specific exception.
 - Mail HTML cannot load remote tracking resources by default.
-- IPC rejects invalid or oversized requests before business modules execute.
+- IPC rejects invalid or oversized requests before business modules execute and rejects malformed progress events before renderer delivery.
 - The same account is never refreshed concurrently by different job kinds.
 - Canceling a job does not invalidate accounts or advance successful refresh timestamps.
 - Loading older pages does not move incremental refresh cursors backward.

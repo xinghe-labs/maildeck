@@ -13,6 +13,7 @@ const fakeImap = vi.hoisted(() => ({
   partBodies: new Map<string, Buffer>(),
   partContentTypes: new Map<string, string>(),
   partCharsets: new Map<string, string | null>(),
+  summaryDate: new Date("2026-08-10T00:00:00.000Z"),
   bodyStructure: {
     type: "multipart/alternative",
     childNodes: [
@@ -41,7 +42,7 @@ vi.mock("imapflow", async () => {
           uid: 42,
           flags: [],
           envelope: { subject: "Summary" },
-          internalDate: new Date("2026-08-10T00:00:00.000Z"),
+          internalDate: fakeImap.summaryDate,
           bodyStructure: { part: "1", type: "text/plain", size: 64 }
         };
       }
@@ -128,6 +129,7 @@ beforeEach(() => {
   fakeImap.partBodies = new Map();
   fakeImap.partContentTypes = new Map();
   fakeImap.partCharsets = new Map();
+  fakeImap.summaryDate = new Date("2026-08-10T00:00:00.000Z");
   fakeImap.bodyStructure = {
     type: "multipart/alternative",
     childNodes: [
@@ -150,6 +152,15 @@ describe("bounded IMAP message detail reads", () => {
     expect(fakeImap.summaryFetchQueries).toHaveLength(1);
     expect(fakeImap.summaryFetchQueries[0]).not.toHaveProperty("source");
     expect(imapClientSource).not.toContain("source: { maxLength: 0 }");
+  });
+
+  it("degrades an invalid IMAP date without failing the message list", async () => {
+    fakeImap.summaryDate = new Date("invalid");
+
+    const result = await listImapMessages("person@example.com", "access-token", "INBOX", 20);
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.receivedDateTime).toBeNull();
   });
 
   it("downloads only the preferred text part when attachments make the full message large", async () => {

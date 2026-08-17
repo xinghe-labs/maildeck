@@ -6,6 +6,8 @@ export const ACCOUNT_BATCH_MAX = 5_000;
 export const MAIL_PAGE_MAX = 100;
 export const SEARCH_MAX_CHARS = 500;
 export const CURSOR_MAX_CHARS = 128;
+export const APP_ERROR_MESSAGE_MAX_CHARS = 4_096;
+export const DIAGNOSTIC_REQUEST_ID_MAX_CHARS = 1_024;
 
 export const IPC_CHANNELS = {
   accountsList: "accounts:list",
@@ -269,10 +271,89 @@ export interface AppSettings {
 }
 
 const accountIdSchema = z.string().trim().min(1).max(128);
+const jobIdSchema = z.string().trim().min(1).max(128);
 const messageIdSchema = z.string().trim().min(1).max(2_048);
 const shortOptionalTextSchema = z.string().trim().max(1_000).optional();
 const refreshJobKindSchema = z.enum(["refresh", "refreshSingle", "refreshBackground"]);
 const jobKindSchema = z.enum(["test", "refresh", "refreshSingle", "refreshBackground"]);
+
+const appErrorPayloadSchema = z.strictObject({
+  code: z.enum([
+    "INVALID_REQUEST",
+    "CANCELED",
+    "STALE_CREDENTIALS",
+    "THROTTLED",
+    "TOKEN_EXPIRED",
+    "IMAP_AUTH_FAILED",
+    "SCOPE_MISSING",
+    "NETWORK_ERROR",
+    "MAIL_PARSE_FAILED",
+    "MAIL_TOO_LARGE",
+    "MAILBOX_NOT_FOUND",
+    "ACCOUNT_NOT_FOUND",
+    "UNKNOWN"
+  ]),
+  message: z.string().min(1).max(APP_ERROR_MESSAGE_MAX_CHARS),
+  retryable: z.boolean(),
+  diagnostic: z.strictObject({
+    requestId: z.string().max(DIAGNOSTIC_REQUEST_ID_MAX_CHARS).optional()
+  }).optional()
+});
+
+const refreshMetricsSchema = z.strictObject({
+  tokenMs: z.number().finite().nonnegative(),
+  mailMs: z.number().finite().nonnegative(),
+  cacheMs: z.number().finite().nonnegative(),
+  stateMs: z.number().finite().nonnegative(),
+  totalMs: z.number().finite().nonnegative(),
+  fallback: z.string().max(1_000).optional()
+});
+
+function validateProgressCounters(
+  progress: { completed: number; total: number; ok: number; failed: number },
+  context: z.RefinementCtx
+) {
+  if (progress.completed > progress.total) {
+    context.addIssue({ code: "custom", path: ["completed"], message: "completed must not exceed total" });
+  }
+  if (progress.ok + progress.failed !== progress.completed) {
+    context.addIssue({ code: "custom", path: ["completed"], message: "completed must equal ok plus failed" });
+  }
+}
+
+const progressCounters = {
+  completed: z.number().int().min(0).max(ACCOUNT_BATCH_MAX),
+  total: z.number().int().min(1).max(ACCOUNT_BATCH_MAX),
+  ok: z.number().int().min(0).max(ACCOUNT_BATCH_MAX),
+  failed: z.number().int().min(0).max(ACCOUNT_BATCH_MAX)
+} as const;
+
+const testProgressEventSchema = z.strictObject({
+  jobId: jobIdSchema,
+  kind: z.literal("test"),
+  ...progressCounters,
+  accountId: accountIdSchema,
+  error: appErrorPayloadSchema.optional()
+}).superRefine(validateProgressCounters);
+
+const refreshProgressEventSchema = z.strictObject({
+  jobId: jobIdSchema,
+  kind: refreshJobKindSchema,
+  ...progressCounters,
+  accountId: accountIdSchema,
+  error: appErrorPayloadSchema.optional(),
+  metrics: refreshMetricsSchema.optional()
+}).superRefine(validateProgressCounters);
+
+export interface IpcEventPayloadMap {
+  [IPC_EVENT_CHANNELS.accountsTestProgress]: TestProgressEvent;
+  [IPC_EVENT_CHANNELS.mailRefreshProgress]: RefreshProgressEvent;
+}
+
+export const IPC_EVENT_SCHEMAS = {
+  [IPC_EVENT_CHANNELS.accountsTestProgress]: testProgressEventSchema,
+  [IPC_EVENT_CHANNELS.mailRefreshProgress]: refreshProgressEventSchema
+} as const;
 
 const accountInputSchema = z.strictObject({
   email: z.email().trim().max(320),
@@ -388,4 +469,19 @@ export function parseIpcRequest<Output>(schema: z.ZodType<Output>, args: unknown
     .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "request"}: ${issue.message}`)
     .join("; ");
   throw new IpcRequestValidationError(`IPC request rejected: ${details}`);
+}
+
+export function parseIpcEvent<Channel extends IpcEventChannel>(
+  channel: Channel,
+  payload: unknown
+): IpcEventPayloadMap[Channel] {
+  const result = IPC_EVENT_SCHEMAS[channel].safeParse(payload);
+  if (result.success) {
+    return result.data as IpcEventPayloadMap[Channel];
+  }
+
+  const details = result.error.issues
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "event"}: ${issue.message}`)
+    .join("; ");
+  throw new IpcRequestValidationError(`IPC event rejected on ${channel}: ${details}`);
 }

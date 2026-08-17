@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatErrorForLog, normalizeError, toIpcErrorPayload } from "../electron/main/error-utils.js";
 import { MailContentTooLargeError, MailParseFailedError } from "../electron/main/mail-errors.js";
+import { APP_ERROR_MESSAGE_MAX_CHARS } from "../electron/shared/ipc-contracts.js";
 
 describe("proxy credential redaction", () => {
   it("redacts HTTP proxy passwords from renderer-visible errors", () => {
@@ -92,5 +93,15 @@ describe("proxy credential redaction", () => {
       code: "MAIL_PARSE_FAILED",
       message: expect.stringContaining("Max allowed child nodes exceeded")
     });
+  });
+
+  it("bounds long public error messages before they enter progress events", () => {
+    const payload = toIpcErrorPayload(Object.assign(new Error("x".repeat(APP_ERROR_MESSAGE_MAX_CHARS * 2)), {
+      code: "ETIMEDOUT"
+    }));
+
+    expect(payload.code).toBe("NETWORK_ERROR");
+    expect(payload.message).toHaveLength(APP_ERROR_MESSAGE_MAX_CHARS);
+    expect(payload.message.endsWith("...")).toBe(true);
   });
 });

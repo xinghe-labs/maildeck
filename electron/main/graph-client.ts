@@ -5,9 +5,11 @@ import type {
   MailMessageDetail,
   MailMessageSummary
 } from "./types.js";
+import { z } from "zod";
 import { proxiedFetchOptions } from "./proxy-agent.js";
 import { GraphRequestError } from "./graph-errors.js";
 import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
+import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
@@ -17,69 +19,61 @@ const TOKEN_ENDPOINTS = [
   "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
 ] as const;
 
-interface TokenResponse {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  token_type?: string;
-  scope?: string;
-  error?: string;
-  error_description?: string;
-}
+const graphErrorSchema = z.object({
+  error: z.object({
+    code: z.string().optional(),
+    message: z.string().optional(),
+    innerError: z.object({
+      date: z.string().optional(),
+      "request-id": z.string().optional(),
+      "client-request-id": z.string().optional()
+    }).optional()
+  }).optional()
+});
 
-interface GraphError {
-  error?: {
-    code?: string;
-    message?: string;
-    innerError?: {
-      date?: string;
-      "request-id"?: string;
-      "client-request-id"?: string;
-    };
-  };
-}
+const graphFolderSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string(),
+  totalItemCount: z.number().int().nonnegative().nullable().optional(),
+  unreadItemCount: z.number().int().nonnegative().nullable().optional()
+});
 
-interface GraphFolder {
-  id: string;
-  displayName: string;
-  totalItemCount?: number;
-  unreadItemCount?: number;
-}
+const graphEmailAddressSchema = z.object({
+  emailAddress: z.object({
+    name: z.string().nullable().optional(),
+    address: z.string().nullable().optional()
+  }).nullable().optional()
+});
 
-interface GraphEmailAddress {
-  emailAddress?: {
-    name?: string;
-    address?: string;
-  };
-}
+const graphMessageSchema = z.object({
+  id: z.string().min(1),
+  subject: z.string().nullable().optional(),
+  from: graphEmailAddressSchema.nullable().optional(),
+  receivedDateTime: z.string().nullable().optional(),
+  sentDateTime: z.string().nullable().optional(),
+  isRead: z.boolean().optional(),
+  importance: z.string().nullable().optional(),
+  hasAttachments: z.boolean().optional(),
+  bodyPreview: z.string().nullable().optional(),
+  webLink: z.string().nullable().optional(),
+  toRecipients: z.array(graphEmailAddressSchema).nullable().optional(),
+  ccRecipients: z.array(graphEmailAddressSchema).nullable().optional(),
+  body: z.object({
+    contentType: z.string().nullable().optional(),
+    content: z.string().nullable().optional()
+  }).nullable().optional()
+});
 
-interface GraphMessage {
-  id: string;
-  subject?: string;
-  from?: GraphEmailAddress | null;
-  receivedDateTime?: string;
-  sentDateTime?: string;
-  isRead?: boolean;
-  importance?: string;
-  hasAttachments?: boolean;
-  bodyPreview?: string;
-  webLink?: string;
-  toRecipients?: GraphEmailAddress[];
-  ccRecipients?: GraphEmailAddress[];
-  body?: {
-    contentType?: string;
-    content?: string;
-  };
-}
+type GraphEmailAddress = z.infer<typeof graphEmailAddressSchema>;
+type GraphMessage = z.infer<typeof graphMessageSchema>;
 
-interface GraphListResponse<T> {
-  value?: T[];
-}
-
-interface GraphDeltaResponse<T> extends GraphListResponse<T> {
-  "@odata.nextLink"?: string;
-  "@odata.deltaLink"?: string;
-}
+const graphFolderListSchema = z.object({ value: z.array(graphFolderSchema) });
+const graphMessageListSchema = z.object({ value: z.array(graphMessageSchema) });
+const graphDeltaSchema = z.object({
+  value: z.array(graphMessageSchema),
+  "@odata.nextLink": z.string().nullable().optional(),
+  "@odata.deltaLink": z.string().nullable().optional()
+});
 
 export interface GraphDeltaMessagesResult {
   messages: MailMessageSummary[];
@@ -87,14 +81,16 @@ export interface GraphDeltaMessagesResult {
   deltaLink: string | null;
 }
 
-function createGraphError(status: number, payload: GraphError | string, retryAfterMs: number | null) {
+function createGraphError(status: number, payload: unknown, retryAfterMs: number | null) {
   if (typeof payload === "string") {
     return new GraphRequestError(status, `Graph 请求失败 ${status}: ${payload}`, null, retryAfterMs);
   }
 
-  const code = payload.error?.code || "unknown";
-  const message = payload.error?.message || `Graph 请求失败 ${status}`;
-  const requestId = payload.error?.innerError?.["request-id"] || payload.error?.innerError?.["client-request-id"] || "";
+  const parsed = graphErrorSchema.safeParse(payload);
+  const error = parsed.success ? parsed.data.error : undefined;
+  const code = error?.code || "unknown";
+  const message = error?.message || `Graph 请求失败 ${status}`;
+  const requestId = error?.innerError?.["request-id"] || error?.innerError?.["client-request-id"] || "";
   const suffix = requestId ? `，request-id: ${requestId}` : "";
 
   return new GraphRequestError(
@@ -126,7 +122,31 @@ function trustedGraphUrl(url: string): string {
   return parsed.toString();
 }
 
-async function graphRequest<T>(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
+function parseGraphResponse<T>(schema: z.ZodType<T>, payload: unknown, resource: string): T {
+  const result = schema.safeParse(payload);
+  if (result.success) {
+    return result.data;
+  }
+
+  const details = result.error.issues
+    .slice(0, 3)
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "response"}: ${issue.message}`)
+    .join("; ");
+  throw new Error(`Graph ${resource}响应格式无效：${details}`);
+}
+
+const tokenResponseSchema = z.object({
+  access_token: z.string().min(1).optional(),
+  refresh_token: z.string().nullable().optional(),
+  expires_in: z.number().finite().optional(),
+  token_type: z.string().optional(),
+  scope: z.string().optional(),
+  error: z.string().optional(),
+  error_description: z.string().optional()
+});
+type TokenResponse = z.infer<typeof tokenResponseSchema>;
+
+async function graphRequest(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
   for (let attempt = 0; attempt < GRAPH_MAX_ATTEMPTS; attempt += 1) {
     signal?.throwIfAborted();
     const response = await proxiedFetch(
@@ -143,7 +163,7 @@ async function graphRequest<T>(accessToken: string, url: string, proxyUrl = "", 
     const payload = await parseResponse(response);
 
     if (response.ok) {
-      return payload as T;
+      return payload;
     }
 
     const retryDelay = calculateGraphRetryDelay({
@@ -158,18 +178,18 @@ async function graphRequest<T>(accessToken: string, url: string, proxyUrl = "", 
       continue;
     }
 
-    throw createGraphError(response.status, payload as GraphError | string, retryDelay);
+    throw createGraphError(response.status, payload, retryDelay);
   }
 
   throw new Error("Graph 请求重试状态异常");
 }
 
-async function graphFetch<T>(accessToken: string, path: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
-  return graphRequest<T>(accessToken, `${GRAPH_ENDPOINT}${path}`, proxyUrl, signal);
+async function graphFetch(accessToken: string, path: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
+  return graphRequest(accessToken, `${GRAPH_ENDPOINT}${path}`, proxyUrl, signal);
 }
 
-async function graphFetchUrl<T>(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<T> {
-  return graphRequest<T>(accessToken, trustedGraphUrl(url), proxyUrl, signal);
+async function graphFetchUrl(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
+  return graphRequest(accessToken, trustedGraphUrl(url), proxyUrl, signal);
 }
 
 function mapAddress(input?: GraphEmailAddress | null): MailAddress | null {
@@ -183,7 +203,7 @@ function mapAddress(input?: GraphEmailAddress | null): MailAddress | null {
   return { name: normalizeMailText(name), address };
 }
 
-function mapAddressList(input?: GraphEmailAddress[]) {
+function mapAddressList(input?: GraphEmailAddress[] | null) {
   return (input || []).map(mapAddress).filter((item): item is MailAddress => item !== null);
 }
 
@@ -192,8 +212,8 @@ function mapMessageSummary(message: GraphMessage): MailMessageSummary {
     id: message.id,
     subject: normalizeMailText(message.subject) || "(无主题)",
     from: mapAddress(message.from),
-    receivedDateTime: message.receivedDateTime || null,
-    sentDateTime: message.sentDateTime || null,
+    receivedDateTime: normalizeMailDate(message.receivedDateTime),
+    sentDateTime: normalizeMailDate(message.sentDateTime),
     isRead: Boolean(message.isRead),
     importance: message.importance || "normal",
     hasAttachments: Boolean(message.hasAttachments),
@@ -241,7 +261,12 @@ export async function refreshAccessToken(
       signal
     }, proxyUrl);
 
-    const payload = (await parseResponse(response)) as TokenResponse;
+    const rawPayload = await parseResponse(response);
+    const parsedPayload = tokenResponseSchema.safeParse(rawPayload);
+    if (response.ok && (!parsedPayload.success || !parsedPayload.data.access_token)) {
+      throw new Error("Token 响应格式无效");
+    }
+    const payload: TokenResponse = parsedPayload.success ? parsedPayload.data : {};
 
     if (response.ok && payload.access_token) {
       return {
@@ -268,11 +293,15 @@ export async function refreshAccessToken(
 }
 
 export async function listMailFolders(accessToken: string, proxyUrl = "", signal?: AbortSignal): Promise<MailFolder[]> {
-  const payload = await graphFetch<GraphListResponse<GraphFolder>>(
-    accessToken,
-    "/me/mailFolders?$top=100&$select=id,displayName,totalItemCount,unreadItemCount",
-    proxyUrl,
-    signal
+  const payload = parseGraphResponse(
+    graphFolderListSchema,
+    await graphFetch(
+      accessToken,
+      "/me/mailFolders?$top=100&$select=id,displayName,totalItemCount,unreadItemCount",
+      proxyUrl,
+      signal
+    ),
+    "文件夹"
   );
 
   return (payload.value || []).map((folder) => ({
@@ -313,11 +342,15 @@ export async function listMessages(
     params.set("$filter", filters.join(" and "));
   }
 
-  const payload = await graphFetch<GraphListResponse<GraphMessage>>(
-    accessToken,
-    `/me/mailFolders/${encodeURIComponent(folderId)}/messages?${params.toString()}`,
-    proxyUrl,
-    signal
+  const payload = parseGraphResponse(
+    graphMessageListSchema,
+    await graphFetch(
+      accessToken,
+      `/me/mailFolders/${encodeURIComponent(folderId)}/messages?${params.toString()}`,
+      proxyUrl,
+      signal
+    ),
+    "邮件列表"
   );
 
   return (payload.value || []).map(mapMessageSummary);
@@ -338,14 +371,18 @@ export async function deltaMessages(
   const pageLimit = Math.min(Math.max(maxPages, 1), 10);
 
   for (let page = 0; page < pageLimit; page += 1) {
-    const payload = nextLink
-      ? await graphFetchUrl<GraphDeltaResponse<GraphMessage>>(accessToken, nextLink, proxyUrl, signal)
-      : await graphFetch<GraphDeltaResponse<GraphMessage>>(
-          accessToken,
-          `/me/mailFolders/${encodeURIComponent(folderId)}/messages/delta?$top=${Math.min(Math.max(top, 1), 100)}&$select=id,subject,from,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,bodyPreview,webLink`,
-          proxyUrl,
-          signal
-        );
+    const payload = parseGraphResponse(
+      graphDeltaSchema,
+      nextLink
+        ? await graphFetchUrl(accessToken, nextLink, proxyUrl, signal)
+        : await graphFetch(
+            accessToken,
+            `/me/mailFolders/${encodeURIComponent(folderId)}/messages/delta?$top=${Math.min(Math.max(top, 1), 100)}&$select=id,subject,from,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,bodyPreview,webLink`,
+            proxyUrl,
+            signal
+          ),
+      "邮件增量"
+    );
 
     messages.push(...(payload.value || []).map(mapMessageSummary));
     finalDeltaLink = payload["@odata.deltaLink"] || null;
@@ -375,11 +412,15 @@ export async function getMessage(
     "id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,bodyPreview,webLink,body"
   );
 
-  const message = await graphFetch<GraphMessage>(
-    accessToken,
-    `/me/messages/${encodeURIComponent(messageId)}?${params}`,
-    proxyUrl,
-    signal
+  const message = parseGraphResponse(
+    graphMessageSchema,
+    await graphFetch(
+      accessToken,
+      `/me/messages/${encodeURIComponent(messageId)}?${params}`,
+      proxyUrl,
+      signal
+    ),
+    "邮件详情"
   );
   const summary = mapMessageSummary(message);
   const content = normalizeMailText(message.body?.content);

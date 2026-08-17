@@ -2,7 +2,11 @@ import type { AppErrorCode, AppErrorPayload } from "./types.js";
 import { isJobCanceledError } from "./job-errors.js";
 import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { redactProxyCredentials } from "../shared/proxy-security.js";
-import { isIpcRequestValidationError } from "../shared/ipc-contracts.js";
+import {
+  APP_ERROR_MESSAGE_MAX_CHARS,
+  DIAGNOSTIC_REQUEST_ID_MAX_CHARS,
+  isIpcRequestValidationError
+} from "../shared/ipc-contracts.js";
 import { isCredentialsChangedError } from "./credential-generations.js";
 import { isGraphRequestError } from "./graph-errors.js";
 
@@ -163,15 +167,18 @@ export function normalizeError(error: unknown): NormalizedAppError {
 export function toIpcErrorPayload(error: unknown): AppErrorPayload {
   const normalized = normalizeError(error);
   const requestId = normalized.message.match(/request-id:\s*([a-z0-9-]+)/iu)?.[1];
+  const publicMessage = normalized.code === "UNKNOWN"
+    ? "操作失败，请重试；如果问题持续，请检查应用日志。"
+    : normalized.message;
+  const boundedMessage = publicMessage.length <= APP_ERROR_MESSAGE_MAX_CHARS
+    ? publicMessage
+    : `${publicMessage.slice(0, APP_ERROR_MESSAGE_MAX_CHARS - 3)}...`;
 
   return {
     code: normalized.code,
-    message:
-      normalized.code === "UNKNOWN"
-        ? "操作失败，请重试；如果问题持续，请检查应用日志。"
-        : normalized.message,
+    message: boundedMessage,
     retryable: normalized.code === "NETWORK_ERROR" || normalized.code === "STALE_CREDENTIALS" || normalized.code === "THROTTLED",
-    ...(requestId ? { diagnostic: { requestId } } : {})
+    ...(requestId ? { diagnostic: { requestId: requestId.slice(0, DIAGNOSTIC_REQUEST_ID_MAX_CHARS) } } : {})
   };
 }
 

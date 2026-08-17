@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { IPC_CHANNELS } from "../electron/shared/ipc-contracts.js";
+import { IPC_CHANNELS, IPC_EVENT_CHANNELS } from "../electron/shared/ipc-contracts.js";
 
 const ipcSource = readFileSync(new URL("../electron/main/ipc.ts", import.meta.url), "utf8");
 const validatedIpcUrl = new URL("../electron/main/validated-ipc.ts", import.meta.url);
@@ -24,5 +24,19 @@ describe("validated IPC handler boundary", () => {
     }
 
     expect(ipcSource.match(/handleValidated\(/gu)).toHaveLength(Object.keys(IPC_CHANNELS).length);
+  });
+
+  it("sends every public event through the validated event boundary", () => {
+    expect(ipcSource).not.toContain("event.sender.send(");
+    expect(validatedIpcSource).toMatch(/target\.send\(channel,\s*parseIpcEvent\(channel,\s*payload\)\)/u);
+
+    for (const key of Object.keys(IPC_EVENT_CHANNELS) as Array<keyof typeof IPC_EVENT_CHANNELS>) {
+      expect(ipcSource).toMatch(new RegExp(
+        `sendValidatedEvent\\(\\s*event\\.sender,\\s*IPC_EVENT_CHANNELS\\.${key}\\s*,`,
+        "u"
+      ));
+    }
+
+    expect(ipcSource.match(/sendValidatedEvent\(/gu)).toHaveLength(Object.keys(IPC_EVENT_CHANNELS).length);
   });
 });
