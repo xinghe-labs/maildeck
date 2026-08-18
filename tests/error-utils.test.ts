@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatErrorForLog, normalizeError, toIpcErrorPayload } from "../electron/main/error-utils.js";
 import { MailContentTooLargeError, MailParseFailedError } from "../electron/main/mail-errors.js";
 import { APP_ERROR_MESSAGE_MAX_CHARS } from "../electron/shared/ipc-contracts.js";
+import { GraphResponseTooLargeError } from "../electron/main/graph-errors.js";
 
 describe("proxy credential redaction", () => {
   it("redacts HTTP proxy passwords from renderer-visible errors", () => {
@@ -85,6 +86,14 @@ describe("proxy credential redaction", () => {
     expect(normalizeError(new MailContentTooLargeError(4 * 1024 * 1024))).toMatchObject({
       code: "MAIL_TOO_LARGE",
       message: expect.stringContaining("4 MiB")
+    });
+  });
+
+  it("classifies oversized Graph responses without treating them as retryable", () => {
+    expect(toIpcErrorPayload(new GraphResponseTooLargeError(4 * 1024 * 1024))).toMatchObject({
+      code: "MAIL_TOO_LARGE",
+      message: expect.stringContaining("4 MiB"),
+      retryable: false
     });
   });
 

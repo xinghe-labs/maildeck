@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  getMessage,
+  GRAPH_COLLECTION_RESPONSE_MAX_BYTES,
+  GRAPH_MESSAGE_DETAIL_RESPONSE_MAX_BYTES,
   listMailFolders,
   listMessages,
   refreshAccessToken
@@ -34,6 +37,40 @@ describe("Graph response validation", () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(null, 400)));
 
     await expect(listMailFolders("access-token")).rejects.toThrow("Graph 请求失败 400 (unknown)");
+  });
+
+  it("rejects an oversized collection response without exposing its body", async () => {
+    const secretBody = "oversized-collection-secret";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(secretBody, {
+      headers: { "Content-Length": String(GRAPH_COLLECTION_RESPONSE_MAX_BYTES + 1) }
+    })));
+
+    const error = await listMailFolders("access-token").catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("4 MiB");
+    expect((error as Error).message).not.toContain(secretBody);
+  });
+
+  it("allows a message detail response larger than the collection limit", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "message-1",
+      body: { contentType: "text", content: "detail" }
+    }), {
+      headers: { "Content-Length": String(GRAPH_COLLECTION_RESPONSE_MAX_BYTES + 1) }
+    })));
+
+    await expect(getMessage("access-token", "message-1")).resolves.toMatchObject({
+      id: "message-1",
+      body: { content: "detail" }
+    });
+  });
+
+  it("rejects a message detail response above its dedicated limit", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("oversized-detail", {
+      headers: { "Content-Length": String(GRAPH_MESSAGE_DETAIL_RESPONSE_MAX_BYTES + 1) }
+    })));
+
+    await expect(getMessage("access-token", "message-1")).rejects.toThrow("16 MiB");
   });
 
   it("normalizes valid dates and degrades invalid Graph dates to null", async () => {

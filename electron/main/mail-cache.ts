@@ -1,11 +1,12 @@
 import { app } from "electron";
-import { copyFile, readFile, rename } from "node:fs/promises";
+import { copyFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { getDatabase, transaction } from "./database.js";
 import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 import type { MailMessageDetail, MailMessageSummary } from "./types.js";
+import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
 
 interface CacheRecord {
   accountId: string;
@@ -98,6 +99,7 @@ type CachedMailDetail = z.infer<typeof cachedMailDetailSchema>;
 type CachedMailSummary = z.infer<typeof cachedMailSummarySchema>;
 
 const CACHE_VERSION = 1;
+export const LEGACY_MAIL_CACHE_MAX_BYTES = 128 * 1024 * 1024;
 const MAX_MESSAGES_PER_ACCOUNT = 100;
 const MAX_DETAILS_PER_ACCOUNT = 40;
 const MESSAGE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -250,9 +252,13 @@ async function readLegacyCache(): Promise<CacheFile> {
   const cachePath = getCachePath();
   let raw: string;
   try {
-    raw = await readFile(cachePath, "utf8");
+    raw = await readUtf8FileBounded(cachePath, LEGACY_MAIL_CACHE_MAX_BYTES);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return emptyCache();
+    }
+    if (error instanceof FileTooLargeError) {
+      await backupBrokenLegacyCache(cachePath);
       return emptyCache();
     }
     throw error;
@@ -270,8 +276,16 @@ async function readLegacyCache(): Promise<CacheFile> {
   }
 
   const candidate = asRecord(parsed);
-  const rawAccounts = asRecord(candidate?.accounts);
-  if (!candidate || !rawAccounts) {
+  if (!candidate) {
+    await backupBrokenLegacyCache(cachePath);
+    return emptyCache();
+  }
+  if (typeof candidate.version === "number" && candidate.version > CACHE_VERSION) {
+    return emptyCache();
+  }
+
+  const rawAccounts = asRecord(candidate.accounts);
+  if (!rawAccounts) {
     await backupBrokenLegacyCache(cachePath);
     return emptyCache();
   }

@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { copyFile, readFile, rename } from "node:fs/promises";
+import { copyFile, rename } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { z } from "zod";
@@ -9,6 +9,7 @@ import { resolveRefreshTimestamps } from "./account-refresh-state.js";
 import { credentialGenerations, CredentialsChangedError } from "./credential-generations.js";
 import { ACCOUNT_VIEW_COLUMNS, type AccountViewRow } from "./account-view-projection.js";
 import type { AccountInput, AccountRecord, AccountUpdateInput, AccountView, ImportPreviewResult } from "./types.js";
+import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
 
 interface StoreFile {
   version: number;
@@ -38,6 +39,7 @@ interface AccountRow {
 }
 
 const STORE_VERSION = 1;
+export const LEGACY_ACCOUNT_STORE_MAX_BYTES = 32 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const legacyAccountSchema = z.object({
   id: z.string().trim().min(1).max(128),
@@ -362,9 +364,13 @@ async function readLegacyStore(): Promise<StoreFile> {
   const storePath = getStorePath();
   let raw: string;
   try {
-    raw = await readFile(storePath, "utf8");
+    raw = await readUtf8FileBounded(storePath, LEGACY_ACCOUNT_STORE_MAX_BYTES);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { version: STORE_VERSION, accounts: [] };
+    }
+    if (error instanceof FileTooLargeError) {
+      await backupBrokenLegacyStore(storePath);
       return { version: STORE_VERSION, accounts: [] };
     }
     throw error;
@@ -387,6 +393,9 @@ async function readLegacyStore(): Promise<StoreFile> {
   }
 
   const candidate = parsed as Record<string, unknown>;
+  if (typeof candidate.version === "number" && candidate.version > STORE_VERSION) {
+    return { version: STORE_VERSION, accounts: [] };
+  }
   if (!Array.isArray(candidate.accounts)) {
     await backupBrokenLegacyStore(storePath);
     return { version: STORE_VERSION, accounts: [] };

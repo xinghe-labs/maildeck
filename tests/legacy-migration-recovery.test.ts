@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -129,6 +129,22 @@ describe("legacy account migration recovery", () => {
 
     await expect(accountStore.listAccounts()).resolves.toHaveLength(1);
   });
+
+  it("preserves a future account-store version without downgrading it", async () => {
+    const directory = await createTemporaryUserData();
+    const legacyPath = path.join(directory, "accounts.json");
+    const original = JSON.stringify({
+      version: 2,
+      accounts: [legacyAccount("future-account", "future@example.com")],
+      futureField: { retained: true }
+    });
+    await writeFile(legacyPath, original, "utf8");
+    const accountStore = await import("../electron/main/account-store.js");
+
+    await expect(accountStore.listAccounts()).resolves.toEqual([]);
+    await expect(readFile(legacyPath, "utf8")).resolves.toBe(original);
+    expect((await readdir(directory)).filter((name) => name.startsWith("accounts.json."))).toEqual([]);
+  });
 });
 
 describe("legacy mail cache migration recovery", () => {
@@ -203,5 +219,35 @@ describe("legacy mail cache migration recovery", () => {
     }));
 
     await expect(cache.getCachedMessages(accountId)).resolves.toHaveLength(1);
+  });
+
+  it("preserves a future mail-cache version without downgrading it", async () => {
+    const directory = await createTemporaryUserData();
+    const accountStore = await import("../electron/main/account-store.js");
+    const created = await accountStore.upsertAccounts([{
+      email: "future@example.com",
+      clientId: "00000000-0000-4000-8000-000000000001",
+      refreshToken: `M.${"a".repeat(100)}`
+    }]);
+    const accountId = created.affectedAccountIds[0];
+    const cachePath = path.join(directory, "mail-cache.json");
+    const original = JSON.stringify({
+      version: 2,
+      accounts: {
+        [accountId]: {
+          accountId,
+          messages: [legacyMessage("future-message")],
+          details: {},
+          updatedAt: new Date().toISOString(),
+          futureField: { retained: true }
+        }
+      }
+    });
+    await writeFile(cachePath, original, "utf8");
+    const cache = await import("../electron/main/mail-cache.js");
+
+    await expect(cache.getCachedMessages(accountId)).resolves.toEqual([]);
+    await expect(readFile(cachePath, "utf8")).resolves.toBe(original);
+    expect((await readdir(directory)).filter((name) => name.startsWith("mail-cache.json."))).toEqual([]);
   });
 });

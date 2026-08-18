@@ -33,8 +33,10 @@ npm run dev
 构建 Windows 安装包/绿色版：
 
 ```powershell
-npm run dist:win
+.\scripts\package-windows-local.ps1
 ```
+
+该脚本优先复用 `node_modules\electron\dist` 中已安装并校验版本的 Electron，随后执行图标生成、生产构建、portable/NSIS 打包和发布启动烟测；仅在本地 Electron 缺失时才运行下载。`npm run dist:win` 仍可作为标准在线构建入口。
 
 ## 导入格式
 

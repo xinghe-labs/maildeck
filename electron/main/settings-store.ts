@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AppSettings, AppSettingsUpdate } from "../shared/ipc-contracts.js";
 import {
@@ -14,6 +14,9 @@ import {
 } from "./settings-model.js";
 import { decryptSecret, encryptSecret } from "./token-crypto.js";
 import { credentialGenerations } from "./credential-generations.js";
+import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
+
+export const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
 
 const settingsCrypto: SettingsCrypto = {
   encrypt: encryptSecret,
@@ -42,13 +45,28 @@ function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+async function recoverBrokenSettings(filePath: string) {
+  await copyFile(filePath, `${filePath}.broken-${Date.now()}.bak`);
+  return { file: createDefaultSettingsFile(), migrated: true } as const;
+}
+
 async function readSettingsFile(): Promise<{ file: SettingsFileV2; migrated: boolean }> {
+  const filePath = getSettingsPath();
   let raw: string;
   try {
-    raw = await readFile(getSettingsPath(), "utf8");
+    raw = await readUtf8FileBounded(filePath, SETTINGS_FILE_MAX_BYTES);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { file: createDefaultSettingsFile(), migrated: false };
+    }
+    if (error instanceof FileTooLargeError) {
+      return recoverBrokenSettings(filePath);
     }
     throw error;
   }
@@ -58,11 +76,34 @@ async function readSettingsFile(): Promise<{ file: SettingsFileV2; migrated: boo
     parsed = JSON.parse(raw);
   } catch (error) {
     if (error instanceof SyntaxError) {
-      return { file: createDefaultSettingsFile(), migrated: false };
+      return recoverBrokenSettings(filePath);
     }
     throw error;
   }
-  return migrateSettingsFile(parsed, settingsCrypto);
+
+  const input = asRecord(parsed);
+  if (!input) {
+    return recoverBrokenSettings(filePath);
+  }
+  const hasVersion = Object.prototype.hasOwnProperty.call(input, "version");
+  if (hasVersion && typeof input.version === "number" && input.version > 2) {
+    throw new Error(`Settings file version ${input.version} is newer than the supported version 2`);
+  }
+  if (hasVersion && input.version !== 1 && input.version !== 2) {
+    return recoverBrokenSettings(filePath);
+  }
+  if (input.version !== 2 && !asRecord(input.settings)) {
+    return recoverBrokenSettings(filePath);
+  }
+
+  try {
+    return migrateSettingsFile(input, settingsCrypto);
+  } catch (error) {
+    if (input.version === 2) {
+      return recoverBrokenSettings(filePath);
+    }
+    throw error;
+  }
 }
 
 async function writeSettingsFile(file: SettingsFileV2) {

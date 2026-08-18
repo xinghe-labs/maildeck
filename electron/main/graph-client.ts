@@ -7,13 +7,17 @@ import type {
 } from "./types.js";
 import { z } from "zod";
 import { proxiedFetchOptions } from "./proxy-agent.js";
-import { GraphRequestError } from "./graph-errors.js";
+import { GraphRequestError, GraphResponseTooLargeError } from "./graph-errors.js";
 import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
 import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 import { readOAuthResponseText } from "./oauth-response-reader.js";
+import { readResponseTextBounded } from "./bounded-response-reader.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
+export const GRAPH_ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
+export const GRAPH_COLLECTION_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+export const GRAPH_MESSAGE_DETAIL_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 const TOKEN_ENDPOINTS = [
   "https://login.microsoftonline.com/common/oauth2/v2.0/token",
   "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
@@ -102,8 +106,12 @@ function createGraphError(status: number, payload: unknown, retryAfterMs: number
   );
 }
 
-async function parseResponse(response: Response) {
-  const text = await response.text();
+async function parseResponse(response: Response, maxBytes: number) {
+  const text = await readResponseTextBounded(
+    response,
+    response.ok ? maxBytes : GRAPH_ERROR_RESPONSE_MAX_BYTES,
+    () => new GraphResponseTooLargeError(response.ok ? maxBytes : GRAPH_ERROR_RESPONSE_MAX_BYTES)
+  );
   if (!text) {
     return {};
   }
@@ -160,7 +168,13 @@ async function parseTokenResponse(response: Response) {
   }
 }
 
-async function graphRequest(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
+async function graphRequest(
+  accessToken: string,
+  url: string,
+  proxyUrl = "",
+  signal?: AbortSignal,
+  maxResponseBytes = GRAPH_COLLECTION_RESPONSE_MAX_BYTES
+): Promise<unknown> {
   for (let attempt = 0; attempt < GRAPH_MAX_ATTEMPTS; attempt += 1) {
     signal?.throwIfAborted();
     const response = await proxiedFetch(
@@ -174,7 +188,7 @@ async function graphRequest(accessToken: string, url: string, proxyUrl = "", sig
       },
       proxyUrl
     );
-    const payload = await parseResponse(response);
+    const payload = await parseResponse(response, maxResponseBytes);
 
     if (response.ok) {
       return payload;
@@ -198,8 +212,14 @@ async function graphRequest(accessToken: string, url: string, proxyUrl = "", sig
   throw new Error("Graph 请求重试状态异常");
 }
 
-async function graphFetch(accessToken: string, path: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
-  return graphRequest(accessToken, `${GRAPH_ENDPOINT}${path}`, proxyUrl, signal);
+async function graphFetch(
+  accessToken: string,
+  path: string,
+  proxyUrl = "",
+  signal?: AbortSignal,
+  maxResponseBytes = GRAPH_COLLECTION_RESPONSE_MAX_BYTES
+): Promise<unknown> {
+  return graphRequest(accessToken, `${GRAPH_ENDPOINT}${path}`, proxyUrl, signal, maxResponseBytes);
 }
 
 async function graphFetchUrl(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
@@ -432,7 +452,8 @@ export async function getMessage(
       accessToken,
       `/me/messages/${encodeURIComponent(messageId)}?${params}`,
       proxyUrl,
-      signal
+      signal,
+      GRAPH_MESSAGE_DETAIL_RESPONSE_MAX_BYTES
     ),
     "邮件详情"
   );
