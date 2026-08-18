@@ -39,4 +39,10 @@ describe("validated IPC handler boundary", () => {
 
     expect(ipcSource.match(/sendValidatedEvent\(/gu)).toHaveLength(Object.keys(IPC_EVENT_CHANNELS).length);
   });
+
+  it("bounds account import files before parsing their contents", () => {
+    expect(ipcSource).toContain("readUtf8FileBounded");
+    expect(ipcSource).toContain("IMPORT_TEXT_MAX_BYTES");
+    expect(ipcSource).toContain("FileTooLargeError");
+  });
 });

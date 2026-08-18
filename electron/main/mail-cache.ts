@@ -57,6 +57,19 @@ const cachedMailAddressSchema = z.object({
   address: z.string().nullable().optional()
 });
 
+const cachedMailSummarySchema = z.object({
+  id: z.string().min(1),
+  subject: z.string().nullable().optional(),
+  from: cachedMailAddressSchema.nullable().optional(),
+  receivedDateTime: z.string().nullable().optional(),
+  sentDateTime: z.string().nullable().optional(),
+  isRead: z.boolean().optional(),
+  importance: z.string().nullable().optional(),
+  hasAttachments: z.boolean().optional(),
+  bodyPreview: z.string().nullable().optional(),
+  webLink: z.string().nullable().optional()
+});
+
 const cachedMailDetailSchema = z.object({
   id: z.string().min(1),
   subject: z.string().nullable().optional(),
@@ -82,13 +95,14 @@ const storedMailDetailV2Schema = z.object({
 });
 
 type CachedMailDetail = z.infer<typeof cachedMailDetailSchema>;
+type CachedMailSummary = z.infer<typeof cachedMailSummarySchema>;
 
 const CACHE_VERSION = 1;
 const MAX_MESSAGES_PER_ACCOUNT = 100;
 const MAX_DETAILS_PER_ACCOUNT = 40;
 const MESSAGE_CACHE_TTL_MS = 5 * 60 * 1000;
 let cacheQueue = Promise.resolve();
-let migratedLegacyCache = false;
+let legacyCacheMigration: Promise<void> | null = null;
 
 async function withCacheLock<T>(operation: () => Promise<T>): Promise<T> {
   const previous = cacheQueue;
@@ -121,21 +135,169 @@ function emptyCache(): CacheFile {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function normalizeCachedSummary(message: CachedMailSummary): MailMessageSummary {
+  const from = message.from;
+  return {
+    id: message.id,
+    subject: normalizeMailText(message.subject),
+    from: from && (from.name || from.address)
+      ? { name: normalizeMailText(from.name), address: from.address || "" }
+      : null,
+    receivedDateTime: normalizeMailDate(message.receivedDateTime),
+    sentDateTime: normalizeMailDate(message.sentDateTime),
+    isRead: message.isRead === true,
+    importance: message.importance || "normal",
+    hasAttachments: message.hasAttachments === true,
+    bodyPreview: normalizeMailText(message.bodyPreview),
+    webLink: message.webLink || null
+  };
+}
+
+function parseLegacyCacheRecord(value: unknown): { record: CacheRecord; damaged: boolean } | null {
+  const candidate = asRecord(value);
+  const accountId = typeof candidate?.accountId === "string" ? candidate.accountId.trim() : "";
+  if (!candidate || !accountId || accountId.length > 128) {
+    return null;
+  }
+
+  let damaged = false;
+  const messages: MailMessageSummary[] = [];
+  const messageIds = new Set<string>();
+  if (!Array.isArray(candidate.messages)) {
+    damaged = true;
+  } else {
+    for (const value of candidate.messages) {
+      const parsed = cachedMailSummarySchema.safeParse(value);
+      if (!parsed.success || messageIds.has(parsed.data.id)) {
+        damaged = true;
+        continue;
+      }
+      messageIds.add(parsed.data.id);
+      messages.push(normalizeCachedSummary(parsed.data));
+    }
+  }
+
+  const details: Record<string, MailMessageDetail> = Object.create(null) as Record<string, MailMessageDetail>;
+  const rawDetails = asRecord(candidate.details);
+  if (!rawDetails) {
+    damaged = true;
+  } else {
+    for (const value of Object.values(rawDetails)) {
+      const parsed = cachedMailDetailSchema.safeParse(value);
+      if (!parsed.success || Object.prototype.hasOwnProperty.call(details, parsed.data.id)) {
+        damaged = true;
+        continue;
+      }
+      details[parsed.data.id] = normalizeCachedDetail(parsed.data);
+    }
+  }
+
+  const detailUpdatedAt: Record<string, string> = Object.create(null) as Record<string, string>;
+  if (candidate.detailUpdatedAt !== undefined) {
+    const rawDetailTimestamps = asRecord(candidate.detailUpdatedAt);
+    if (!rawDetailTimestamps) {
+      damaged = true;
+    } else {
+      for (const [messageId, value] of Object.entries(rawDetailTimestamps)) {
+        const normalized = normalizeMailDate(value);
+        if (!normalized) {
+          damaged = true;
+          continue;
+        }
+        detailUpdatedAt[messageId] = normalized;
+      }
+    }
+  }
+
+  let nextCursor: string | null = null;
+  if (candidate.nextCursor === null || candidate.nextCursor === undefined) {
+    nextCursor = null;
+  } else if (typeof candidate.nextCursor === "string" && candidate.nextCursor.length <= 16_384) {
+    nextCursor = candidate.nextCursor;
+  } else {
+    damaged = true;
+  }
+
+  const updatedAt = normalizeMailDate(candidate.updatedAt);
+  if (candidate.updatedAt !== null && candidate.updatedAt !== undefined && !updatedAt) {
+    damaged = true;
+  }
+
+  return {
+    damaged,
+    record: {
+      accountId,
+      messages,
+      details,
+      detailUpdatedAt,
+      nextCursor,
+      updatedAt
+    }
+  };
+}
+
+async function backupBrokenLegacyCache(cachePath: string) {
+  await copyFile(cachePath, `${cachePath}.broken-${Date.now()}.bak`).catch(() => undefined);
+}
+
 async function readLegacyCache(): Promise<CacheFile> {
+  const cachePath = getCachePath();
+  let raw: string;
   try {
-    const raw = await readFile(getCachePath(), "utf8");
-    const parsed = JSON.parse(raw) as CacheFile;
-    return {
-      version: parsed.version || CACHE_VERSION,
-      accounts: parsed.accounts && typeof parsed.accounts === "object" ? parsed.accounts : {}
-    };
+    raw = await readFile(cachePath, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return emptyCache();
     }
-
     throw error;
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    await backupBrokenLegacyCache(cachePath);
+    return emptyCache();
+  }
+
+  const candidate = asRecord(parsed);
+  const rawAccounts = asRecord(candidate?.accounts);
+  if (!candidate || !rawAccounts) {
+    await backupBrokenLegacyCache(cachePath);
+    return emptyCache();
+  }
+
+  const accounts: Record<string, CacheRecord> = Object.create(null) as Record<string, CacheRecord>;
+  const accountIds = new Set<string>();
+  let damaged = typeof candidate.version !== "number";
+  for (const value of Object.values(rawAccounts)) {
+    const parsedRecord = parseLegacyCacheRecord(value);
+    if (!parsedRecord || accountIds.has(parsedRecord.record.accountId)) {
+      damaged = true;
+      continue;
+    }
+    damaged ||= parsedRecord.damaged;
+    accountIds.add(parsedRecord.record.accountId);
+    accounts[parsedRecord.record.accountId] = parsedRecord.record;
+  }
+
+  if (damaged) {
+    await backupBrokenLegacyCache(cachePath);
+  }
+
+  return {
+    version: typeof candidate.version === "number" ? candidate.version : CACHE_VERSION,
+    accounts
+  };
 }
 
 function isFresh(updatedAt: string | null) {
@@ -235,13 +397,7 @@ function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nex
   }
 }
 
-async function migrateLegacyCacheOnce() {
-  if (migratedLegacyCache) {
-    return;
-  }
-
-  migratedLegacyCache = true;
-
+async function migrateLegacyCache() {
   const db = getDatabase();
   const existing = db.prepare("SELECT COUNT(*) AS count FROM mail_messages").get() as { count: number };
   if (existing.count > 0) {
@@ -273,7 +429,7 @@ async function migrateLegacyCacheOnce() {
         detailUpsert.run(
           record.accountId,
           detail.id,
-          JSON.stringify(detail),
+          serializeMailDetail(detail),
           record.detailUpdatedAt?.[detail.id] || record.updatedAt || nowIso()
         );
       }
@@ -283,6 +439,17 @@ async function migrateLegacyCacheOnce() {
   const cachePath = getCachePath();
   await copyFile(cachePath, `${cachePath}.migrated-${Date.now()}.bak`).catch(() => undefined);
   await rename(cachePath, `${cachePath}.migrated`).catch(() => undefined);
+}
+
+async function migrateLegacyCacheOnce() {
+  if (!legacyCacheMigration) {
+    legacyCacheMigration = migrateLegacyCache().catch((error) => {
+      legacyCacheMigration = null;
+      throw error;
+    });
+  }
+
+  return legacyCacheMigration;
 }
 
 export async function getCachedMessages(accountId: string, search = "", top = 50, enabled = true) {

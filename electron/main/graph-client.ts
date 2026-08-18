@@ -11,6 +11,7 @@ import { GraphRequestError } from "./graph-errors.js";
 import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
 import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
+import { readOAuthResponseText } from "./oauth-response-reader.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
 const TOKEN_ENDPOINTS = [
@@ -136,15 +137,28 @@ function parseGraphResponse<T>(schema: z.ZodType<T>, payload: unknown, resource:
 }
 
 const tokenResponseSchema = z.object({
-  access_token: z.string().min(1).optional(),
-  refresh_token: z.string().nullable().optional(),
-  expires_in: z.number().finite().optional(),
-  token_type: z.string().optional(),
-  scope: z.string().optional(),
-  error: z.string().optional(),
-  error_description: z.string().optional()
+  access_token: z.string().min(1).max(128 * 1024).optional(),
+  refresh_token: z.string().max(128 * 1024).nullable().optional(),
+  expires_in: z.number().finite().nonnegative().max(31_536_000).optional(),
+  token_type: z.string().max(256).optional(),
+  scope: z.string().max(16_384).optional(),
+  error: z.string().max(256).optional(),
+  error_description: z.string().max(4_096).optional()
 });
 type TokenResponse = z.infer<typeof tokenResponseSchema>;
+
+async function parseTokenResponse(response: Response) {
+  const text = await readOAuthResponseText(response);
+  if (!text) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return {};
+  }
+}
 
 async function graphRequest(accessToken: string, url: string, proxyUrl = "", signal?: AbortSignal): Promise<unknown> {
   for (let attempt = 0; attempt < GRAPH_MAX_ATTEMPTS; attempt += 1) {
@@ -261,7 +275,7 @@ export async function refreshAccessToken(
       signal
     }, proxyUrl);
 
-    const rawPayload = await parseResponse(response);
+    const rawPayload = await parseTokenResponse(response);
     const parsedPayload = tokenResponseSchema.safeParse(rawPayload);
     if (response.ok && (!parsedPayload.success || !parsedPayload.data.access_token)) {
       throw new Error("Token 响应格式无效");

@@ -2,6 +2,7 @@ import { app } from "electron";
 import { copyFile, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { z } from "zod";
 import { getDatabase, transaction } from "./database.js";
 import { decryptSecret, encryptSecret } from "./token-crypto.js";
 import { resolveRefreshTimestamps } from "./account-refresh-state.js";
@@ -38,8 +39,29 @@ interface AccountRow {
 
 const STORE_VERSION = 1;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const legacyAccountSchema = z.object({
+  id: z.string().trim().min(1).max(128),
+  email: z.string().trim().min(1).max(320),
+  clientId: z.string().trim().min(1).max(256),
+  encryptedRefreshToken: z.string().min(1).max(256 * 1024),
+  remark: z.string().max(1_000).optional(),
+  group: z.string().max(200).optional(),
+  status: z.enum(["untested", "valid", "invalid"]).optional(),
+  lastCheckedAt: z.string().nullable().optional(),
+  lastError: z.string().nullable().optional(),
+  lastRefreshedAt: z.string().nullable().optional(),
+  lastInboxCount: z.number().int().nonnegative().optional(),
+  lastMailAt: z.string().nullable().optional(),
+  lastMailCursor: z.string().nullable().optional(),
+  inboxFolderId: z.string().nullable().optional(),
+  graphDeltaLink: z.string().nullable().optional(),
+  refreshCooldownUntil: z.string().nullable().optional(),
+  credentialGeneration: z.number().int().nonnegative().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional()
+});
 let storeQueue = Promise.resolve();
-let migratedLegacyAccounts = false;
+let legacyAccountsMigration: Promise<void> | null = null;
 
 async function withStoreLock<T>(operation: () => Promise<T>): Promise<T> {
   const previous = storeQueue;
@@ -61,23 +83,28 @@ function looksLikeLongMicrosoftRefreshToken(value: string) {
   return value.startsWith("M.") && value.length > 100;
 }
 
-function looksLikeMisparsedLegacyAccount(account: AccountRecord) {
-  const decrypted = decryptSecret(account.encryptedRefreshToken);
+function getMisparsedLegacyClientId(account: AccountRecord) {
+  let decrypted: string;
+  try {
+    decrypted = decryptSecret(account.encryptedRefreshToken);
+  } catch {
+    return null;
+  }
 
   return (
     !UUID_PATTERN.test(account.clientId) &&
     UUID_PATTERN.test(decrypted) &&
     looksLikeLongMicrosoftRefreshToken(account.remark)
-  );
+  ) ? decrypted : null;
 }
 
 function normalizeLegacyAccount(account: AccountRecord): AccountRecord {
-  if (!looksLikeMisparsedLegacyAccount(account)) {
+  const actualClientId = getMisparsedLegacyClientId(account);
+  if (!actualClientId) {
     return { ...account, credentialGeneration: account.credentialGeneration ?? 0 };
   }
 
   const previousClientId = account.clientId;
-  const actualClientId = decryptSecret(account.encryptedRefreshToken);
   const actualRefreshToken = account.remark;
 
   return {
@@ -281,37 +308,117 @@ function insertOrReplaceAccount(account: AccountRecord) {
     );
 }
 
-async function readLegacyStore(): Promise<StoreFile> {
+function normalizeLegacyTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = new Date(value);
+  return Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : null;
+}
+
+function parseLegacyAccount(value: unknown): AccountRecord | null {
+  const parsed = legacyAccountSchema.safeParse(value);
+  if (!parsed.success || !isEmailLike(parsed.data.email)) {
+    return null;
+  }
+
+  const timestamp = nowIso();
+  const account: AccountRecord = {
+    id: parsed.data.id,
+    email: normalizeEmail(parsed.data.email),
+    clientId: parsed.data.clientId,
+    encryptedRefreshToken: parsed.data.encryptedRefreshToken,
+    remark: parsed.data.remark || "",
+    group: parsed.data.group || "",
+    status: parsed.data.status || "untested",
+    lastCheckedAt: normalizeLegacyTimestamp(parsed.data.lastCheckedAt),
+    lastError: parsed.data.lastError || null,
+    lastRefreshedAt: normalizeLegacyTimestamp(parsed.data.lastRefreshedAt),
+    lastInboxCount: parsed.data.lastInboxCount || 0,
+    lastMailAt: normalizeLegacyTimestamp(parsed.data.lastMailAt),
+    lastMailCursor: parsed.data.lastMailCursor || null,
+    inboxFolderId: parsed.data.inboxFolderId || null,
+    graphDeltaLink: parsed.data.graphDeltaLink || null,
+    refreshCooldownUntil: normalizeLegacyTimestamp(parsed.data.refreshCooldownUntil),
+    credentialGeneration: parsed.data.credentialGeneration || 0,
+    createdAt: normalizeLegacyTimestamp(parsed.data.createdAt) || timestamp,
+    updatedAt: normalizeLegacyTimestamp(parsed.data.updatedAt) || timestamp
+  };
+
   try {
-    const raw = await readFile(getStorePath(), "utf8");
-    const parsed = JSON.parse(raw) as StoreFile;
-    return {
-      version: parsed.version || STORE_VERSION,
-      accounts: Array.isArray(parsed.accounts) ? parsed.accounts.map(normalizeLegacyAccount) : []
-    };
+    return normalizeLegacyAccount(account);
+  } catch {
+    // 字段错位修复需要重新加密；系统凭据服务暂不可用时仍保留原账号，等待后续重试。
+    return account;
+  }
+}
+
+async function backupBrokenLegacyStore(storePath: string) {
+  await copyFile(storePath, `${storePath}.broken-${Date.now()}.bak`).catch(() => undefined);
+}
+
+async function readLegacyStore(): Promise<StoreFile> {
+  const storePath = getStorePath();
+  let raw: string;
+  try {
+    raw = await readFile(storePath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { version: STORE_VERSION, accounts: [] };
     }
-
-    if (error instanceof SyntaxError) {
-      const storePath = getStorePath();
-      const brokenPath = `${storePath}.broken-${Date.now()}`;
-      await copyFile(storePath, brokenPath).catch(() => undefined);
-      return { version: STORE_VERSION, accounts: [] };
-    }
-
     throw error;
   }
-}
 
-async function migrateLegacyAccountsOnce() {
-  if (migratedLegacyAccounts) {
-    return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    await backupBrokenLegacyStore(storePath);
+    return { version: STORE_VERSION, accounts: [] };
   }
 
-  migratedLegacyAccounts = true;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    await backupBrokenLegacyStore(storePath);
+    return { version: STORE_VERSION, accounts: [] };
+  }
 
+  const candidate = parsed as Record<string, unknown>;
+  if (!Array.isArray(candidate.accounts)) {
+    await backupBrokenLegacyStore(storePath);
+    return { version: STORE_VERSION, accounts: [] };
+  }
+
+  const accounts: AccountRecord[] = [];
+  const accountIds = new Set<string>();
+  const emails = new Set<string>();
+  let damaged = typeof candidate.version !== "number";
+
+  for (const value of candidate.accounts) {
+    const account = parseLegacyAccount(value);
+    if (!account || accountIds.has(account.id) || emails.has(account.email)) {
+      damaged = true;
+      continue;
+    }
+    accountIds.add(account.id);
+    emails.add(account.email);
+    accounts.push(account);
+  }
+
+  if (damaged) {
+    await backupBrokenLegacyStore(storePath);
+  }
+
+  return {
+    version: typeof candidate.version === "number" ? candidate.version : STORE_VERSION,
+    accounts
+  };
+}
+
+async function migrateLegacyAccounts() {
   const db = getDatabase();
   const existing = db.prepare("SELECT COUNT(*) AS count FROM accounts").get() as { count: number };
   if (existing.count > 0) {
@@ -332,6 +439,17 @@ async function migrateLegacyAccountsOnce() {
   const storePath = getStorePath();
   await copyFile(storePath, `${storePath}.migrated-${Date.now()}.bak`).catch(() => undefined);
   await rename(storePath, `${storePath}.migrated`).catch(() => undefined);
+}
+
+async function migrateLegacyAccountsOnce() {
+  if (!legacyAccountsMigration) {
+    legacyAccountsMigration = migrateLegacyAccounts().catch((error) => {
+      legacyAccountsMigration = null;
+      throw error;
+    });
+  }
+
+  return legacyAccountsMigration;
 }
 
 export async function listAccounts(): Promise<AccountView[]> {

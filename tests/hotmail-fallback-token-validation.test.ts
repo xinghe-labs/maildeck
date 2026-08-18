@@ -41,4 +41,16 @@ describe("Hotmail fallback token validation", () => {
       endpoint: "live"
     });
   });
+
+  it("rejects an oversized token response before trying another endpoint", async () => {
+    const request = vi.fn(async () => new Response("secret token endpoint body", {
+      headers: { "Content-Length": String(128 * 1024 + 1) }
+    }));
+    vi.stubGlobal("fetch", request);
+
+    await expect(refreshHotmailFallbackToken("client-id", "refresh-token")).rejects.toThrow(
+      "OAuth token 响应体超过 128 KiB 限制"
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 });

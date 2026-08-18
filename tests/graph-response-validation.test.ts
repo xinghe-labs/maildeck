@@ -63,4 +63,16 @@ describe("Graph response validation", () => {
 
     await expect(refreshAccessToken("client-id", "refresh-token")).rejects.toThrow("Token 响应格式无效");
   });
+
+  it("rejects an oversized token response without reading or exposing its body", async () => {
+    const secretBody = "must-not-appear";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(secretBody, {
+      headers: { "Content-Length": String(128 * 1024 + 1) }
+    })));
+
+    const error = await refreshAccessToken("client-id", "refresh-token").catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("OAuth token 响应体超过 128 KiB 限制");
+    expect((error as Error).message).not.toContain(secretBody);
+  });
 });

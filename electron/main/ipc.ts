@@ -1,6 +1,12 @@
 import { dialog } from "electron";
-import { readFile } from "node:fs/promises";
-import { IPC_CHANNELS, IPC_EVENT_CHANNELS, IPC_REQUEST_SCHEMAS, parseIpcRequest } from "../shared/ipc-contracts.js";
+import {
+  IPC_CHANNELS,
+  IPC_EVENT_CHANNELS,
+  IPC_REQUEST_SCHEMAS,
+  IpcRequestValidationError,
+  IMPORT_TEXT_MAX_BYTES,
+  parseIpcRequest
+} from "../shared/ipc-contracts.js";
 import {
   clearAccountCache,
   clearAllMailCache,
@@ -45,6 +51,7 @@ import { AccessTokenManager } from "./access-token-manager.js";
 import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { credentialGenerations } from "./credential-generations.js";
 import { handleValidated, sendValidatedEvent } from "./validated-ipc.js";
+import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
 import type {
   AppErrorCode,
   JobKind,
@@ -634,7 +641,16 @@ export function registerIpcHandlers() {
       return null;
     }
 
-    const text = parseIpcRequest(IPC_REQUEST_SCHEMAS.importText, [await readFile(result.filePaths[0], "utf8")]);
+    let fileText: string;
+    try {
+      fileText = await readUtf8FileBounded(result.filePaths[0], IMPORT_TEXT_MAX_BYTES);
+    } catch (error) {
+      if (error instanceof FileTooLargeError) {
+        throw new IpcRequestValidationError(`导入文件不能超过 ${IMPORT_TEXT_MAX_BYTES} 字节`);
+      }
+      throw error;
+    }
+    const text = parseIpcRequest(IPC_REQUEST_SCHEMAS.importText, [fileText]);
     const inputs = parseAccountImport(text);
     return upsertAccountsCoordinated(inputs);
   });

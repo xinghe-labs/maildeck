@@ -2,6 +2,7 @@ import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } f
 import { proxiedFetchOptions } from "./proxy-agent.js";
 import type { AccountRecord, AccessTokenResult, MailMessageDetail, MailMessageSummary } from "./types.js";
 import { z } from "zod";
+import { readOAuthResponseText } from "./oauth-response-reader.js";
 
 const TOKEN_ENDPOINTS = [
   {
@@ -55,7 +56,7 @@ function boundedTokenError(value: string) {
 }
 
 async function parseResponse(response: Response) {
-  const text = await response.text();
+  const text = await readOAuthResponseText(response);
   if (!text) {
     return {};
   }
