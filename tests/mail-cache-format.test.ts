@@ -96,6 +96,25 @@ describe("mail detail cache format", () => {
     });
   });
 
+  it.each([
+    ["invalid JSON", "{"],
+    ["an invalid detail shape", JSON.stringify({ version: 2, detail: { id: 42 } })]
+  ])("removes %s and treats it as a cache miss", async (_label, storedValue) => {
+    await createTemporaryUserData();
+    const { getDatabase } = await import("../electron/main/database.js");
+    getDatabase()
+      .prepare("INSERT INTO mail_details (account_id, message_id, detail_json, updated_at) VALUES (?, ?, ?, ?)")
+      .run("account-1", "message-corrupt", storedValue, new Date().toISOString());
+    const cache = await import("../electron/main/mail-cache.js");
+
+    await expect(cache.getCachedMessageDetail("account-1", "message-corrupt")).resolves.toBeNull();
+    expect(
+      getDatabase()
+        .prepare("SELECT message_id FROM mail_details WHERE account_id = ? AND message_id = ?")
+        .get("account-1", "message-corrupt")
+    ).toBeUndefined();
+  });
+
   it("checks cancellation inside the cache lock before writing", async () => {
     await createTemporaryUserData();
     const cache = await import("../electron/main/mail-cache.js");

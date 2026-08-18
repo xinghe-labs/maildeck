@@ -1,7 +1,9 @@
 import { app } from "electron";
 import { copyFile, readFile, rename } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import { getDatabase, transaction } from "./database.js";
+import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 import type { MailMessageDetail, MailMessageSummary } from "./types.js";
 
@@ -49,6 +51,37 @@ interface StoredMailDetailV2 {
   version: 2;
   detail: MailMessageDetail;
 }
+
+const cachedMailAddressSchema = z.object({
+  name: z.string().nullable().optional(),
+  address: z.string().nullable().optional()
+});
+
+const cachedMailDetailSchema = z.object({
+  id: z.string().min(1),
+  subject: z.string().nullable().optional(),
+  from: cachedMailAddressSchema.nullable().optional(),
+  receivedDateTime: z.string().nullable().optional(),
+  sentDateTime: z.string().nullable().optional(),
+  isRead: z.boolean().optional(),
+  importance: z.string().nullable().optional(),
+  hasAttachments: z.boolean().optional(),
+  bodyPreview: z.string().nullable().optional(),
+  webLink: z.string().nullable().optional(),
+  toRecipients: z.array(cachedMailAddressSchema).nullable().optional(),
+  ccRecipients: z.array(cachedMailAddressSchema).nullable().optional(),
+  body: z.object({
+    contentType: z.string().nullable().optional(),
+    content: z.string().nullable().optional()
+  }).nullable().optional()
+});
+
+const storedMailDetailV2Schema = z.object({
+  version: z.literal(2),
+  detail: cachedMailDetailSchema
+});
+
+type CachedMailDetail = z.infer<typeof cachedMailDetailSchema>;
 
 const CACHE_VERSION = 1;
 const MAX_MESSAGES_PER_ACCOUNT = 100;
@@ -334,25 +367,25 @@ function looksLikeLegacyTextAsHtml(detail: MailMessageDetail) {
   return !/<\/?[a-z][^>]*>/iu.test(remainingMarkup);
 }
 
-function isStoredMailDetailV2(value: unknown): value is StoredMailDetailV2 {
-  return Boolean(
-    value &&
-    typeof value === "object" &&
-    "version" in value &&
-    value.version === 2 &&
-    "detail" in value &&
-    value.detail &&
-    typeof value.detail === "object"
-  );
-}
-
 function parseStoredMailDetail(value: string) {
-  const stored = JSON.parse(value) as unknown;
-  if (isStoredMailDetailV2(stored)) {
-    return normalizeCachedDetail(stored.detail);
+  let stored: unknown;
+  try {
+    stored = JSON.parse(value) as unknown;
+  } catch {
+    return null;
   }
 
-  const detail = normalizeCachedDetail(stored as MailMessageDetail);
+  const versioned = storedMailDetailV2Schema.safeParse(stored);
+  if (versioned.success) {
+    return normalizeCachedDetail(versioned.data.detail);
+  }
+
+  const legacy = cachedMailDetailSchema.safeParse(stored);
+  if (!legacy.success) {
+    return null;
+  }
+
+  const detail = normalizeCachedDetail(legacy.data);
   if (looksLikeLegacyTextAsHtml(detail)) {
     return {
       ...detail,
@@ -362,19 +395,24 @@ function parseStoredMailDetail(value: string) {
   return detail;
 }
 
-function normalizeCachedDetail(detail: MailMessageDetail): MailMessageDetail {
-  const body = detail.body || { contentType: "text", content: "" };
-  const toRecipients = Array.isArray(detail.toRecipients) ? detail.toRecipients : [];
-  const ccRecipients = Array.isArray(detail.ccRecipients) ? detail.ccRecipients : [];
+function normalizeCachedDetail(detail: CachedMailDetail): MailMessageDetail {
+  const body = detail.body ?? {};
+  const toRecipients = detail.toRecipients ?? [];
+  const ccRecipients = detail.ccRecipients ?? [];
   return {
-    ...detail,
+    id: detail.id,
     subject: normalizeMailText(detail.subject),
     bodyPreview: normalizeMailText(detail.bodyPreview),
-    from: detail.from ? { ...detail.from, name: normalizeMailText(detail.from.name), address: detail.from.address || "" } : null,
-    toRecipients: toRecipients.map((item) => ({ ...item, name: normalizeMailText(item.name), address: item.address || "" })),
-    ccRecipients: ccRecipients.map((item) => ({ ...item, name: normalizeMailText(item.name), address: item.address || "" })),
+    from: detail.from ? { name: normalizeMailText(detail.from.name), address: detail.from.address || "" } : null,
+    receivedDateTime: normalizeMailDate(detail.receivedDateTime),
+    sentDateTime: normalizeMailDate(detail.sentDateTime),
+    isRead: detail.isRead === true,
+    importance: detail.importance || "normal",
+    hasAttachments: detail.hasAttachments === true,
+    webLink: detail.webLink || null,
+    toRecipients: toRecipients.map((item) => ({ name: normalizeMailText(item.name), address: item.address || "" })),
+    ccRecipients: ccRecipients.map((item) => ({ name: normalizeMailText(item.name), address: item.address || "" })),
     body: {
-      ...body,
       contentType: normalizeMailContentType(body.contentType),
       content: normalizeMailText(body.content)
     }
@@ -398,7 +436,15 @@ export async function getCachedMessageDetail(accountId: string, messageId: strin
     return null;
   }
 
-  return parseStoredMailDetail(row.detail_json);
+  const detail = parseStoredMailDetail(row.detail_json);
+  if (detail) {
+    return detail;
+  }
+
+  getDatabase()
+    .prepare("DELETE FROM mail_details WHERE account_id = ? AND message_id = ? AND detail_json = ?")
+    .run(accountId, messageId, row.detail_json);
+  return null;
 }
 
 export async function saveCachedMessageDetail(

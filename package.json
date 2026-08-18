@@ -52,11 +52,11 @@
     }
   },
   "dependencies": {
-    "@zone-eu/mailsplit": "5.4.14",
+    "@zone-eu/mailsplit": "5.4.15",
     "dompurify": "3.4.13",
     "imapflow": "1.4.7",
     "lucide-react": "^0.511.0",
-    "mailparser": "3.9.14",
+    "mailparser": "3.9.15",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "undici": "6.28.0",
@@ -77,5 +77,9 @@
     "vite": "^6.3.5",
     "vitest": "^4.1.10",
     "wait-on": "^8.0.3"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.1",
+    "nanoid": "3.3.18"
   }
 }

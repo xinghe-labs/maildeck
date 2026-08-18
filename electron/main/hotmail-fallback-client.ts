@@ -1,6 +1,7 @@
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import { proxiedFetchOptions } from "./proxy-agent.js";
 import type { AccountRecord, AccessTokenResult, MailMessageDetail, MailMessageSummary } from "./types.js";
+import { z } from "zod";
 
 const TOKEN_ENDPOINTS = [
   {
@@ -36,13 +37,21 @@ export interface HotmailFallbackMessageResult {
   inboxFolderId: string;
 }
 
-interface TokenResponse {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  scope?: string;
-  error?: string;
-  error_description?: string;
+const TOKEN_VALUE_MAX_CHARS = 128 * 1024;
+const TOKEN_ERROR_MAX_CHARS = 512;
+const tokenResponseSchema = z.object({
+  access_token: z.string().min(1).max(TOKEN_VALUE_MAX_CHARS).optional(),
+  refresh_token: z.string().max(TOKEN_VALUE_MAX_CHARS).nullable().optional(),
+  expires_in: z.number().finite().nonnegative().max(31_536_000).optional(),
+  scope: z.string().max(16_384).optional(),
+  error: z.string().max(256).optional(),
+  error_description: z.string().max(4_096).optional()
+});
+type TokenResponse = z.infer<typeof tokenResponseSchema>;
+
+function boundedTokenError(value: string) {
+  const normalized = value.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();
+  return normalized.slice(0, TOKEN_ERROR_MAX_CHARS) || "token refresh failed";
 }
 
 async function parseResponse(response: Response) {
@@ -52,9 +61,9 @@ async function parseResponse(response: Response) {
   }
 
   try {
-    return JSON.parse(text) as TokenResponse;
+    return JSON.parse(text) as unknown;
   } catch {
-    return { error_description: text };
+    return { error_description: "token endpoint returned a non-JSON response" };
   }
 }
 
@@ -90,8 +99,13 @@ export async function refreshHotmailFallbackToken(
       signal
     }, proxyUrl));
     signal?.throwIfAborted();
-    const payload = await parseResponse(response);
+    const rawPayload = await parseResponse(response);
     signal?.throwIfAborted();
+    const parsedPayload = tokenResponseSchema.safeParse(rawPayload);
+    if (response.ok && (!parsedPayload.success || !parsedPayload.data.access_token)) {
+      throw new Error("内置 Hotmail 兜底 token 响应格式无效");
+    }
+    const payload: TokenResponse = parsedPayload.success ? parsedPayload.data : {};
 
     if (response.ok && payload.access_token) {
       return {
@@ -104,7 +118,8 @@ export async function refreshHotmailFallbackToken(
       };
     }
 
-    errors.push(`${endpoint.name}(${response.status}): ${payload.error_description || payload.error || "token refresh failed"}`);
+    const description = boundedTokenError(payload.error_description || payload.error || "token refresh failed");
+    errors.push(`${endpoint.name}(${response.status}): ${description}`);
   }
 
   throw new Error(`内置 Hotmail 兜底 token 刷新失败：${errors.join(" | ")}`);
