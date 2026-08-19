@@ -12,6 +12,10 @@
 
 Renderer 中由当前窗口发起的 Refresh Job 投影。它关联 invoke、`jobId` 进度事件和完成结果，负责前台任务互斥、后台静默、单账号刷新集合以及失败重试状态；主进程仍拥有 Job 调度与取消。
 
+## Account Catalog Session
+
+Renderer 中账号目录的一次应用会话。它拥有账号列表投影、全量快照 generation、逐账号命令 generation、测试忙碌集合和导入预检 generation；视图只发送账号命令并消费账号投影。
+
 ## Transport Adapter
 
 Graph、IMAP 或 Hotmail fallback 的协议实现。适配器只负责远端协议交互，不直接暴露给 IPC，也不决定缓存和账号状态提交策略。
@@ -38,3 +42,5 @@ Renderer 中当前选中账号的一次邮件浏览会话。它拥有搜索条�
 - Mailbox Session 只接受当前账号、搜索条件和请求 generation 对应的异步结果；陈旧成功、失败和完成事件都不得修改当前视图。
 - Refresh Job Session 只接受 kind、账号集合和 `jobId` 对应且单调前进的进度事件；已结束或不匹配 Job 的迟到事件不得修改当前投影。
 - 批量测试、手动刷新和后台刷新在当前窗口内互斥；后台刷新不覆盖前台进度，单账号刷新按账号去重并可在不同账号间并行。
+- Account Catalog Session 只接受当前全量快照 generation 或当前账号命令 generation 的结果；较新的导入、编辑、删除、测试或刷新同步不得被迟到结果覆盖。
+- 同一账号只能运行一个连接测试；不同账号测试可并行，任一任务结束不得清除其他账号的忙碌状态。

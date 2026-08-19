@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AccountSidebar } from "./components/AccountSidebar";
-import { mergeTestedAccounts } from "./account-result-merge";
 import { ImportModal } from "./components/ImportModal";
 import { MailReader } from "./components/MailReader";
 import { MessageList } from "./components/MessageList";
@@ -24,6 +23,7 @@ import type {
 } from "./types";
 import { formatRelativeTime } from "./ui-utils";
 import { errorMessage } from "./app-error";
+import { useAccountCatalogSession } from "./use-account-catalog-session";
 import { useMailboxSession } from "./use-mailbox-session";
 import { useRefreshJobSession } from "./use-refresh-job-session";
 
@@ -40,18 +40,16 @@ const defaultSettings: AppSettings = {
   autoRefreshIntervalMinutes: 10
 };
 
-function replaceAccount(accounts: AccountView[], next: AccountView) {
-  return accounts.map((account) => (account.id === next.id ? next : account));
-}
-
 function EditAccountModal({
   account,
   onClose,
+  onSubmit,
   onSaved
 }: {
   account: AccountView;
   onClose: () => void;
-  onSaved: (account: AccountView) => void;
+  onSubmit: (input: AccountUpdateInput) => Promise<AccountView | null>;
+  onSaved: () => void;
 }) {
   const [form, setForm] = useState<AccountUpdateInput>({
     id: account.id,
@@ -66,17 +64,15 @@ function EditAccountModal({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const api = getDesktopApi();
-    if (!api) {
-      setError("账号编辑需要在 Electron 桌面应用中使用。");
-      return;
-    }
-
     setLoading(true);
     setError("");
 
     try {
-      onSaved(await api.accounts.update(form));
+      const updated = await onSubmit(form);
+      if (!updated) {
+        return;
+      }
+      onSaved();
       onClose();
     } catch (submitError) {
       setError(errorMessage(submitError));
@@ -134,7 +130,6 @@ function EditAccountModal({
   );
 }
 export default function App() {
-  const [accounts, setAccounts] = useState<AccountView[]>([]);
   const [accountQuery, setAccountQuery] = useState("");
   const [mailQuery, setMailQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "valid" | "invalid" | "untested">("all");
@@ -142,14 +137,12 @@ export default function App() {
   const [editingAccount, setEditingAccount] = useState<AccountView | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const [loadingAccounts, setLoadingAccounts] = useState(true);
-  const [testingId, setTestingId] = useState<string | null>(null);
-  const [fallbackTestingId, setFallbackTestingId] = useState<string | null>(null);
   const [testMenuOpen, setTestMenuOpen] = useState(false);
   const [newMailCounts, setNewMailCounts] = useState<Record<string, number>>({});
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const desktopApi = getDesktopApi();
+  const accountCatalog = useAccountCatalogSession(desktopApi ?? null);
   const mailbox = useMailboxSession(desktopApi?.mail ?? null);
   const refreshJobs = useRefreshJobSession(desktopApi ?? null);
   const {
@@ -164,6 +157,12 @@ export default function App() {
     selectedMessageId
   } = mailbox.state;
   const {
+    accounts,
+    fallbackTestingAccountIds,
+    loadingAccounts,
+    testingAccountIds
+  } = accountCatalog.state;
+  const {
     anyJobRunning,
     canRetryFailedRefresh,
     failedRefreshAccountIds,
@@ -176,6 +175,12 @@ export default function App() {
   const busyAccountIdSet = useMemo(
     () => new Set(busyAccountIds),
     [busyAccountIds]
+  );
+  const selectedAccountTesting = Boolean(
+    selectedAccountId && (
+      testingAccountIds.includes(selectedAccountId) ||
+      fallbackTestingAccountIds.includes(selectedAccountId)
+    )
   );
   const displayedError = error || mailboxError;
 
@@ -208,54 +213,39 @@ export default function App() {
     });
   }, [accounts, accountQuery, statusFilter]);
 
-  function applyAccounts(nextAccounts: AccountView[]) {
-    setAccounts(nextAccounts);
-    mailbox.reconcileAccounts(nextAccounts);
-  }
-
   function clearErrors() {
     setError("");
     mailbox.clearError();
   }
 
-  async function loadAccounts() {
-    const api = getDesktopApi();
-
-    if (!api) {
-      setLoadingAccounts(false);
+  async function loadAccounts(forceReload = true) {
+    if (!desktopApi) {
       setError("当前页面未运行在 Electron 桌面环境中，请使用 npm run dev 启动桌面应用。");
       return;
     }
-
-    setLoadingAccounts(true);
     clearErrors();
 
     try {
-      applyAccounts(await api.accounts.list());
+      await (forceReload ? accountCatalog.reload() : accountCatalog.load());
     } catch (loadError) {
       setError(errorMessage(loadError));
-    } finally {
-      setLoadingAccounts(false);
     }
   }
 
   async function loadSettings() {
-    const api = getDesktopApi();
-    if (!api) {
+    if (!desktopApi) {
       return;
     }
 
     try {
-      setSettings(await api.settings.get());
+      setSettings(await desktopApi.settings.get());
     } catch (settingsError) {
       setError(errorMessage(settingsError));
     }
   }
 
   async function importFromFile() {
-    const api = getDesktopApi();
-
-    if (!api) {
+    if (!desktopApi) {
       setError("文件导入需要在 Electron 桌面应用中使用。");
       return;
     }
@@ -263,13 +253,12 @@ export default function App() {
     clearErrors();
 
     try {
-      const result = await api.accounts.importFile();
+      const result = await accountCatalog.importFile();
 
       if (!result) {
         return;
       }
 
-      applyAccounts(result.accounts);
       setToast(`导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`);
     } catch (importError) {
       setError(errorMessage(importError));
@@ -278,20 +267,20 @@ export default function App() {
 
   async function testConnection(accountId: string) {
     setTestMenuOpen(false);
-    const api = getDesktopApi();
-
-    if (!api) {
+    if (!desktopApi) {
       setError("连接测试需要在 Electron 桌面应用中使用。");
       return;
     }
-
-    setTestingId(accountId);
+    const execution = accountCatalog.testConnection(accountId);
+    if (!execution) {
+      return;
+    }
     clearErrors();
 
     try {
-      const result = await api.accounts.test(accountId);
-      if (result.account) {
-        setAccounts((current) => replaceAccount(current, result.account!));
+      const result = await execution;
+      if (!result) {
+        return;
       }
       if (result.ok) {
         setToast(result.message);
@@ -300,35 +289,33 @@ export default function App() {
       }
     } catch (testError) {
       setError(errorMessage(testError));
-    } finally {
-      setTestingId(null);
     }
   }
 
   async function testFallback(accountId: string) {
     setTestMenuOpen(false);
-    const api = getDesktopApi();
-
-    if (!api) {
+    if (!desktopApi) {
       setError("兜底测试需要在 Electron 桌面应用中使用。");
       return;
     }
-
-    setFallbackTestingId(accountId);
+    const execution = accountCatalog.testFallback(accountId);
+    if (!execution) {
+      return;
+    }
     clearErrors();
 
     try {
-      const result = await api.accounts.testFallback(accountId);
+      const result = await execution;
+      if (!result) {
+        return;
+      }
       if (result.ok) {
-        setAccounts((current) => replaceAccount(current, result.account));
         setToast(result.message);
       } else {
         setError(result.error.message);
       }
     } catch (fallbackError) {
       setError(errorMessage(fallbackError));
-    } finally {
-      setFallbackTestingId(null);
     }
   }
 
@@ -339,8 +326,7 @@ export default function App() {
     }
 
     try {
-      const api = getDesktopApi();
-      if (!api) {
+      if (!desktopApi) {
         throw new Error("桌面接口不可用");
       }
       const execution = refreshJobs.runTest(accountIds);
@@ -353,7 +339,7 @@ export default function App() {
         return;
       }
       const validCount = results.filter((item) => item.ok).length;
-      setAccounts((current) => mergeTestedAccounts(current, results));
+      accountCatalog.mergeTestResults(results);
       setToast(`已测试 ${validCount}/${results.length} 个账号`);
     } catch (testError) {
       setError(errorMessage(testError));
@@ -381,8 +367,7 @@ export default function App() {
       return;
     }
 
-    const api = getDesktopApi();
-    if (!api) {
+    if (!desktopApi) {
       setError("桌面接口不可用");
       return;
     }
@@ -402,8 +387,7 @@ export default function App() {
         return;
       }
       const okCount = results.filter((item) => item.ok).length;
-      const nextAccounts = await api.accounts.list();
-      applyAccounts(nextAccounts);
+      await accountCatalog.reload();
       const changedCount = options.silent ? recordNewMailCounts(results) : 0;
 
       if (options.silent) {
@@ -424,8 +408,7 @@ export default function App() {
   }
 
   async function refreshSingleAccount(accountId: string) {
-    const api = getDesktopApi();
-    if (!api) {
+    if (!desktopApi) {
       setError("桌面接口不可用");
       return;
     }
@@ -442,11 +425,11 @@ export default function App() {
         return;
       }
       const result = results[0];
-      const nextAccounts = await api.accounts.list();
-      applyAccounts(nextAccounts);
+      const email = accounts.find((account) => account.id === accountId)?.email || "账号";
+      await accountCatalog.reload();
 
       if (result?.ok) {
-        setToast(`已刷新 ${nextAccounts.find((account) => account.id === accountId)?.email || "账号"}`);
+        setToast(`已刷新 ${email}`);
         await mailbox.reloadIfCurrentAccount([accountId]);
         return;
       }
@@ -455,7 +438,6 @@ export default function App() {
       if (mailbox.isCurrentAccount(accountId)) {
         setError(refreshMessage);
       } else {
-        const email = nextAccounts.find((account) => account.id === accountId)?.email || "账号";
         setToast(`${email} 刷新失败：${refreshMessage}`);
       }
     } catch (refreshError) {
@@ -556,9 +538,7 @@ export default function App() {
   }
 
   async function deleteSelectedAccount() {
-    const api = getDesktopApi();
-
-    if (!api) {
+    if (!desktopApi) {
       setError("账号管理需要在 Electron 桌面应用中使用。");
       return;
     }
@@ -575,8 +555,10 @@ export default function App() {
     }
 
     try {
-      const nextAccounts = await api.accounts.delete(selectedAccountId);
-      applyAccounts(nextAccounts);
+      const nextAccounts = await accountCatalog.deleteAccount(selectedAccountId);
+      if (!nextAccounts) {
+        return;
+      }
       setToast("账号已删除");
     } catch (deleteError) {
       setError(errorMessage(deleteError));
@@ -584,9 +566,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadAccounts();
+    loadAccounts(false);
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    mailbox.reconcileAccounts(accounts);
+  }, [accounts, mailbox.reconcileAccounts]);
 
   useEffect(() => {
     if (!toast) {
@@ -638,7 +624,7 @@ export default function App() {
           onSelectAccount={selectAccount}
           onOpenImport={() => setShowImportModal(true)}
           onImportFromFile={importFromFile}
-          onReloadAccounts={loadAccounts}
+          onReloadAccounts={() => void loadAccounts()}
           onOpenSettings={() => setShowSettingsModal(true)}
           newMailCounts={newMailCounts}
           busyAccountIds={busyAccountIdSet}
@@ -664,10 +650,10 @@ export default function App() {
                 <button
                   className="toolbar-button"
                   onClick={() => setTestMenuOpen((open) => !open)}
-                  disabled={!selectedAccountId || testingId === selectedAccountId || fallbackTestingId === selectedAccountId}
+                  disabled={!selectedAccountId || selectedAccountTesting}
                   title="测试当前账号"
                 >
-                  {testingId === selectedAccountId || fallbackTestingId === selectedAccountId ? (
+                  {selectedAccountTesting ? (
                     <Loader2 size={15} className="spin" />
                   ) : (
                     <CheckCircle2 size={15} />
@@ -760,8 +746,10 @@ export default function App() {
       {showImportModal ? (
         <ImportModal
           onClose={() => setShowImportModal(false)}
+          onPreviewImportText={accountCatalog.previewImportText}
+          onImportText={accountCatalog.importText}
+          onUpsert={accountCatalog.upsert}
           onImported={(result) => {
-            applyAccounts(result.accounts);
             setToast(`导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`);
           }}
         />
@@ -771,8 +759,8 @@ export default function App() {
         <EditAccountModal
           account={editingAccount}
           onClose={() => setEditingAccount(null)}
-          onSaved={(account) => {
-            setAccounts((current) => replaceAccount(current, account));
+          onSubmit={accountCatalog.update}
+          onSaved={() => {
             setToast("账号已更新");
           }}
         />

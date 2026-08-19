@@ -1,6 +1,5 @@
 import { Loader2, Plus, X } from "lucide-react";
-import { FormEvent, useState } from "react";
-import { getDesktopApi } from "../desktop-api";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../app-error";
 import type { AccountInput, ImportPreviewResult, ImportResult } from "../types";
 
@@ -14,50 +13,82 @@ const emptyAccountForm: AccountInput = {
 
 export function ImportModal({
   onClose,
-  onImported
+  onImported,
+  onPreviewImportText,
+  onImportText,
+  onUpsert
 }: {
   onClose: () => void;
   onImported: (result: ImportResult) => void;
+  onPreviewImportText: (text: string) => Promise<ImportPreviewResult | null>;
+  onImportText: (text: string) => Promise<ImportResult | null>;
+  onUpsert: (input: AccountInput) => Promise<ImportResult | null>;
 }) {
   const [mode, setMode] = useState<"single" | "batch">("single");
   const [single, setSingle] = useState<AccountInput>(emptyAccountForm);
   const [batchText, setBatchText] = useState("");
   const [preview, setPreview] = useState<ImportPreviewResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState("");
+  const previewText = mode === "single"
+    ? `${single.email},${single.clientId},${single.refreshToken}`
+    : batchText;
+  const currentPreviewTextRef = useRef(previewText);
+  const mountedRef = useRef(true);
+  currentPreviewTextRef.current = previewText;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setPreview(null);
+  }, [previewText]);
 
   async function previewBatch() {
-    const api = getDesktopApi();
-    if (!api) {
-      setError("导入预检需要在 Electron 桌面应用中使用。");
-      return;
-    }
-
+    const requestedText = previewText;
+    setPreviewing(true);
     setError("");
-    setPreview(await api.accounts.previewImportText(mode === "single" ? `${single.email},${single.clientId},${single.refreshToken}` : batchText));
+    try {
+      const result = await onPreviewImportText(requestedText);
+      if (result && mountedRef.current && currentPreviewTextRef.current === requestedText) {
+        setPreview(result);
+      }
+    } catch (previewError) {
+      if (mountedRef.current && currentPreviewTextRef.current === requestedText) {
+        setError(errorMessage(previewError));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setPreviewing(false);
+      }
+    }
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const api = getDesktopApi();
-
-    if (!api) {
-      setError("导入账号需要在 Electron 桌面应用中使用。");
-      return;
-    }
-
     setLoading(true);
     setError("");
 
     try {
-      const result = mode === "single" ? await api.accounts.upsert(single) : await api.accounts.importText(batchText);
-
+      const result = mode === "single" ? await onUpsert(single) : await onImportText(batchText);
+      if (!result) {
+        return;
+      }
       onImported(result);
       onClose();
     } catch (submitError) {
-      setError(errorMessage(submitError));
+      if (mountedRef.current) {
+        setError(errorMessage(submitError));
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -143,13 +174,14 @@ export function ImportModal({
         {error ? <div className="error-box">{error}</div> : null}
 
         <div className="modal-actions">
-          <button type="button" className="secondary-button dark-button" onClick={previewBatch}>
-            预检
+          <button type="button" className="secondary-button dark-button" onClick={previewBatch} disabled={previewing || loading}>
+            {previewing ? <Loader2 size={16} className="spin" /> : null}
+            {previewing ? "预检中" : "预检"}
           </button>
           <button type="button" className="secondary-button dark-button" onClick={onClose}>
             取消
           </button>
-          <button className="primary-button dark-primary" type="submit" disabled={loading}>
+          <button className="primary-button dark-primary" type="submit" disabled={loading || previewing}>
             {loading ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
             保存导入
           </button>

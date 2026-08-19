@@ -26,8 +26,8 @@ export function AccountSidebar({
   refreshDisabled = false,
   onRefreshAccount
 }: {
-  accounts: AccountView[];
-  filteredAccounts: AccountView[];
+  accounts: readonly AccountView[];
+  filteredAccounts: readonly AccountView[];
   selectedAccountId: string | null;
   loadingAccounts: boolean;
   accountQuery: string;
