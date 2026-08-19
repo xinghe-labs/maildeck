@@ -8,7 +8,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AccountSidebar } from "./components/AccountSidebar";
 import { mergeTestedAccounts } from "./account-result-merge";
 import { ImportModal } from "./components/ImportModal";
@@ -24,8 +24,8 @@ import type {
 } from "./types";
 import { formatRelativeTime } from "./ui-utils";
 import { errorMessage } from "./app-error";
-import { shouldDisplayBulkRefreshProgress } from "./job-progress";
 import { useMailboxSession } from "./use-mailbox-session";
+import { useRefreshJobSession } from "./use-refresh-job-session";
 
 const defaultSettings: AppSettings = {
   cacheMessages: true,
@@ -146,17 +146,12 @@ export default function App() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [fallbackTestingId, setFallbackTestingId] = useState<string | null>(null);
   const [testMenuOpen, setTestMenuOpen] = useState(false);
-  const [bulkTesting, setBulkTesting] = useState(false);
-  const [bulkRefreshing, setBulkRefreshing] = useState(false);
-  const [refreshingAccountIds, setRefreshingAccountIds] = useState<Set<string>>(new Set());
-  const [bulkProgress, setBulkProgress] = useState("");
-  const [lastRefreshResults, setLastRefreshResults] = useState<RefreshManyResult[]>([]);
   const [newMailCounts, setNewMailCounts] = useState<Record<string, number>>({});
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
-  const autoRefreshRunningRef = useRef(false);
-  const silentRefreshRef = useRef(false);
-  const mailbox = useMailboxSession(getDesktopApi()?.mail ?? null);
+  const desktopApi = getDesktopApi();
+  const mailbox = useMailboxSession(desktopApi?.mail ?? null);
+  const refreshJobs = useRefreshJobSession(desktopApi ?? null);
   const {
     accountId: selectedAccountId,
     cursor: mailCursor,
@@ -168,6 +163,20 @@ export default function App() {
     messages,
     selectedMessageId
   } = mailbox.state;
+  const {
+    anyJobRunning,
+    canRetryFailedRefresh,
+    failedRefreshAccountIds,
+    manualRefreshRunning,
+    progressText,
+    busyAccountIds,
+    singleRefreshBlocked,
+    testRunning
+  } = refreshJobs.state;
+  const busyAccountIdSet = useMemo(
+    () => new Set(busyAccountIds),
+    [busyAccountIds]
+  );
   const displayedError = error || mailboxError;
 
   const selectedAccount = useMemo(
@@ -324,29 +333,30 @@ export default function App() {
   }
 
   async function testFilteredAccounts() {
-    if (filteredAccounts.length === 0 || bulkTesting) {
+    const accountIds = filteredAccounts.map((account) => account.id);
+    if (accountIds.length === 0) {
       return;
     }
-
-    setBulkTesting(true);
-    clearErrors();
 
     try {
       const api = getDesktopApi();
       if (!api) {
         throw new Error("桌面接口不可用");
       }
-
-      setBulkProgress(`测试中 0/${filteredAccounts.length} · 可用 0 · 失效 0`);
-      const results = await api.accounts.testMany(filteredAccounts.map((account) => account.id));
+      const execution = refreshJobs.runTest(accountIds);
+      if (!execution) {
+        return;
+      }
+      clearErrors();
+      const results = await execution;
+      if (!results) {
+        return;
+      }
       const validCount = results.filter((item) => item.ok).length;
       setAccounts((current) => mergeTestedAccounts(current, results));
       setToast(`已测试 ${validCount}/${results.length} 个账号`);
-      setBulkProgress(`测试完成 ${validCount}/${results.length}`);
     } catch (testError) {
       setError(errorMessage(testError));
-    } finally {
-      setBulkTesting(false);
     }
   }
 
@@ -356,12 +366,18 @@ export default function App() {
       return;
     }
 
-    await api.jobs.cancel("test");
-    setToast("正在取消批量测试");
+    try {
+      const result = await refreshJobs.cancel("test");
+      if (result) {
+        setToast("正在取消批量测试");
+      }
+    } catch (cancelError) {
+      setError(errorMessage(cancelError));
+    }
   }
 
   async function refreshAccounts(accountIds: string[], doneText = "已刷新", options: { silent?: boolean } = {}) {
-    if (accountIds.length === 0 || bulkRefreshing) {
+    if (accountIds.length === 0) {
       return;
     }
 
@@ -371,18 +387,21 @@ export default function App() {
       return;
     }
 
-    setBulkRefreshing(true);
-    silentRefreshRef.current = options.silent === true;
-    clearErrors();
-    setLastRefreshResults([]);
+    const kind = options.silent ? "refreshBackground" : "refresh";
+    const execution = refreshJobs.runRefresh(accountIds, kind);
+    if (!execution) {
+      return;
+    }
     if (!options.silent) {
-      setBulkProgress(`刷新中 0/${accountIds.length} · 成功 0 · 失败 0`);
+      clearErrors();
     }
 
     try {
-      const results = await api.accounts.refreshMany(accountIds, options.silent ? "refreshBackground" : "refresh");
+      const results = await execution;
+      if (!results) {
+        return;
+      }
       const okCount = results.filter((item) => item.ok).length;
-      setLastRefreshResults(results);
       const nextAccounts = await api.accounts.list();
       applyAccounts(nextAccounts);
       const changedCount = options.silent ? recordNewMailCounts(results) : 0;
@@ -391,34 +410,37 @@ export default function App() {
         setToast(changedCount > 0 ? `定时刷新发现 ${changedCount} 个账号有新邮件` : `定时刷新完成 ${okCount}/${results.length}`);
       } else {
         setToast(`${doneText} ${okCount}/${results.length} 个账号的收件箱`);
-        setBulkProgress(`刷新完成 ${okCount}/${results.length}`);
       }
 
       await mailbox.reloadIfCurrentAccount(accountIds);
     } catch (refreshError) {
-      setError(errorMessage(refreshError));
-    } finally {
-      setBulkRefreshing(false);
-      silentRefreshRef.current = false;
+      const message = errorMessage(refreshError);
+      if (options.silent) {
+        setToast(`定时刷新失败：${message}`);
+      } else {
+        setError(message);
+      }
     }
   }
 
   async function refreshSingleAccount(accountId: string) {
-    if (refreshingAccountIds.has(accountId)) {
-      return;
-    }
-
     const api = getDesktopApi();
     if (!api) {
       setError("桌面接口不可用");
       return;
     }
 
-    setRefreshingAccountIds((current) => new Set(current).add(accountId));
+    const execution = refreshJobs.runRefresh([accountId], "refreshSingle");
+    if (!execution) {
+      return;
+    }
     clearErrors();
 
     try {
-      const results = await api.accounts.refreshMany([accountId], "refreshSingle");
+      const results = await execution;
+      if (!results) {
+        return;
+      }
       const result = results[0];
       const nextAccounts = await api.accounts.list();
       applyAccounts(nextAccounts);
@@ -444,12 +466,6 @@ export default function App() {
         const email = accounts.find((account) => account.id === accountId)?.email || "账号";
         setToast(`${email} 刷新失败：${refreshMessage}`);
       }
-    } finally {
-      setRefreshingAccountIds((current) => {
-        const next = new Set(current);
-        next.delete(accountId);
-        return next;
-      });
     }
   }
 
@@ -483,8 +499,14 @@ export default function App() {
       return;
     }
 
-    await api.jobs.cancel("refresh");
-    setToast("正在取消批量刷新");
+    try {
+      const result = await refreshJobs.cancel("refresh");
+      if (result) {
+        setToast("正在取消批量刷新");
+      }
+    } catch (cancelError) {
+      setError(errorMessage(cancelError));
+    }
   }
 
   function refreshFilteredAccounts() {
@@ -510,8 +532,7 @@ export default function App() {
   }
 
   function retryFailedRefresh() {
-    const failedIds = lastRefreshResults.filter((item) => !item.ok && !item.canceled).map((item) => item.accountId);
-    refreshAccounts(failedIds, "已重试");
+    void refreshAccounts([...failedRefreshAccountIds], "已重试");
   }
 
   function executeMailSearch() {
@@ -568,32 +589,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const api = getDesktopApi();
-    if (!api?.accounts.onRefreshProgress) {
-      return;
-    }
-
-    return api.accounts.onRefreshProgress((progress) => {
-      if (silentRefreshRef.current || !shouldDisplayBulkRefreshProgress(progress)) {
-        return;
-      }
-
-      setBulkProgress(`刷新中 ${progress.completed}/${progress.total} · 成功 ${progress.ok} · 失败 ${progress.failed}`);
-    });
-  }, []);
-
-  useEffect(() => {
-    const api = getDesktopApi();
-    if (!api?.accounts.onTestProgress) {
-      return;
-    }
-
-    return api.accounts.onTestProgress((progress) => {
-      setBulkProgress(`测试中 ${progress.completed}/${progress.total} · 可用 ${progress.ok} · 失效 ${progress.failed}`);
-    });
-  }, []);
-
-  useEffect(() => {
     if (!toast) {
       return;
     }
@@ -609,7 +604,7 @@ export default function App() {
 
     const intervalMs = Math.max(settings.autoRefreshIntervalMinutes, 1) * 60 * 1000;
     const timer = window.setInterval(() => {
-      if (autoRefreshRunningRef.current || bulkRefreshing) {
+      if (anyJobRunning) {
         return;
       }
 
@@ -618,14 +613,11 @@ export default function App() {
         return;
       }
 
-      autoRefreshRunningRef.current = true;
-      void refreshAccounts(accountIds, "定时刷新", { silent: true }).finally(() => {
-        autoRefreshRunningRef.current = false;
-      });
+      void refreshAccounts(accountIds, "定时刷新", { silent: true });
     }, intervalMs);
 
     return () => window.clearInterval(timer);
-  }, [accounts, bulkRefreshing, settings.autoRefreshEnabled, settings.autoRefreshIntervalMinutes]);
+  }, [accounts, anyJobRunning, settings.autoRefreshEnabled, settings.autoRefreshIntervalMinutes]);
 
   useEffect(() => {
     setTestMenuOpen(false);
@@ -649,7 +641,8 @@ export default function App() {
           onReloadAccounts={loadAccounts}
           onOpenSettings={() => setShowSettingsModal(true)}
           newMailCounts={newMailCounts}
-          refreshingAccountIds={refreshingAccountIds}
+          busyAccountIds={busyAccountIdSet}
+          refreshDisabled={singleRefreshBlocked}
           onRefreshAccount={refreshSingleAccount}
         />
 
@@ -695,21 +688,21 @@ export default function App() {
                   </div>
                 ) : null}
               </div>
-              <button className="toolbar-button" onClick={testFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkTesting} title="批量测试">
-                {bulkTesting ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
+              <button className="toolbar-button" onClick={testFilteredAccounts} disabled={filteredAccounts.length === 0 || anyJobRunning} title="批量测试">
+                {testRunning ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
                 批测
               </button>
-              {bulkTesting ? (
+              {testRunning ? (
                 <button className="toolbar-button" onClick={cancelBulkTest} title="取消批量测试">
                   <X size={15} />
                   停测
                 </button>
               ) : null}
-              <button className="toolbar-button" onClick={refreshFilteredAccounts} disabled={filteredAccounts.length === 0 || bulkRefreshing} title="刷新邮件">
-                {bulkRefreshing ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+              <button className="toolbar-button" onClick={refreshFilteredAccounts} disabled={filteredAccounts.length === 0 || anyJobRunning} title="刷新邮件">
+                {manualRefreshRunning ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
                 刷新
               </button>
-              {bulkRefreshing ? (
+              {manualRefreshRunning ? (
                 <button className="toolbar-button" onClick={cancelBulkRefresh} title="取消批量刷新">
                   <X size={15} />
                   停刷
@@ -732,11 +725,11 @@ export default function App() {
               {displayedError}
             </div>
           ) : null}
-          {bulkProgress ? (
+          {progressText ? (
             <div className="progress-line">
-              <span>{bulkProgress}</span>
-              {lastRefreshResults.some((item) => !item.ok && !item.canceled) ? (
-                <button type="button" onClick={retryFailedRefresh} disabled={bulkRefreshing}>
+              <span>{progressText}</span>
+              {canRetryFailedRefresh ? (
+                <button type="button" onClick={retryFailedRefresh} disabled={anyJobRunning}>
                   重试失败
                 </button>
               ) : null}

@@ -63,7 +63,7 @@ function sidebarProps(
     onReloadAccounts: vi.fn(),
     onOpenSettings: vi.fn(),
     newMailCounts: {},
-    refreshingAccountIds: new Set<string>(),
+    busyAccountIds: new Set<string>(),
     onRefreshAccount: vi.fn(),
     ...overrides
   };

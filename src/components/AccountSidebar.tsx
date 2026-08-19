@@ -22,7 +22,8 @@ export function AccountSidebar({
   onReloadAccounts,
   onOpenSettings,
   newMailCounts,
-  refreshingAccountIds,
+  busyAccountIds,
+  refreshDisabled = false,
   onRefreshAccount
 }: {
   accounts: AccountView[];
@@ -39,7 +40,8 @@ export function AccountSidebar({
   onReloadAccounts: () => void;
   onOpenSettings: () => void;
   newMailCounts?: Record<string, number>;
-  refreshingAccountIds?: Set<string>;
+  busyAccountIds?: ReadonlySet<string>;
+  refreshDisabled?: boolean;
   onRefreshAccount: (accountId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -178,7 +180,7 @@ export function AccountSidebar({
                 const meta = statusMeta(account);
                 const StatusIcon = meta.icon;
                 const newCount = newMailCounts?.[account.id] || 0;
-                const isRefreshing = refreshingAccountIds?.has(account.id) || false;
+                const isRefreshing = busyAccountIds?.has(account.id) || false;
                 const accountIndex = virtualWindow.startIndex + visibleIndex;
 
                 return (
@@ -213,7 +215,7 @@ export function AccountSidebar({
                           event.stopPropagation();
                           onRefreshAccount(account.id);
                         }}
-                        disabled={isRefreshing}
+                        disabled={refreshDisabled || isRefreshing}
                       >
                         {isRefreshing ? <Loader2 size={12} className="spin" /> : <StatusIcon size={12} />}
                       </button>
