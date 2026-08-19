@@ -20,6 +20,10 @@ Graph、IMAP 或 Hotmail fallback 的协议实现。适配器只负责远端协�
 
 某个邮箱传输的增量或分页位置。IMAP 使用消息 UID，Graph 使用分页偏移或 delta link；只有非搜索、非翻页的主邮箱读取才可更新持久化刷新状态。
 
+## Mailbox Session
+
+Renderer 中当前选中账号的一次邮件浏览会话。它拥有搜索条件、邮件列表、Mailbox Cursor、选中邮件、正文详情和异步请求 generation；视图只发送用户命令并消费状态投影。
+
 ## Invariants
 
 - IPC 负责输入验证、Job 调度和进度事件；Mailbox Access 负责邮箱业务策略。
@@ -27,3 +31,4 @@ Graph、IMAP 或 Hotmail fallback 的协议实现。适配器只负责远端协�
 - 成功刷新必须先写邮件缓存，再提交账号成功状态。
 - 取消和凭据 generation 检查必须发生在每个持久化写入前。
 - 搜索、分页、节流、解析失败、内容超限和缓存写入失败不得误触发 fallback。
+- Mailbox Session 只接受当前账号、搜索条件和请求 generation 对应的异步结果；陈旧成功、失败和完成事件都不得修改当前视图。

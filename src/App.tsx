@@ -16,19 +16,16 @@ import { MailReader } from "./components/MailReader";
 import { MessageList } from "./components/MessageList";
 import { SettingsModal } from "./components/SettingsModal";
 import { getDesktopApi } from "./desktop-api";
-import { resolveVisibleMailCursor } from "./mail-pagination";
 import type {
   AccountUpdateInput,
   AccountView,
   AppSettings,
-  MailListResult,
-  MailMessageDetail,
-  MailMessageSummary,
   RefreshManyResult
 } from "./types";
 import { formatRelativeTime } from "./ui-utils";
 import { errorMessage } from "./app-error";
 import { shouldDisplayBulkRefreshProgress } from "./job-progress";
+import { useMailboxSession } from "./use-mailbox-session";
 
 const defaultSettings: AppSettings = {
   cacheMessages: true,
@@ -138,22 +135,14 @@ function EditAccountModal({
 }
 export default function App() {
   const [accounts, setAccounts] = useState<AccountView[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<MailMessageSummary[]>([]);
-  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
-  const [messageDetail, setMessageDetail] = useState<MailMessageDetail | null>(null);
   const [accountQuery, setAccountQuery] = useState("");
   const [mailQuery, setMailQuery] = useState("");
-  const [activeMailQuery, setActiveMailQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "valid" | "invalid" | "untested">("all");
   const [showImportModal, setShowImportModal] = useState(false);
   const [editingAccount, setEditingAccount] = useState<AccountView | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [loadingAccounts, setLoadingAccounts] = useState(true);
-  const [loadingMessages, setLoadingMessages] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadingDetail, setLoadingDetail] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [fallbackTestingId, setFallbackTestingId] = useState<string | null>(null);
   const [testMenuOpen, setTestMenuOpen] = useState(false);
@@ -162,14 +151,24 @@ export default function App() {
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<Set<string>>(new Set());
   const [bulkProgress, setBulkProgress] = useState("");
   const [lastRefreshResults, setLastRefreshResults] = useState<RefreshManyResult[]>([]);
-  const [mailCursor, setMailCursor] = useState<string | null>(null);
   const [newMailCounts, setNewMailCounts] = useState<Record<string, number>>({});
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
-  const messagesRequestRef = useRef(0);
-  const detailRequestRef = useRef(0);
   const autoRefreshRunningRef = useRef(false);
   const silentRefreshRef = useRef(false);
+  const mailbox = useMailboxSession(getDesktopApi()?.mail ?? null);
+  const {
+    accountId: selectedAccountId,
+    cursor: mailCursor,
+    error: mailboxError,
+    loadingDetail,
+    loadingMessages,
+    loadingMore,
+    messageDetail,
+    messages,
+    selectedMessageId
+  } = mailbox.state;
+  const displayedError = error || mailboxError;
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
@@ -179,16 +178,6 @@ export default function App() {
   const selectedMessage = useMemo(
     () => messages.find((message) => message.id === selectedMessageId) || null,
     [messages, selectedMessageId]
-  );
-
-  const visibleMailCursor = useMemo(
-    () =>
-      resolveVisibleMailCursor({
-        cursor: mailCursor,
-        displayedCount: messages.length,
-        totalCount: selectedAccount?.lastInboxCount
-      }),
-    [mailCursor, messages.length, selectedAccount?.lastInboxCount]
   );
 
   const filteredAccounts = useMemo(() => {
@@ -210,6 +199,16 @@ export default function App() {
     });
   }, [accounts, accountQuery, statusFilter]);
 
+  function applyAccounts(nextAccounts: AccountView[]) {
+    setAccounts(nextAccounts);
+    mailbox.reconcileAccounts(nextAccounts);
+  }
+
+  function clearErrors() {
+    setError("");
+    mailbox.clearError();
+  }
+
   async function loadAccounts() {
     const api = getDesktopApi();
 
@@ -220,15 +219,10 @@ export default function App() {
     }
 
     setLoadingAccounts(true);
-    setError("");
+    clearErrors();
 
     try {
-      const nextAccounts = await api.accounts.list();
-      setAccounts(nextAccounts);
-
-      if (!selectedAccountId && nextAccounts.length > 0) {
-        setSelectedAccountId(nextAccounts[0].id);
-      }
+      applyAccounts(await api.accounts.list());
     } catch (loadError) {
       setError(errorMessage(loadError));
     } finally {
@@ -249,144 +243,6 @@ export default function App() {
     }
   }
 
-  async function loadMessages(accountId: string, forceRefresh = false) {
-    const api = getDesktopApi();
-
-    if (!api) {
-      return;
-    }
-
-    const requestId = messagesRequestRef.current + 1;
-    messagesRequestRef.current = requestId;
-    detailRequestRef.current += 1;
-
-    setLoadingMessages(true);
-    setMessages([]);
-    setMailCursor(null);
-    setSelectedMessageId(null);
-    setMessageDetail(null);
-    setError("");
-
-    try {
-      const result: MailListResult = await api.mail.listMessages({
-        accountId,
-        top: 50,
-        search: activeMailQuery,
-        forceRefresh
-      });
-      if (messagesRequestRef.current !== requestId) {
-        return;
-      }
-      const totalCount = result.totalCount ?? accounts.find((account) => account.id === accountId)?.lastInboxCount;
-      setMessages(result.messages);
-      setMailCursor(
-        resolveVisibleMailCursor({
-          cursor: result.nextCursor,
-          displayedCount: result.messages.length,
-          totalCount
-        })
-      );
-      setSelectedMessageId(result.messages[0]?.id || null);
-    } catch (loadError) {
-      if (messagesRequestRef.current !== requestId) {
-        return;
-      }
-      setError(errorMessage(loadError));
-    } finally {
-      if (messagesRequestRef.current === requestId) {
-        setLoadingMessages(false);
-      }
-    }
-  }
-
-  async function loadMoreMessages() {
-    const api = getDesktopApi();
-    const totalCount = selectedAccount?.lastInboxCount;
-    const cursor = resolveVisibleMailCursor({
-      cursor: mailCursor,
-      displayedCount: messages.length,
-      totalCount
-    });
-    if (!api || !selectedAccountId || !cursor || loadingMore) {
-      if (mailCursor && !cursor) {
-        setMailCursor(null);
-      }
-      return;
-    }
-
-    setLoadingMore(true);
-    setError("");
-    const accountId = selectedAccountId;
-    const query = activeMailQuery;
-    const requestId = messagesRequestRef.current;
-
-    try {
-      const result = await api.mail.listMessages({
-        accountId,
-        top: 50,
-        search: query,
-        cursor
-      });
-      if (messagesRequestRef.current !== requestId) {
-        return;
-      }
-      const existingIds = new Set(messages.map((message) => message.id));
-      const newMessagesCount = result.messages.filter((message) => !existingIds.has(message.id)).length;
-      const nextDisplayedCount = messages.length + newMessagesCount;
-      const nextTotalCount = result.totalCount ?? totalCount;
-      setMessages((current) => {
-        const merged = new Map(current.map((message) => [message.id, message]));
-        for (const message of result.messages) {
-          merged.set(message.id, message);
-        }
-        return Array.from(merged.values());
-      });
-      setMailCursor(
-        resolveVisibleMailCursor({
-          cursor: result.messages.length === 0 ? null : result.nextCursor,
-          displayedCount: nextDisplayedCount,
-          totalCount: nextTotalCount
-        })
-      );
-    } catch (loadError) {
-      setError(errorMessage(loadError));
-    } finally {
-      setLoadingMore(false);
-    }
-  }
-
-  async function loadDetail(accountId: string, messageId: string) {
-    const api = getDesktopApi();
-
-    if (!api) {
-      return;
-    }
-
-    const requestId = detailRequestRef.current + 1;
-    detailRequestRef.current = requestId;
-
-    setLoadingDetail(true);
-    setMessageDetail(null);
-    setError("");
-
-    try {
-      const detail = await api.mail.getMessage({ accountId, messageId });
-      if (detailRequestRef.current !== requestId) {
-        return;
-      }
-      setMessageDetail(detail);
-    } catch (loadError) {
-      if (detailRequestRef.current !== requestId) {
-        return;
-      }
-      setError(errorMessage(loadError));
-    } finally {
-      if (detailRequestRef.current === requestId) {
-        setLoadingDetail(false);
-      }
-    }
-  }
-
   async function importFromFile() {
     const api = getDesktopApi();
 
@@ -395,7 +251,7 @@ export default function App() {
       return;
     }
 
-    setError("");
+    clearErrors();
 
     try {
       const result = await api.accounts.importFile();
@@ -404,12 +260,8 @@ export default function App() {
         return;
       }
 
-      setAccounts(result.accounts);
+      applyAccounts(result.accounts);
       setToast(`导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`);
-
-      if (!selectedAccountId && result.accounts.length > 0) {
-        setSelectedAccountId(result.accounts[0].id);
-      }
     } catch (importError) {
       setError(errorMessage(importError));
     }
@@ -425,7 +277,7 @@ export default function App() {
     }
 
     setTestingId(accountId);
-    setError("");
+    clearErrors();
 
     try {
       const result = await api.accounts.test(accountId);
@@ -454,7 +306,7 @@ export default function App() {
     }
 
     setFallbackTestingId(accountId);
-    setError("");
+    clearErrors();
 
     try {
       const result = await api.accounts.testFallback(accountId);
@@ -477,7 +329,7 @@ export default function App() {
     }
 
     setBulkTesting(true);
-    setError("");
+    clearErrors();
 
     try {
       const api = getDesktopApi();
@@ -521,7 +373,7 @@ export default function App() {
 
     setBulkRefreshing(true);
     silentRefreshRef.current = options.silent === true;
-    setError("");
+    clearErrors();
     setLastRefreshResults([]);
     if (!options.silent) {
       setBulkProgress(`刷新中 0/${accountIds.length} · 成功 0 · 失败 0`);
@@ -532,7 +384,7 @@ export default function App() {
       const okCount = results.filter((item) => item.ok).length;
       setLastRefreshResults(results);
       const nextAccounts = await api.accounts.list();
-      setAccounts(nextAccounts);
+      applyAccounts(nextAccounts);
       const changedCount = options.silent ? recordNewMailCounts(results) : 0;
 
       if (options.silent) {
@@ -542,9 +394,7 @@ export default function App() {
         setBulkProgress(`刷新完成 ${okCount}/${results.length}`);
       }
 
-      if (selectedAccountId) {
-        await loadMessages(selectedAccountId);
-      }
+      await mailbox.reloadIfCurrentAccount(accountIds);
     } catch (refreshError) {
       setError(errorMessage(refreshError));
     } finally {
@@ -565,25 +415,35 @@ export default function App() {
     }
 
     setRefreshingAccountIds((current) => new Set(current).add(accountId));
-    setError("");
+    clearErrors();
 
     try {
       const results = await api.accounts.refreshMany([accountId], "refreshSingle");
       const result = results[0];
       const nextAccounts = await api.accounts.list();
-      setAccounts(nextAccounts);
+      applyAccounts(nextAccounts);
 
       if (result?.ok) {
         setToast(`已刷新 ${nextAccounts.find((account) => account.id === accountId)?.email || "账号"}`);
-        if (selectedAccountId === accountId) {
-          await loadMessages(accountId);
-        }
+        await mailbox.reloadIfCurrentAccount([accountId]);
         return;
       }
 
-      setError(result?.error.message || "刷新账号失败");
+      const refreshMessage = result?.error.message || "刷新账号失败";
+      if (mailbox.isCurrentAccount(accountId)) {
+        setError(refreshMessage);
+      } else {
+        const email = nextAccounts.find((account) => account.id === accountId)?.email || "账号";
+        setToast(`${email} 刷新失败：${refreshMessage}`);
+      }
     } catch (refreshError) {
-      setError(errorMessage(refreshError));
+      const refreshMessage = errorMessage(refreshError);
+      if (mailbox.isCurrentAccount(accountId)) {
+        setError(refreshMessage);
+      } else {
+        const email = accounts.find((account) => account.id === accountId)?.email || "账号";
+        setToast(`${email} 刷新失败：${refreshMessage}`);
+      }
     } finally {
       setRefreshingAccountIds((current) => {
         const next = new Set(current);
@@ -635,7 +495,9 @@ export default function App() {
   }
 
   function selectAccount(accountId: string) {
-    setSelectedAccountId(accountId);
+    const account = accounts.find((item) => item.id === accountId);
+    clearErrors();
+    mailbox.selectAccount(accountId, account?.lastInboxCount ?? null);
     setNewMailCounts((current) => {
       if (!current[accountId]) {
         return current;
@@ -653,13 +515,23 @@ export default function App() {
   }
 
   function executeMailSearch() {
-    const nextQuery = mailQuery.trim();
-    if (nextQuery === activeMailQuery && selectedAccountId) {
-      loadMessages(selectedAccountId);
-      return;
-    }
+    clearErrors();
+    void mailbox.search(mailQuery);
+  }
 
-    setActiveMailQuery(nextQuery);
+  function refreshMailbox() {
+    clearErrors();
+    void mailbox.reload(true);
+  }
+
+  function selectMessage(messageId: string) {
+    clearErrors();
+    void mailbox.selectMessage(messageId);
+  }
+
+  function loadMoreMessages() {
+    clearErrors();
+    void mailbox.loadMore();
   }
 
   async function deleteSelectedAccount() {
@@ -683,8 +555,7 @@ export default function App() {
 
     try {
       const nextAccounts = await api.accounts.delete(selectedAccountId);
-      setAccounts(nextAccounts);
-      setSelectedAccountId(nextAccounts[0]?.id || null);
+      applyAccounts(nextAccounts);
       setToast("账号已删除");
     } catch (deleteError) {
       setError(errorMessage(deleteError));
@@ -695,19 +566,6 @@ export default function App() {
     loadAccounts();
     loadSettings();
   }, []);
-
-  useEffect(() => {
-    messagesRequestRef.current += 1;
-    detailRequestRef.current += 1;
-
-    if (selectedAccountId) {
-      const timer = window.setTimeout(() => {
-        loadMessages(selectedAccountId);
-      }, 180);
-
-      return () => window.clearTimeout(timer);
-    }
-  }, [selectedAccountId, activeMailQuery]);
 
   useEffect(() => {
     const api = getDesktopApi();
@@ -734,12 +592,6 @@ export default function App() {
       setBulkProgress(`测试中 ${progress.completed}/${progress.total} · 可用 ${progress.ok} · 失效 ${progress.failed}`);
     });
   }, []);
-
-  useEffect(() => {
-    if (selectedAccountId && selectedMessageId) {
-      loadDetail(selectedAccountId, selectedMessageId);
-    }
-  }, [selectedAccountId, selectedMessageId]);
 
   useEffect(() => {
     if (!toast) {
@@ -874,10 +726,10 @@ export default function App() {
             </div>
           </header>
 
-          {error ? (
+          {displayedError ? (
             <div className="error-banner">
               <AlertCircle size={16} />
-              {error}
+              {displayedError}
             </div>
           ) : null}
           {bulkProgress ? (
@@ -897,13 +749,13 @@ export default function App() {
               selectedMessageId={selectedMessageId}
               loadingMessages={loadingMessages}
               loadingMore={loadingMore}
-              mailCursor={visibleMailCursor}
+              mailCursor={mailCursor}
               mailQuery={mailQuery}
               canRefresh={Boolean(selectedAccountId)}
               onMailQueryChange={setMailQuery}
               onExecuteSearch={executeMailSearch}
-              onRefresh={() => selectedAccountId && loadMessages(selectedAccountId, true)}
-              onSelectMessage={setSelectedMessageId}
+              onRefresh={refreshMailbox}
+              onSelectMessage={selectMessage}
               onLoadMore={loadMoreMessages}
             />
 
@@ -916,11 +768,8 @@ export default function App() {
         <ImportModal
           onClose={() => setShowImportModal(false)}
           onImported={(result) => {
-            setAccounts(result.accounts);
+            applyAccounts(result.accounts);
             setToast(`导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`);
-            if (!selectedAccountId && result.accounts.length > 0) {
-              setSelectedAccountId(result.accounts[0].id);
-            }
           }}
         />
       ) : null}

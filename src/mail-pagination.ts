@@ -11,7 +11,7 @@ export function resolveVisibleMailCursor({
     return null;
   }
 
-  if (totalCount && totalCount > 0 && displayedCount >= totalCount) {
+  if (totalCount != null && displayedCount >= totalCount) {
     return null;
   }
 

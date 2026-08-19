@@ -9,4 +9,8 @@ describe("resolveVisibleMailCursor", () => {
   it("hides a cursor after all known messages are displayed", () => {
     expect(resolveVisibleMailCursor({ cursor: "100", displayedCount: 100, totalCount: 100 })).toBeNull();
   });
+
+  it("hides a cursor when an empty mailbox reports a zero total", () => {
+    expect(resolveVisibleMailCursor({ cursor: "next", displayedCount: 0, totalCount: 0 })).toBeNull();
+  });
 });

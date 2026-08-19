@@ -16,7 +16,7 @@ export function MessageList({
   onSelectMessage,
   onLoadMore
 }: {
-  messages: MailMessageSummary[];
+  messages: readonly MailMessageSummary[];
   selectedMessageId: string | null;
   loadingMessages: boolean;
   loadingMore: boolean;
