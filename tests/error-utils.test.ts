@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatErrorForLog, normalizeError, toIpcErrorPayload } from "../electron/main/error-utils.js";
 import { MailContentTooLargeError, MailParseFailedError } from "../electron/main/mail-errors.js";
 import { APP_ERROR_MESSAGE_MAX_CHARS } from "../electron/shared/ipc-contracts.js";
-import { GraphResponseTooLargeError } from "../electron/main/graph-errors.js";
+import { GraphResponseInvalidError, GraphResponseTooLargeError } from "../electron/main/graph-errors.js";
 
 describe("proxy credential redaction", () => {
   it("redacts HTTP proxy passwords from renderer-visible errors", () => {
@@ -101,6 +101,13 @@ describe("proxy credential redaction", () => {
     expect(normalizeError(new MailParseFailedError(new Error("Max allowed child nodes exceeded")))).toMatchObject({
       code: "MAIL_PARSE_FAILED",
       message: expect.stringContaining("Max allowed child nodes exceeded")
+    });
+  });
+
+  it("classifies invalid Graph schemas as non-retryable parser failures", () => {
+    expect(toIpcErrorPayload(new GraphResponseInvalidError("Graph 邮件列表响应格式无效"))).toMatchObject({
+      code: "MAIL_PARSE_FAILED",
+      retryable: false
     });
   });
 

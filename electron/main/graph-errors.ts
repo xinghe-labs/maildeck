@@ -30,3 +30,15 @@ export class GraphResponseTooLargeError extends Error {
 export function isGraphResponseTooLargeError(error: unknown): error is GraphResponseTooLargeError {
   return error instanceof GraphResponseTooLargeError;
 }
+
+export class GraphResponseInvalidError extends Error {
+  override readonly name = "GraphResponseInvalidError";
+
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export function isGraphResponseInvalidError(error: unknown): error is GraphResponseInvalidError {
+  return error instanceof GraphResponseInvalidError;
+}

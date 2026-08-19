@@ -18,6 +18,11 @@ import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js
 
 export const SETTINGS_FILE_MAX_BYTES = 1024 * 1024;
 
+export interface RuntimeSettingsSnapshot {
+  readonly settings: RuntimeAppSettings;
+  readonly proxyGeneration: number;
+}
+
 const settingsCrypto: SettingsCrypto = {
   encrypt: encryptSecret,
   decrypt: decryptSecret
@@ -124,6 +129,14 @@ async function readAndPersistMigration() {
 
 export async function getSettings(): Promise<RuntimeAppSettings> {
   return withSettingsLock(async () => projectRuntimeSettings(await readAndPersistMigration(), settingsCrypto));
+}
+
+export async function getSettingsSnapshot(): Promise<RuntimeSettingsSnapshot> {
+  return withSettingsLock(async () => {
+    const settings = projectRuntimeSettings(await readAndPersistMigration(), settingsCrypto);
+    const proxyGeneration = credentialGenerations.capture("settings-snapshot").proxyGeneration;
+    return { settings, proxyGeneration };
+  });
 }
 
 export async function getPublicSettings(): Promise<AppSettings> {

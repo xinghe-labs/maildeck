@@ -39,6 +39,11 @@ interface AccessTokenManagerDependencies {
   now?: () => number;
 }
 
+export interface AccessTokenRequestContext {
+  readonly snapshot: CredentialSnapshot;
+  readonly proxyUrl: string;
+}
+
 interface CachedToken {
   readonly snapshot: CredentialSnapshot;
   readonly value: ManagedAccessToken;
@@ -77,7 +82,21 @@ export class AccessTokenManager {
     });
   }
 
-  async getAccessToken(accountId: string, forceRefresh = false, signal?: AbortSignal): Promise<ManagedAccessToken> {
+  async getAccessToken(
+    accountId: string,
+    forceRefresh = false,
+    signal?: AbortSignal,
+    context?: AccessTokenRequestContext
+  ): Promise<ManagedAccessToken> {
+    if (context) {
+      if (context.snapshot.accountId !== accountId) {
+        throw new CredentialsChangedError();
+      }
+      signal?.throwIfAborted();
+      this.dependencies.generations.assertCurrent(context.snapshot);
+      return this.getForCurrentGeneration(accountId, forceRefresh, signal, context);
+    }
+
     for (let attempt = 0; ; attempt += 1) {
       try {
         signal?.throwIfAborted();
@@ -93,9 +112,10 @@ export class AccessTokenManager {
   private getForCurrentGeneration(
     accountId: string,
     forceRefresh: boolean,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    context?: AccessTokenRequestContext
   ): Promise<ManagedAccessToken> {
-    const snapshot = this.dependencies.generations.capture(accountId);
+    const snapshot = context?.snapshot ?? this.dependencies.generations.capture(accountId);
     const cached = this.cache.get(accountId);
     if (
       !forceRefresh &&
@@ -116,7 +136,7 @@ export class AccessTokenManager {
 
     const controller = new AbortController();
     let entry!: PendingToken;
-    const promise = this.refresh(accountId, snapshot, controller.signal).finally(() => {
+    const promise = this.refresh(accountId, snapshot, controller.signal, context?.proxyUrl).finally(() => {
       if (this.pending.get(accountId) === entry) {
         this.pending.delete(accountId);
       }
@@ -158,11 +178,12 @@ export class AccessTokenManager {
   private async refresh(
     accountId: string,
     snapshot: CredentialSnapshot,
-    signal: AbortSignal
+    signal: AbortSignal,
+    proxyUrlOverride?: string
   ): Promise<ManagedAccessToken> {
     const [credentials, proxyUrl] = await Promise.all([
       this.dependencies.loadCredentials(accountId),
-      this.dependencies.loadProxyUrl()
+      proxyUrlOverride === undefined ? this.dependencies.loadProxyUrl() : Promise.resolve(proxyUrlOverride)
     ]);
     signal.throwIfAborted();
     this.dependencies.generations.assertCurrent(snapshot);

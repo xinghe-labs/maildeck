@@ -23,6 +23,7 @@ const state = vi.hoisted(() => {
     graphGetMessage: vi.fn(),
     fallbackGetMessages: vi.fn(),
     fallbackGetMessage: vi.fn(),
+    getCachedMessages: vi.fn(),
     getCachedMessageDetail: vi.fn(),
     saveCachedMessages: vi.fn(),
     saveCachedMessageDetail: vi.fn(),
@@ -46,7 +47,7 @@ vi.mock("../electron/main/mail-cache.js", () => ({
   clearAllMailCache: vi.fn(),
   getCachedCursor: vi.fn(),
   getCachedMessageDetail: state.getCachedMessageDetail,
-  getCachedMessages: vi.fn(),
+  getCachedMessages: state.getCachedMessages,
   saveCachedMessageDetail: state.saveCachedMessageDetail,
   saveCachedMessages: state.saveCachedMessages
 }));
@@ -118,6 +119,16 @@ vi.mock("../electron/main/settings-store.js", () => ({
     cacheBodies: true,
     hotmailFallbackEnabled: true
   })),
+  getSettingsSnapshot: vi.fn(async () => ({
+    settings: {
+      proxyUrl: "",
+      batchConcurrency: 2,
+      cacheMessages: 100,
+      cacheBodies: true,
+      hotmailFallbackEnabled: true
+    },
+    proxyGeneration: 0
+  })),
   updateSettings: vi.fn()
 }));
 
@@ -169,6 +180,7 @@ beforeEach(() => {
     cursor: null
   });
   state.imapGetMessage.mockResolvedValue(undefined);
+  state.getCachedMessages.mockResolvedValue([]);
   state.getCachedMessageDetail.mockResolvedValue(null);
   state.updateAccountStatus.mockImplementation(async (...args: unknown[]) => {
     state.resolveStatusWriteStarted?.();
@@ -179,6 +191,36 @@ beforeEach(() => {
 });
 
 describe("IPC refresh cancellation", () => {
+  it("returns a cached mailbox page without loading a token or starting network I/O", async () => {
+    const summary = {
+      id: "cached-1",
+      subject: "Cached",
+      from: null,
+      receivedDateTime: "2026-08-10T00:00:00.000Z",
+      sentDateTime: null,
+      isRead: false,
+      importance: "normal",
+      hasAttachments: false,
+      bodyPreview: "cached preview",
+      webLink: null
+    };
+    state.getCachedMessages.mockResolvedValue([summary]);
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailListMessages);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, {
+      accountId: "account-cache-hit"
+    })).resolves.toEqual({
+      ok: true,
+      value: { messages: [summary], nextCursor: null, totalCount: 1 }
+    });
+    expect(state.refreshAccessToken).not.toHaveBeenCalled();
+    expect(state.listMailFolders).not.toHaveBeenCalled();
+    expect(state.listImapFolders).not.toHaveBeenCalled();
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("aborts active token I/O without committing cache or account state", async () => {
     const { registerIpcHandlers } = await import("../electron/main/ipc.js");
     registerIpcHandlers();
@@ -199,7 +241,7 @@ describe("IPC refresh cancellation", () => {
       ok: true,
       value: [{ canceled: true, error: { code: "CANCELED", retryable: false } }]
     });
-    expect(requestSignal.aborted).toBe(true);
+    await vi.waitFor(() => expect(requestSignal.aborted).toBe(true));
     expect(state.saveCachedMessages).not.toHaveBeenCalled();
     expect(state.saveCachedMessageDetail).not.toHaveBeenCalled();
     expect(state.updateAccountRefreshState).not.toHaveBeenCalled();
@@ -496,6 +538,49 @@ describe("IPC refresh cancellation", () => {
     expect(state.fallbackGetMessages).not.toHaveBeenCalled();
   });
 
+  it("writes refreshed mail to cache before committing the successful account state", async () => {
+    const writes: string[] = [];
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "imap-order-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "IMAP.AccessAsUser.All",
+      authMode: "imap"
+    });
+    state.refreshImapInbox.mockResolvedValue({
+      messages: [{
+        id: "99",
+        subject: "Ordered write",
+        from: null,
+        receivedDateTime: "2026-08-10T00:00:00.000Z",
+        sentDateTime: null,
+        isRead: false,
+        importance: "normal",
+        hasAttachments: false,
+        bodyPreview: "",
+        webLink: null
+      }],
+      totalCount: 1,
+      inboxFolderId: "INBOX",
+      cursor: "99"
+    });
+    state.saveCachedMessages.mockImplementation(async () => {
+      writes.push("cache");
+    });
+    state.updateAccountRefreshState.mockImplementation(async () => {
+      writes.push("state");
+    });
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailRefreshMany);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, ["account-write-order"])).resolves.toMatchObject({
+      ok: true,
+      value: [{ accountId: "account-write-order", ok: true, count: 1 }]
+    });
+    expect(writes).toEqual(["cache", "state"]);
+  });
+
   it("keeps an account usable when a connection test hits a retryable network error", async () => {
     state.refreshAccessToken.mockRejectedValue(Object.assign(new Error("request failed"), { code: "ENOTFOUND" }));
     state.updateAccountStatus.mockResolvedValue({ id: "account-network", status: "untested" });
@@ -616,6 +701,154 @@ describe("IPC refresh cancellation", () => {
       error: { code: "THROTTLED", retryable: true }
     });
     expect(state.listMessages).toHaveBeenCalledTimes(1);
+    expect(state.listMailFolders).not.toHaveBeenCalled();
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not rediscover or fallback after an oversized Graph list response", async () => {
+    const { GraphResponseTooLargeError } = await import("../electron/main/graph-errors.js");
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "graph-oversized-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "Mail.Read",
+      authMode: "graph"
+    });
+    state.getAccountRecord.mockImplementation(async (id: string) => ({
+      id,
+      email: "account@example.com",
+      clientId: "client-id",
+      encryptedRefreshToken: "encrypted",
+      remark: "",
+      group: "",
+      status: "valid",
+      lastCheckedAt: null,
+      lastError: null,
+      lastRefreshedAt: null,
+      lastInboxCount: 2,
+      lastMailAt: null,
+      lastMailCursor: null,
+      inboxFolderId: "INBOX",
+      graphDeltaLink: null,
+      refreshCooldownUntil: null
+    }));
+    state.listMessages.mockRejectedValue(new GraphResponseTooLargeError(4 * 1024 * 1024));
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailListMessages);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, {
+      accountId: "account-oversized-list",
+      forceRefresh: true
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "MAIL_TOO_LARGE", retryable: false }
+    });
+    expect(state.listMessages).toHaveBeenCalledTimes(1);
+    expect(state.listMailFolders).not.toHaveBeenCalled();
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not retry or fallback after an oversized Graph delta response", async () => {
+    const { GraphResponseTooLargeError } = await import("../electron/main/graph-errors.js");
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "graph-oversized-refresh-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "Mail.Read",
+      authMode: "graph"
+    });
+    state.getAccountRecord.mockImplementation(async (id: string) => ({
+      id,
+      email: "account@example.com",
+      clientId: "client-id",
+      encryptedRefreshToken: "encrypted",
+      remark: "",
+      group: "",
+      status: "valid",
+      lastCheckedAt: null,
+      lastError: null,
+      lastRefreshedAt: null,
+      lastInboxCount: 2,
+      lastMailAt: null,
+      lastMailCursor: null,
+      inboxFolderId: "INBOX",
+      graphDeltaLink: "https://graph.microsoft.com/v1.0/delta",
+      refreshCooldownUntil: null
+    }));
+    state.deltaMessages.mockRejectedValue(new GraphResponseTooLargeError(4 * 1024 * 1024));
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailRefreshMany);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, ["account-oversized-refresh"])).resolves.toMatchObject({
+      ok: true,
+      value: [{
+        accountId: "account-oversized-refresh",
+        ok: false,
+        error: { code: "MAIL_TOO_LARGE", retryable: false }
+      }]
+    });
+    expect(state.deltaMessages).toHaveBeenCalledTimes(1);
+    expect(state.listMessages).not.toHaveBeenCalled();
+    expect(state.fallbackGetMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale Graph response before cache or account state is committed", async () => {
+    const { credentialGenerations } = await import("../electron/main/credential-generations.js");
+    state.refreshAccessToken.mockResolvedValue({
+      accessToken: "graph-stale-response-token",
+      refreshToken: null,
+      expiresIn: 3_600,
+      scope: "Mail.Read",
+      authMode: "graph"
+    });
+    state.getAccountRecord.mockImplementation(async (id: string) => ({
+      id,
+      email: "account@example.com",
+      clientId: "client-id",
+      encryptedRefreshToken: "encrypted",
+      remark: "",
+      group: "",
+      status: "valid",
+      lastCheckedAt: null,
+      lastError: null,
+      lastRefreshedAt: null,
+      lastInboxCount: 1,
+      lastMailAt: null,
+      lastMailCursor: null,
+      inboxFolderId: "INBOX",
+      graphDeltaLink: null,
+      refreshCooldownUntil: null
+    }));
+    state.listMessages.mockImplementation(async () => {
+      credentialGenerations.invalidateAccounts(["account-stale-response"]);
+      return [{
+        id: "stale-1",
+        subject: "Stale",
+        from: null,
+        receivedDateTime: null,
+        sentDateTime: null,
+        isRead: false,
+        importance: "normal",
+        hasAttachments: false,
+        bodyPreview: "",
+        webLink: null
+      }];
+    });
+    const { registerIpcHandlers } = await import("../electron/main/ipc.js");
+    registerIpcHandlers();
+    const handler = state.handlers.get(IPC_CHANNELS.mailListMessages);
+
+    await expect(handler!({ sender: { send: vi.fn() } }, {
+      accountId: "account-stale-response",
+      forceRefresh: true
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "STALE_CREDENTIALS", retryable: true }
+    });
+    expect(state.saveCachedMessages).not.toHaveBeenCalled();
+    expect(state.updateAccountRefreshState).not.toHaveBeenCalled();
     expect(state.listMailFolders).not.toHaveBeenCalled();
     expect(state.fallbackGetMessages).not.toHaveBeenCalled();
   });

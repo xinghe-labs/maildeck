@@ -7,7 +7,7 @@ import type {
 } from "./types.js";
 import { z } from "zod";
 import { proxiedFetchOptions } from "./proxy-agent.js";
-import { GraphRequestError, GraphResponseTooLargeError } from "./graph-errors.js";
+import { GraphRequestError, GraphResponseInvalidError, GraphResponseTooLargeError } from "./graph-errors.js";
 import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
 import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
@@ -141,7 +141,7 @@ function parseGraphResponse<T>(schema: z.ZodType<T>, payload: unknown, resource:
     .slice(0, 3)
     .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "response"}: ${issue.message}`)
     .join("; ");
-  throw new Error(`Graph ${resource}响应格式无效：${details}`);
+  throw new GraphResponseInvalidError(`Graph ${resource}响应格式无效：${details}`);
 }
 
 const tokenResponseSchema = z.object({

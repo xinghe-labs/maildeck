@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const ipcSource = readFileSync(new URL("../electron/main/ipc.ts", import.meta.url), "utf8");
+const mailboxAccessSource = readFileSync(new URL("../electron/main/mailbox-access.ts", import.meta.url), "utf8");
 const accountStoreSource = readFileSync(new URL("../electron/main/account-store.ts", import.meta.url), "utf8");
 const settingsStoreSource = readFileSync(new URL("../electron/main/settings-store.ts", import.meta.url), "utf8");
 const databaseSource = readFileSync(new URL("../electron/main/database.ts", import.meta.url), "utf8");
@@ -12,8 +13,9 @@ const databaseMigrationsSource = readFileSync(
 
 describe("credential lifecycle boundary", () => {
   it("keeps access tokens in the dedicated in-memory manager", () => {
-    expect(ipcSource).toContain("new AccessTokenManager(");
-    expect(ipcSource).not.toMatch(/const tokenCache|const tokenRefreshes|access-token-cache/u);
+    expect(mailboxAccessSource).toContain("new AccessTokenManager(");
+    expect(ipcSource).not.toContain("AccessTokenManager");
+    expect(mailboxAccessSource).not.toMatch(/const tokenCache|const tokenRefreshes|access-token-cache/u);
     expect(existsSync(new URL("../electron/main/access-token-cache.ts", import.meta.url))).toBe(false);
   });
 
@@ -27,7 +29,7 @@ describe("credential lifecycle boundary", () => {
     expect(accountStoreSource).toContain("credentialGenerations.invalidateAccounts(");
     expect(accountStoreSource).toContain("affectedAccountIds");
     expect(settingsStoreSource.match(/credentialGenerations\.invalidateProxy\(\)/gu)).toHaveLength(2);
-    expect(ipcSource.match(/afterCommit: \(\) => credentialGenerations\.invalidateAccounts\(\[accountId\]\)/gu)).toHaveLength(3);
+    expect(mailboxAccessSource.match(/afterCommit: \(\) => credentialGenerations\.invalidateAccounts\(\[accountId\]\)/gu)).toHaveLength(3);
   });
 
   it("migrates persisted access tokens out of the database", () => {

@@ -8,7 +8,11 @@ import {
   isIpcRequestValidationError
 } from "../shared/ipc-contracts.js";
 import { isCredentialsChangedError } from "./credential-generations.js";
-import { isGraphRequestError, isGraphResponseTooLargeError } from "./graph-errors.js";
+import {
+  isGraphRequestError,
+  isGraphResponseInvalidError,
+  isGraphResponseTooLargeError
+} from "./graph-errors.js";
 
 export interface NormalizedAppError {
   code: AppErrorCode;
@@ -80,6 +84,9 @@ export function normalizeError(error: unknown): NormalizedAppError {
   }
   if (isGraphResponseTooLargeError(error)) {
     return { code: "MAIL_TOO_LARGE", message };
+  }
+  if (isGraphResponseInvalidError(error)) {
+    return { code: "MAIL_PARSE_FAILED", message };
   }
   if (isMailParseFailedError(error)) {
     return { code: "MAIL_PARSE_FAILED", message };

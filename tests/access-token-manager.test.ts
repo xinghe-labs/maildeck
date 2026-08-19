@@ -169,6 +169,26 @@ describe("AccessTokenManager", () => {
     ]);
   });
 
+  it("uses an operation snapshot and its matching proxy without retrying stale work", async () => {
+    const harness = createHarness(async () => token("access-through-operation-proxy"));
+    const snapshot = harness.generations.capture("account-1");
+
+    await expect(harness.manager.getAccessToken("account-1", false, undefined, {
+      snapshot,
+      proxyUrl: "https://operation-proxy.example:8443"
+    })).resolves.toMatchObject({ accessToken: "access-through-operation-proxy" });
+    expect(harness.requests.map((request) => request.proxyUrl)).toEqual([
+      "https://operation-proxy.example:8443"
+    ]);
+
+    harness.generations.invalidateProxy();
+    await expect(harness.manager.getAccessToken("account-1", false, undefined, {
+      snapshot,
+      proxyUrl: "https://operation-proxy.example:8443"
+    })).rejects.toBeInstanceOf(CredentialsChangedError);
+    expect(harness.requests).toHaveLength(1);
+  });
+
   it("retries with current credentials when an obsolete request rejects", async () => {
     const firstRequest = deferred<AccessTokenResult>();
     const harness = createHarness(async (_clientId, refreshToken) => {
