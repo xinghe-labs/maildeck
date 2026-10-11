@@ -38,6 +38,22 @@ npm run dev
 
 该脚本优先复用 `node_modules\electron\dist` 中已安装并校验版本的 Electron，随后执行图标生成、生产构建、portable/NSIS 打包和发布启动烟测；仅在本地 Electron 缺失时才运行下载。`npm run dist:win` 仍可作为标准在线构建入口。
 
+当前 Windows 产物**未做 Authenticode 签名**，首次运行可能出现 SmartScreen 提示；签名需要单独配置生产证书。
+
+## 验证
+
+```powershell
+npm run verify
+```
+
+`verify` 依次执行三项门禁，与 CI（`.github/workflows/verify.yml`）完全一致：
+
+1. `npm run typecheck` —— 分别检查渲染进程、主进程和测试三套 tsconfig。测试代码也在类型检查范围内。
+2. `npm run lint` —— ESLint 扁平配置，启用类型感知规则，包括 `no-floating-promises` 和 `no-misused-promises`。
+3. `npm test` —— Vitest 全量用例。
+
+CI 还会运行 `npm audit --omit=dev`，确保随应用发布的依赖没有已知漏洞。
+
 ## 导入格式
 
 CSV：
@@ -53,6 +69,8 @@ user@hotmail.com,9e5f94bc-e8a4-4e73-b8be-63364c29d753,M.Cxxx,主号,A组
 user@hotmail.com----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组
 user@hotmail.com----password----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组
 ```
+
+四字段格式中的 `password` 只用于识别字段顺序（通过第二列是否为 UUID 判断 client_id 位置），**不会被读取或保存**。
 
 ## 注意
 

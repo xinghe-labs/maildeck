@@ -48,7 +48,7 @@
 
 账号数据保存在 Electron `userData` 目录下的 `outlook-manager.db` SQLite 文件中，使用 Node/Electron 内置 SQLite 能力，不要求用户安装独立数据库服务。
 
-`refreshToken` 使用 Electron `safeStorage` 加密；如果系统不支持，则保存时会打上非加密前缀，便于后续迁移和风险识别。
+`refreshToken` 使用 Electron `safeStorage` 加密；如果系统不支持加密能力，导入、编辑和代理密码保存都会被拒绝并提示，不会以明文落盘。历史遗留的 `plain:` 前缀记录仍可解密读取，便于迁移。
 
 设置数据保存在 Electron `userData` 目录下的 `settings.json`，包含邮件列表缓存、邮件正文缓存、代理地址和批量任务并发数。
 
