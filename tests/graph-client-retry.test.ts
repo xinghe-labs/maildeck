@@ -102,7 +102,7 @@ describe("Graph throttling", () => {
   });
 
   it("does not replay a token POST through the Graph GET retry policy", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({
       error: "temporarily_unavailable",
       error_description: "Slow down"
     }), {

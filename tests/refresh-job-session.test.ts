@@ -13,6 +13,10 @@ import type {
   TestProgressEvent
 } from "../src/types";
 
+// The production contract exposes read-only members; tests override individual
+// operations to simulate failing listener registration.
+type MutableAdapter = { -readonly [K in keyof RefreshJobAdapter]: RefreshJobAdapter[K] };
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -78,7 +82,7 @@ function createFakeAdapter() {
     kind: RefreshJobKind;
     deferred: ReturnType<typeof deferred<RefreshManyResult[]>>;
   }> = [];
-  const adapter: RefreshJobAdapter = {
+  const adapter: MutableAdapter = {
     testMany: vi.fn(() => {
       const run = deferred<TestManyResult[]>();
       testRuns.push(run);

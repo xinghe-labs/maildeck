@@ -7,28 +7,33 @@ const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8"
 
 describe("Electron runtime security", () => {
   it("denies Chromium permission checks, requests, and device permissions by default", () => {
-    let checkHandler: ((...args: unknown[]) => boolean) | null = null;
-    let requestHandler: ((...args: unknown[]) => void) | null = null;
-    let deviceHandler: ((...args: unknown[]) => boolean) | null = null;
+    // Handlers are captured on an object rather than in `let` bindings: the
+    // assignments happen inside nested callbacks, so control-flow analysis would
+    // keep narrowing a bare binding to its initial `null` value.
+    const captured: {
+      check: ((...args: unknown[]) => boolean) | null;
+      request: ((...args: unknown[]) => void) | null;
+      device: ((...args: unknown[]) => boolean) | null;
+    } = { check: null, request: null, device: null };
     const target = {
-      setPermissionCheckHandler: vi.fn((handler) => {
-        checkHandler = handler;
+      setPermissionCheckHandler: vi.fn((handler: (...args: unknown[]) => boolean) => {
+        captured.check = handler;
       }),
-      setPermissionRequestHandler: vi.fn((handler) => {
-        requestHandler = handler;
+      setPermissionRequestHandler: vi.fn((handler: (...args: unknown[]) => void) => {
+        captured.request = handler;
       }),
-      setDevicePermissionHandler: vi.fn((handler) => {
-        deviceHandler = handler;
+      setDevicePermissionHandler: vi.fn((handler: (...args: unknown[]) => boolean) => {
+        captured.device = handler;
       })
     };
 
-    configureSessionPermissions(target as never);
+    configureSessionPermissions(target);
 
-    expect(checkHandler?.()).toBe(false);
+    expect(captured.check?.()).toBe(false);
     const callback = vi.fn();
-    requestHandler?.(null, "geolocation", callback, {});
+    captured.request?.(null, "geolocation", callback, {});
     expect(callback).toHaveBeenCalledWith(false);
-    expect(deviceHandler?.()).toBe(false);
+    expect(captured.device?.()).toBe(false);
   });
 
   it("installs the deny-by-default policy before creating a window", () => {

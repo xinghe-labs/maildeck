@@ -1,15 +1,34 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const fakeImap = vi.hoisted(() => ({
-  fetchQueries: [] as Array<Record<string, unknown>>,
-  summaryFetchQueries: [] as Array<Record<string, unknown>>,
-  downloadParts: [] as Array<string | undefined>,
-  downloadOptions: [] as Array<Record<string, unknown>>,
+// The fixture is mutated between cases (null charset, alternate body structures),
+// so it is declared through an interface instead of inline type assertions.
+interface FakeImapState {
+  fetchQueries: Array<Record<string, unknown>>;
+  summaryFetchQueries: Array<Record<string, unknown>>;
+  downloadParts: Array<string | undefined>;
+  downloadOptions: Array<Record<string, unknown>>;
+  messageSize: number;
+  downloadedBody: Buffer;
+  downloadContentType: string;
+  downloadCharset: string | null;
+  partBodies: Map<string, Buffer>;
+  partContentTypes: Map<string, string>;
+  partCharsets: Map<string, string | null>;
+  summaryDate: Date;
+  bodyStructure: Record<string, unknown>;
+  source: Buffer;
+}
+
+const fakeImap = vi.hoisted((): FakeImapState => ({
+  fetchQueries: [],
+  summaryFetchQueries: [],
+  downloadParts: [],
+  downloadOptions: [],
   messageSize: 25 * 1024 * 1024,
   downloadedBody: Buffer.from("<p>large message body</p>", "utf8"),
   downloadContentType: "text/html",
-  downloadCharset: "utf-8" as string | null,
+  downloadCharset: "utf-8",
   partBodies: new Map<string, Buffer>(),
   partContentTypes: new Map<string, string>(),
   partCharsets: new Map<string, string | null>(),
@@ -20,7 +39,7 @@ const fakeImap = vi.hoisted(() => ({
       { part: "1", type: "text/plain", size: 64 },
       { part: "2", type: "text/html", size: 96 }
     ]
-  } as Record<string, unknown>,
+  },
   source: Buffer.from("Subject: Small\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nsmall body", "utf8")
 }));
 

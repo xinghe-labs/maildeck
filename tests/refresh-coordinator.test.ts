@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RefreshCoordinator } from "../electron/main/refresh-coordinator.js";
+import { abortReasonOf } from "../electron/main/error-utils.js";
 
 function deferred() {
   let resolve!: () => void;
@@ -145,16 +146,16 @@ describe("RefreshCoordinator", () => {
     const coordinator = new RefreshCoordinator();
     coordinator.setConcurrency(1);
     const operationStarted = deferred();
-    let receivedSignal: AbortSignal | null = null;
+    const received = { signal: null as AbortSignal | null };
 
     const running = coordinator.runJob("refresh", (job) =>
       job.runAccount(
         "account-1",
         async (signal) => {
-          receivedSignal = signal;
+          received.signal = signal;
           operationStarted.resolve();
           await new Promise<void>((_resolve, reject) => {
-            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+            signal.addEventListener("abort", () => reject(abortReasonOf(signal)), { once: true });
           });
           return "completed";
         },
@@ -165,7 +166,7 @@ describe("RefreshCoordinator", () => {
     await operationStarted.promise;
     expect(coordinator.cancel("refresh")).toBe(1);
     await expect(running).resolves.toBe("canceled");
-    expect(receivedSignal?.aborted).toBe(true);
+    expect(received.signal?.aborted).toBe(true);
 
     await expect(
       coordinator.runJob("test", (job) =>

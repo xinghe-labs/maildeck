@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC_CHANNELS, IPC_EVENT_CHANNELS } from "../electron/shared/ipc-contracts.js";
+import { abortReasonOf } from "../electron/main/error-utils.js";
 
 const state = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -148,7 +149,7 @@ beforeEach(() => {
     (_clientId: string, _refreshToken: string, _proxyUrl: string, signal: AbortSignal) => {
       state.resolveTokenStarted?.(signal);
       return new Promise((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        signal.addEventListener("abort", () => reject(abortReasonOf(signal)), { once: true });
       });
     }
   );

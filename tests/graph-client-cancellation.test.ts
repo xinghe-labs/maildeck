@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { listMailFolders, refreshAccessToken } from "../electron/main/graph-client.js";
 import { refreshHotmailFallbackToken } from "../electron/main/hotmail-fallback-client.js";
 import { JobCanceledError } from "../electron/main/job-errors.js";
+import { abortReasonOf } from "../electron/main/error-utils.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -16,7 +17,7 @@ function abortableFetch(started: ReturnType<typeof deferred<AbortSignal>>) {
     const signal = init?.signal as AbortSignal;
     started.resolve(signal);
     return new Promise<Response>((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      signal.addEventListener("abort", () => reject(abortReasonOf(signal)), { once: true });
     });
   });
 }

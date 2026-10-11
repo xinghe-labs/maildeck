@@ -62,7 +62,10 @@ describe("Hotmail fallback message loading", () => {
       status: "untested" as const,
       lastCheckedAt: null,
       lastError: null,
-      inboxFolderId: "INBOX"
+      inboxFolderId: "INBOX",
+      credentialGeneration: 0,
+      createdAt: "2026-08-19T00:00:00.000Z",
+      updatedAt: "2026-08-19T00:00:00.000Z"
     };
 
     const result = await fetchHotmailFallbackMessages(
@@ -108,7 +111,10 @@ describe("Hotmail fallback message loading", () => {
       status: "valid" as const,
       lastCheckedAt: null,
       lastError: null,
-      inboxFolderId: "INBOX"
+      inboxFolderId: "INBOX",
+      credentialGeneration: 0,
+      createdAt: "2026-08-19T00:00:00.000Z",
+      updatedAt: "2026-08-19T00:00:00.000Z"
     };
 
     const result = await fetchHotmailFallbackMessage(
@@ -163,7 +169,10 @@ describe("Hotmail fallback message loading", () => {
         status: "valid",
         lastCheckedAt: null,
         lastError: null,
-        inboxFolderId: "AAMkAGraphOpaqueFolderId"
+        inboxFolderId: "AAMkAGraphOpaqueFolderId",
+        credentialGeneration: 0,
+        createdAt: "2026-08-19T00:00:00.000Z",
+        updatedAt: "2026-08-19T00:00:00.000Z"
       },
       "refresh-token",
       "42"

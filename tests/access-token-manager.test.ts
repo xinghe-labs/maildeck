@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AccessTokenManager, type AccountCredentials } from "../electron/main/access-token-manager.js";
 import { CredentialGenerations, CredentialsChangedError } from "../electron/main/credential-generations.js";
 import { JobCanceledError } from "../electron/main/job-errors.js";
+import { abortReasonOf } from "../electron/main/error-utils.js";
 import type { AccessTokenResult } from "../electron/main/types.js";
 
 function deferred<T>() {
@@ -217,7 +218,7 @@ describe("AccessTokenManager", () => {
     const harness = createHarness(async (_clientId, _refreshToken, _proxyUrl, signal) => {
       requestStarted.resolve(signal);
       return new Promise<AccessTokenResult>((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        signal.addEventListener("abort", () => reject(abortReasonOf(signal)), { once: true });
       });
     });
     const controller = new AbortController();
@@ -237,7 +238,7 @@ describe("AccessTokenManager", () => {
     const harness = createHarness(async (_clientId, _refreshToken, _proxyUrl, signal) => {
       requestStarted.resolve(signal);
       return new Promise<AccessTokenResult>((resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        signal.addEventListener("abort", () => reject(abortReasonOf(signal)), { once: true });
         requested.promise.then(resolve, reject);
       });
     });
@@ -291,7 +292,7 @@ describe("AccessTokenManager", () => {
 
       firstRequestStarted.resolve(signal);
       return new Promise<AccessTokenResult>((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        signal.addEventListener("abort", () => reject(abortReasonOf(signal)), { once: true });
       });
     });
     const pending = harness.manager.getAccessToken("account-1");
@@ -321,8 +322,9 @@ describe("AccessTokenManager", () => {
   });
 
   it("bounds retries when credentials keep changing", async () => {
-    let harness!: Harness;
-    harness = createHarness(async () => {
+    // `harness` is read from inside its own initializer's callback, which is safe
+    // because the callback only runs once the harness exists.
+    const harness: Harness = createHarness(async () => {
       harness.generations.invalidateAccounts(["account-1"]);
       return token("never-current");
     });

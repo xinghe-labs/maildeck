@@ -12,6 +12,10 @@ import type {
   TestFallbackResult
 } from "../src/types";
 
+// The production contract exposes read-only members; tests override individual
+// operations to simulate late or failed responses.
+type MutableAdapter = { -readonly [K in keyof AccountCatalogAdapter]: AccountCatalogAdapter[K] };
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -63,7 +67,7 @@ function createFakeAdapter() {
   const importRuns: Array<ReturnType<typeof deferred<ImportResult>>> = [];
   const testRuns = new Map<string, ReturnType<typeof deferred<TestConnectionResult>>>();
   const fallbackRuns = new Map<string, ReturnType<typeof deferred<TestFallbackResult>>>();
-  const adapter: AccountCatalogAdapter = {
+  const adapter: MutableAdapter = {
     list: vi.fn(() => {
       const run = deferred<AccountView[]>();
       listRuns.push(run);
