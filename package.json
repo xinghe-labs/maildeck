@@ -24,10 +24,14 @@
     "verify:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release-startup.ps1",
     "typecheck:renderer": "tsc -p tsconfig.app.json --noEmit --pretty false",
     "typecheck:electron": "tsc -p electron/tsconfig.json --noEmit --pretty false",
-    "typecheck": "npm run typecheck:renderer && npm run typecheck:electron",
-    "lint": "npm run typecheck",
+    "typecheck:tests": "tsc -p tests/tsconfig.json --noEmit --pretty false",
+    "typecheck": "npm run typecheck:renderer && npm run typecheck:electron && npm run typecheck:tests",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm run lint && npm test",
+    "audit:prod": "npm audit --omit=dev --registry=https://registry.npmjs.org/"
   },
   "build": {
     "icon": "build/icon.ico",
@@ -52,14 +56,14 @@
     }
   },
   "dependencies": {
-    "@zone-eu/mailsplit": "5.4.15",
-    "dompurify": "3.4.13",
-    "imapflow": "1.4.7",
+    "@zone-eu/mailsplit": "5.4.20",
+    "dompurify": "3.4.16",
+    "imapflow": "1.7.8",
     "lucide-react": "^0.511.0",
-    "mailparser": "3.9.15",
+    "mailparser": "3.9.38",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "undici": "6.28.0",
+    "undici": "6.29.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -72,14 +76,19 @@
     "cross-env": "^7.0.3",
     "electron": "43.3.0",
     "electron-builder": "26.15.3",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^6.1.1",
+    "globals": "^16.5.0",
     "jsdom": "29.1.1",
     "typescript": "^5.8.3",
+    "typescript-eslint": "^8.71.1",
     "vite": "^6.3.5",
     "vitest": "^4.1.10",
     "wait-on": "^8.0.3"
   },
   "overrides": {
     "deepmerge-ts": "8.0.1",
-    "nanoid": "3.3.18"
+    "nanoid": "3.3.18",
+    "ip-address": "10.7.3"
   }
 }
