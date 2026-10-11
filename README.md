@@ -25,6 +25,13 @@
 
 需要 Node.js `22.12.0` 或更高版本。`npm install` 会显式下载并校验当前锁定的 Electron 二进制；网络受限环境可通过 Electron 支持的 `ELECTRON_MIRROR` 环境变量配置下载源。
 
+默认下载源是 GitHub releases。部分网络下该域名会被限速到十几 KB/s，导致 `npm install` 在 `electron:install` 阶段长时间无进展（缓存目录不增长）。此时改用镜像：
+
+```powershell
+$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+npm install
+```
+
 ```powershell
 npm install
 npm run dev

@@ -13,7 +13,7 @@ describe("Electron release target", () => {
       scripts?: Record<string, string>;
     };
 
-    expect(packageJson.devDependencies?.electron).toBe("43.3.0");
+    expect(packageJson.devDependencies?.electron).toBe("43.7.9");
     expect(packageJson.engines?.node).toBe(">=22.12.0");
     expect(packageJson.scripts?.["electron:install"]).toBe(
       "node node_modules/electron/install.js && node node_modules/electron/cli.js --version"
