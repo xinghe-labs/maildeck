@@ -1,0 +1,48 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # The app ships for Windows only. `tests/windows-packaging.test.ts` actually
+    # executes the PowerShell packaging script on this runner instead of skipping,
+    # so the release gates are covered rather than assumed.
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: npm
+
+      # `postinstall` downloads and verifies the pinned Electron binary.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check renderer, main process, and tests
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # Refresh tokens, mail bodies, and proxy credentials all flow through these
+      # dependencies, so a production advisory must not reach a release.
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev --registry=https://registry.npmjs.org/
