@@ -68,6 +68,15 @@ export function formatErrorForLog(error: unknown): string {
   return redactSensitiveText(output);
 }
 
+// `AbortSignal.reason` is typed `any` by the DOM lib, but every abort reason in
+// this process is a typed Error (`JobCanceledError`, `CredentialsChangedError`)
+// or the platform's DOMException. Rejecting with a non-Error would bypass the
+// typed cancellation classification in `normalizeError`, so normalize here.
+export function abortReasonOf(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new Error("Operation aborted");
+}
+
 export function normalizeError(error: unknown): NormalizedAppError {
   const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
   if (isIpcRequestValidationError(error)) {

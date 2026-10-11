@@ -13,7 +13,7 @@ import { reportIpcError } from "./error-utils.js";
 export function handleValidated<Output>(
   channel: IpcInvokeChannel,
   schema: z.ZodType<Output>,
-  handler: (event: IpcMainInvokeEvent, request: Output) => unknown | Promise<unknown>
+  handler: (event: IpcMainInvokeEvent, request: Output) => unknown
 ) {
   ipcMain.handle(channel, async (event, ...args): Promise<IpcResult<unknown>> => {
     try {

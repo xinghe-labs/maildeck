@@ -60,6 +60,11 @@ function transportError(): AppErrorPayload {
   return { code: "UNKNOWN", message: "主进程通信失败，请重试。", retryable: true };
 }
 
+// The renderer contract deliberately transports structured error payloads rather
+// than Error instances: `contextBridge` cannot pass class instances across the
+// sandbox boundary, and the renderer's `isAppError` guard validates the plain
+// envelope shape. Throwing an Error subclass here would break that contract.
+/* eslint-disable @typescript-eslint/only-throw-error */
 async function invoke<Output>(channel: IpcInvokeChannel, ...args: unknown[]): Promise<Output> {
   try {
     const result = (await ipcRenderer.invoke(channel, ...args)) as IpcResult<Output>;
@@ -77,6 +82,7 @@ async function invoke<Output>(channel: IpcInvokeChannel, ...args: unknown[]): Pr
     throw transportError();
   }
 }
+/* eslint-enable @typescript-eslint/only-throw-error */
 
 function onEvent<Payload>(channel: IpcEventChannel, callback: (payload: Payload) => void) {
   const listener = (_event: Electron.IpcRendererEvent, payload: Payload) => callback(payload);

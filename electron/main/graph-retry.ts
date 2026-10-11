@@ -1,3 +1,5 @@
+import { abortReasonOf } from "./error-utils.js";
+
 const RETRYABLE_GRAPH_STATUSES = new Set([429, 502, 503, 504]);
 const BASE_DELAY_MS = 500;
 const MAX_DELAY_MS = 30_000;
@@ -47,17 +49,23 @@ export function calculateGraphRetryDelay(input: GraphRetryInput): number | null 
 export function waitForGraphRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
 
+  if (!signal) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, delayMs);
+    });
+  }
+
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
     const onAbort = () => {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      reject(signal?.reason);
+      signal.removeEventListener("abort", onAbort);
+      reject(abortReasonOf(signal));
     };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
 
-    signal?.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }

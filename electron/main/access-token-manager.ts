@@ -1,4 +1,5 @@
 import type { AccessTokenResult } from "./types.js";
+import { abortReasonOf } from "./error-utils.js";
 import {
   type CredentialGenerations,
   type CredentialSnapshot,
@@ -135,6 +136,9 @@ export class AccessTokenManager {
     }
 
     const controller = new AbortController();
+    // `entry` must be declared before the promise closure can observe it, so it
+    // cannot be a `const` bound to its single assignment below.
+    // eslint-disable-next-line prefer-const -- closure captures `entry` before construction
     let entry!: PendingToken;
     const promise = this.refresh(accountId, snapshot, controller.signal, context?.proxyUrl).finally(() => {
       if (this.pending.get(accountId) === entry) {
@@ -165,11 +169,11 @@ export class AccessTokenManager {
       return promise;
     }
     if (signal.aborted) {
-      return Promise.reject(signal.reason);
+      return Promise.reject(abortReasonOf(signal));
     }
 
     return new Promise<T>((resolve, reject) => {
-      const onAbort = () => reject(signal.reason);
+      const onAbort = () => reject(abortReasonOf(signal));
       signal.addEventListener("abort", onAbort, { once: true });
       promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
     });

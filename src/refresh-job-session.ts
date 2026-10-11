@@ -356,7 +356,7 @@ class DefaultRefreshJobSession implements RefreshJobSession {
     if (operation.jobId) {
       this.retiredJobIds.add(operation.jobId);
       if (this.retiredJobIds.size > 256) {
-        const oldest = this.retiredJobIds.values().next().value as string | undefined;
+        const oldest = this.retiredJobIds.values().next().value;
         if (oldest) {
           this.retiredJobIds.delete(oldest);
         }

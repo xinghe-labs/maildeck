@@ -51,6 +51,9 @@ const tokenResponseSchema = z.object({
 type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
 function boundedTokenError(value: string) {
+  // Control characters are stripped on purpose: this text is logged and may be
+  // echoed back through the IPC error envelope.
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the intent
   const normalized = value.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();
   return normalized.slice(0, TOKEN_ERROR_MAX_CHARS) || "token refresh failed";
 }

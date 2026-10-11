@@ -492,7 +492,8 @@ export default function App() {
   }
 
   function refreshFilteredAccounts() {
-    refreshAccounts(
+    // Fire-and-forget: `refreshAccounts` reports its own failures through setError/setToast.
+    void refreshAccounts(
       filteredAccounts.map((account) => account.id),
       "已刷新"
     );
@@ -566,8 +567,9 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadAccounts(false);
-    loadSettings();
+    // Fire-and-forget: both loaders catch their own errors and surface them in the UI.
+    void loadAccounts(false);
+    void loadSettings();
   }, []);
 
   useEffect(() => {

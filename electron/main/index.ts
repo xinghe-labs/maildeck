@@ -70,14 +70,14 @@ function createWindow() {
   guardExternalNavigation(window, isDev ? new URL(process.env.VITE_DEV_SERVER_URL!).origin : null, isDev ? null : indexFilePath);
 
   if (isDev) {
-    window.loadURL(process.env.VITE_DEV_SERVER_URL!);
+    void window.loadURL(process.env.VITE_DEV_SERVER_URL!);
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    window.loadFile(indexFilePath);
+    void window.loadFile(indexFilePath);
   }
 }
 
-app.whenReady().then(() => {
+void app.whenReady().then(() => {
   configureSessionPermissions(session.defaultSession);
   try {
     getDatabase();

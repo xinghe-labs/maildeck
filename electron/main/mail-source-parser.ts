@@ -135,7 +135,7 @@ async function findCharsetRepairs(source: Buffer) {
       done();
     };
 
-    decoder.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    decoder.on("data", (chunk: Buffer) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     decoder.once("error", (error) => finish(error));
     decoder.once("end", () => {
       try {

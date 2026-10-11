@@ -98,6 +98,9 @@ function repairMojibake(value: string) {
 export function normalizeMailText(value: string | null | undefined) {
   const normalized = (typeof value === "string" ? value : "")
     .replace(/^\uFEFF/u, "")
+    // Mail bodies legitimately carry NUL bytes from broken senders; dropping them
+    // keeps them out of logs and the renderer.
+    // eslint-disable-next-line no-control-regex -- stripping NUL bytes is the intent
     .replace(/\u0000/gu, "")
     .normalize("NFC");
   return repairMojibake(normalized).normalize("NFC");

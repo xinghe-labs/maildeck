@@ -70,7 +70,7 @@ async function runLimited<T, R>(
   limit: number,
   handler: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  const results: R[] = new Array<R>(items.length);
   let cursor = 0;
 
   async function worker() {
