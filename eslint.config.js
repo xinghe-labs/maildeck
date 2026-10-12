@@ -62,8 +62,10 @@ export default tseslint.config(
   {
     files: ["src/**/*.{ts,tsx}"],
     plugins: { "react-hooks": reactHooks },
+    // eslint-plugin-react-hooks@6 的 flat `configs.recommended` 是数组（元素内含
+    // plugins + rules），直接展开 `.rules` 会得到 undefined，导致 hooks 规则实际未启用。
     rules: {
-      ...reactHooks.configs.recommended.rules,
+      ...reactHooks.configs.recommended.at(-1).rules,
       // Components are plain functions here; the compiler plugin's exhaustive
       // checks are covered by typecheck and are not part of this rule set.
       "react-hooks/react-compiler": "off"

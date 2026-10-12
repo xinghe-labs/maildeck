@@ -356,7 +356,8 @@ export const IPC_EVENT_SCHEMAS = {
 } as const;
 
 const accountInputSchema = z.strictObject({
-  email: z.email().trim().max(320),
+  // 先 trim 再验格式：Zod 4 按注册顺序校验，z.email().trim() 会拒绝带首尾空格的合法邮箱。
+  email: z.string().trim().max(320).pipe(z.email()),
   clientId: z.string().trim().min(1).max(256),
   refreshToken: z.string().trim().min(1).max(32_768),
   remark: shortOptionalTextSchema,
@@ -365,7 +366,7 @@ const accountInputSchema = z.strictObject({
 
 const accountUpdateInputSchema = z.strictObject({
   id: accountIdSchema,
-  email: z.email().trim().max(320),
+  email: z.string().trim().max(320).pipe(z.email()),
   clientId: z.string().trim().min(1).max(256),
   refreshToken: z.string().trim().max(32_768).optional(),
   remark: shortOptionalTextSchema,
@@ -444,7 +445,7 @@ export const IPC_REQUEST_SCHEMAS = {
         search: z.string().trim().max(SEARCH_MAX_CHARS).optional(),
         forceRefresh: z.boolean().optional(),
         cursor: z.string().trim().max(CURSOR_MAX_CHARS).optional(),
-        since: z.string().trim().max(64).nullable().optional()
+        since: z.iso.datetime({ offset: true }).nullable().optional()
       })
     ])
     .transform(([options]) => options),

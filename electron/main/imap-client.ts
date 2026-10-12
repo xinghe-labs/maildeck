@@ -299,7 +299,18 @@ export async function listImapMessages(
       const query = search.trim();
       const nextUid = client.mailbox && client.mailbox.uidNext ? client.mailbox.uidNext : exists + 1;
       const beforeUid = Math.max(Number(cursor) || nextUid, 1);
-      const matchedUids = query ? await client.search({ subject: query }, { uid: true }) : null;
+      // imapflow 在搜索命令被服务器拒绝（NO/BAD）时返回 false 而不是空数组；
+      // 此时必须报错，绝不能静默当作“无搜索/无结果”。
+      const matchedUids = query
+        ? await client.search({ subject: query }, { uid: true }).then(
+            (value) => {
+              if (!Array.isArray(value)) {
+                throw new Error("IMAP 搜索命令被服务器拒绝");
+              }
+              return value;
+            }
+          )
+        : null;
       const selectedUids = matchedUids
         ? matchedUids.filter((uid) => uid < beforeUid).slice(-limit)
         : [];
@@ -384,8 +395,12 @@ export async function listNewImapMessages(
       }
 
       const lastUid = Number(afterUid) || 0;
+      // 搜索被拒绝（false）时报错，不得静默当作“没有新邮件”。
       const matchedUids = await client.search({ uid: `${lastUid + 1}:*` }, { uid: true });
-      const selectedUids = (Array.isArray(matchedUids) ? matchedUids : []).slice(-Math.min(Math.max(top, 1), 100));
+      if (!Array.isArray(matchedUids)) {
+        throw new Error("IMAP 搜索命令被服务器拒绝");
+      }
+      const selectedUids = matchedUids.slice(-Math.min(Math.max(top, 1), 100));
 
       if (selectedUids.length === 0) {
         return { messages: [], totalCount: exists };
@@ -516,8 +531,13 @@ export async function refreshImapInbox(
 
       const limit = Math.min(Math.max(top, 1), 100);
       const uidRange = lastUid > 0 ? `${lastUid + 1}:*` : `${Math.max(1, uidNext - limit)}:*`;
+      // 搜索被拒绝（false）时必须报错；若当作空结果返回，调用方会把增量游标
+      // 推进到 uidNext-1，这批邮件之后永远不会被增量刷新报告。
       const matchedUids = await client.search({ uid: uidRange }, { uid: true });
-      const selectedUids = (Array.isArray(matchedUids) ? matchedUids : []).slice(-limit);
+      if (!Array.isArray(matchedUids)) {
+        throw new Error("IMAP 搜索命令被服务器拒绝");
+      }
+      const selectedUids = matchedUids.slice(-limit);
 
       if (selectedUids.length === 0) {
         return { messages: [], totalCount: exists, inboxFolderId, cursor: currentCursor };

@@ -176,10 +176,14 @@ export default function App() {
     () => new Set(busyAccountIds),
     [busyAccountIds]
   );
+  const [bulkTestAccountIds, setBulkTestAccountIds] = useState<ReadonlySet<string>>(new Set());
   const selectedAccountTesting = Boolean(
     selectedAccountId && (
       testingAccountIds.includes(selectedAccountId) ||
-      fallbackTestingAccountIds.includes(selectedAccountId)
+      fallbackTestingAccountIds.includes(selectedAccountId) ||
+      // 批量测试运行中，被测账号集合已在主进程排队；为守住“同一账号只能运行
+      // 一个连接测试”的不变量，禁止对这些账号再发起单账号测试。
+      (bulkTestAccountIds?.has(selectedAccountId) ?? false)
     )
   );
   const displayedError = error || mailboxError;
@@ -329,19 +333,24 @@ export default function App() {
       if (!desktopApi) {
         throw new Error("桌面接口不可用");
       }
+      const accountVersionsAtStart = accountCatalog.getAccountVersions();
+      setBulkTestAccountIds(new Set(accountIds));
       const execution = refreshJobs.runTest(accountIds);
       if (!execution) {
+        setBulkTestAccountIds(new Set());
         return;
       }
       clearErrors();
       const results = await execution;
+      setBulkTestAccountIds(new Set());
       if (!results) {
         return;
       }
       const validCount = results.filter((item) => item.ok).length;
-      accountCatalog.mergeTestResults(results);
+      accountCatalog.mergeTestResults(results, accountVersionsAtStart);
       setToast(`已测试 ${validCount}/${results.length} 个账号`);
     } catch (testError) {
+      setBulkTestAccountIds(new Set());
       setError(errorMessage(testError));
     }
   }
@@ -568,13 +577,18 @@ export default function App() {
 
   useEffect(() => {
     // Fire-and-forget: both loaders catch their own errors and surface them in the UI.
+    // 初始化只应执行一次，不随 session 门面函数身份变化重跑。
     void loadAccounts(false);
     void loadSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only initialization
   }, []);
 
   useEffect(() => {
+    // mailbox 状态对象是 useSyncExternalStore 的快照，reconcileAccounts 是稳定
+    // 门面方法；以 accounts 为触发源即可，随 mailbox 身份重跑反而会重复 reconcile。
     mailbox.reconcileAccounts(accounts);
-  }, [accounts, mailbox.reconcileAccounts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reconcile 由 accounts 变化驱动
+  }, [accounts]);
 
   useEffect(() => {
     if (!toast) {
@@ -605,6 +619,7 @@ export default function App() {
     }, intervalMs);
 
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 定时器只跟随设置变化重建；accounts/anyJobRunning 在回调内读取最新值
   }, [accounts, anyJobRunning, settings.autoRefreshEnabled, settings.autoRefreshIntervalMinutes]);
 
   useEffect(() => {

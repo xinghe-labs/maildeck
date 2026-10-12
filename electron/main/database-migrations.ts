@@ -365,7 +365,12 @@ export function applyDatabaseMigrations(
     database.exec("COMMIT");
     return currentVersion;
   } catch (error) {
-    database.exec("ROLLBACK");
+    // 同 transaction()：SQLite 自动回滚时再 ROLLBACK 会覆盖真实错误。
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // 事务已不存在。
+    }
     throw error;
   }
 }

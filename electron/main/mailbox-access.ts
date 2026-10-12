@@ -14,7 +14,7 @@ import {
   updateAccountRefreshState,
   updateAccountStatus
 } from "./account-store.js";
-import { deltaMessages, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
+import { deltaMessages, getWellKnownInboxFolder, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
 import { isGraphRequestError } from "./graph-errors.js";
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import {
@@ -112,11 +112,9 @@ function pickInboxFolder<T extends { id: string; displayName: string }>(folders:
     (folder) => typeof folder.id === "string" && folder.id.trim() && typeof folder.displayName === "string" && folder.displayName.trim()
   );
 
-  return (
-    validFolders.find((folder) => ["inbox", "收件箱"].includes(folder.displayName.toLowerCase())) ||
-    validFolders[0] ||
-    null
-  );
+  // 只按名称匹配（英语/中文常见写法），不再退化到 validFolders[0]：
+  // 取第一个文件夹会把任意文件夹当收件箱并持久化。
+  return validFolders.find((folder) => ["inbox", "收件箱"].includes(folder.displayName.toLowerCase())) || null;
 }
 
 function isCooldownActive(value?: string | null) {
@@ -350,7 +348,7 @@ class DefaultMailboxAccess implements MailboxAccess {
     const top = options.top || 50;
     const account = await getAccountRecord(options.accountId);
 
-    if (!options.forceRefresh && !options.cursor) {
+    if (!options.forceRefresh && !options.cursor && !options.skip) {
       const cached = await getCachedMessages(options.accountId, search, top, this.settings.cacheMessages);
       guard.assertCurrent();
       if (cached.length > 0) {
@@ -367,7 +365,7 @@ class DefaultMailboxAccess implements MailboxAccess {
       signal,
       guard.tokenContext()
     ).catch(async (error) => {
-      if (search || options.cursor) {
+      if (search || options.cursor || options.skip) {
         throw error;
       }
       guard.assertCurrent();
@@ -405,7 +403,7 @@ class DefaultMailboxAccess implements MailboxAccess {
           )
         };
       } catch (error) {
-        if (search || options.cursor) {
+        if (search || options.cursor || options.skip) {
           throw error;
         }
         guard.assertCurrent();
@@ -416,7 +414,7 @@ class DefaultMailboxAccess implements MailboxAccess {
 
       const messages = loaded.result.messages;
       const nextCursor = nextCursorFor(messages, loaded.result.totalCount);
-      if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
+      if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor, skip: options.skip })) {
         guard.assertCurrent();
         await saveCachedMessages(options.accountId, messages, this.settings.cacheMessages, nextCursor, {
           assertCurrent: guard.assertCurrent
@@ -491,7 +489,7 @@ class DefaultMailboxAccess implements MailboxAccess {
         return { messages: [], nextCursor: null, totalCount: 0 };
       }
     } catch (error) {
-      if (search || options.cursor) {
+      if (search || options.cursor || options.skip) {
         throw error;
       }
       guard.assertCurrent();
@@ -503,7 +501,7 @@ class DefaultMailboxAccess implements MailboxAccess {
     const totalCount = inbox.totalItemCount || messages.length;
     const loadedCount = skip + messages.length;
     const nextCursor = messages.length >= top && loadedCount < totalCount ? String(loadedCount) : null;
-    if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor })) {
+    if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor, skip: options.skip })) {
       guard.assertCurrent();
       await saveCachedMessages(options.accountId, messages, this.settings.cacheMessages, nextCursor, {
         assertCurrent: guard.assertCurrent
@@ -775,7 +773,9 @@ class DefaultMailboxAccess implements MailboxAccess {
       if (messages.length > 0) {
         guard.assertCurrent();
         const cacheStart = nowMs();
-        await saveCachedMessages(accountId, messages, this.settings.cacheMessages, null, {
+        // 增量刷新不产生分页游标；不传第 4 参以保留缓存中既有的列表游标，
+        // 避免缓存命中时“加载更多”按钮消失。
+        await saveCachedMessages(accountId, messages, this.settings.cacheMessages, undefined, {
           readBack: false,
           assertCurrent: guard.assertCurrent
         });
@@ -1005,11 +1005,26 @@ class DefaultMailboxAccess implements MailboxAccess {
   }
 
   private async discoverGraphInbox(accessToken: string, guard: MailboxOperationGuard) {
-    const inbox = pickInboxFolder(
-      await listMailFolders(accessToken, this.settings.proxyUrl, guard.requestSignal())
-    );
     guard.assertCurrent();
-    return inbox;
+    try {
+      // 优先用 Graph 已知名 /me/mailFolders/inbox 解析：displayName 随邮箱界面语言
+      // 本地化，字符串匹配不可靠；也不能退化为取第一个文件夹（那可能是任意文件夹）。
+      const inbox = await getWellKnownInboxFolder(accessToken, this.settings.proxyUrl, guard.requestSignal());
+      guard.assertCurrent();
+      return inbox;
+    } catch (error) {
+      guard.assertCurrent();
+      // 已知名解析失败（如旧版接口差异）时回退到文件夹列表匹配；仍找不到则报
+      // MAILBOX_NOT_FOUND，绝不再静默取第一个文件夹。
+      const fallback = pickInboxFolder(
+        await listMailFolders(accessToken, this.settings.proxyUrl, guard.requestSignal())
+      );
+      guard.assertCurrent();
+      if (fallback) {
+        return fallback;
+      }
+      throw error;
+    }
   }
 
   private async listGraphInboxMessages(

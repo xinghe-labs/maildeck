@@ -41,7 +41,8 @@ export interface AccountCatalogSession {
   readonly deleteAccount: (accountId: string) => Promise<AccountView[] | null>;
   readonly testConnection: (accountId: string) => Promise<TestConnectionResult | null> | null;
   readonly testFallback: (accountId: string) => Promise<TestFallbackResult | null> | null;
-  readonly mergeTestResults: (results: readonly TestManyResult[]) => void;
+  readonly mergeTestResults: (results: readonly TestManyResult[], accountVersions?: ReadonlyMap<string, number>) => void;
+  readonly getAccountVersions: () => ReadonlyMap<string, number>;
   readonly dispose: () => void;
 }
 
@@ -172,7 +173,7 @@ class DefaultAccountCatalogSession implements AccountCatalogSession {
   readonly testFallback = (accountId: string) =>
     this.startTest(accountId, "fallback", () => this.adapter.testFallback(accountId));
 
-  readonly mergeTestResults = (results: readonly TestManyResult[]) => {
+  readonly mergeTestResults = (results: readonly TestManyResult[], accountVersionsAtStart?: ReadonlyMap<string, number>) => {
     if (this.disposed) {
       return;
     }
@@ -180,6 +181,15 @@ class DefaultAccountCatalogSession implements AccountCatalogSession {
     for (const result of results) {
       if (!result.account) {
         continue;
+      }
+      // 批测运行期间账号可能已被编辑/重导入：只应用批测开始后版本未前进的账号快照，
+      // 避免迟到的批测结果把较新的编辑从 UI 上抹掉。
+      if (accountVersionsAtStart) {
+        const versionAtStart = accountVersionsAtStart.get(result.accountId) ?? 0;
+        const currentVersion = this.accountVersions.get(result.accountId) ?? 0;
+        if (currentVersion !== versionAtStart) {
+          continue;
+        }
       }
       this.incrementAccountVersion(result.account.id);
       updates.set(result.account.id, result.account);
@@ -230,7 +240,7 @@ class DefaultAccountCatalogSession implements AccountCatalogSession {
       this.publishPatch({ accounts });
       return accounts;
     } catch (error) {
-      if (this.disposed || this.activeLoadToken !== token) {
+      if (this.disposed || this.activeLoadToken !== token || this.projectionGeneration !== projectionGeneration) {
         return null;
       }
       throw error;
@@ -368,6 +378,8 @@ class DefaultAccountCatalogSession implements AccountCatalogSession {
     this.accountVersions.clear();
     this.publishPatch({ accounts: [...accounts] });
   }
+
+  readonly getAccountVersions = () => new Map(this.accountVersions);
 
   private replaceAccount(next: AccountView) {
     const accounts = this.state.accounts.map((account) => account.id === next.id ? next : account);

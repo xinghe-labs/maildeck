@@ -256,9 +256,11 @@ export function applySettingsUpdate(
 ): { file: SettingsFileV2; proxyChanged: boolean } {
   const current = normalizeV2File(file);
   const settings = normalizeStoredSettings({ ...current.settings, ...update });
-  const hasProxyUrl = Object.prototype.hasOwnProperty.call(update, "proxyUrl");
-  const hasProxyUsername = Object.prototype.hasOwnProperty.call(update, "proxyUsername");
-  const hasProxyPassword = Object.prototype.hasOwnProperty.call(update, "proxyPassword");
+  // Zod 4 与结构化克隆都会保留显式 undefined 键：仅当值为字符串（含空串=直连）时
+  // 才视为“修改代理”，避免渲染层 spread 表单时意外清空已配置的代理和密码。
+  const hasProxyUrl = typeof update.proxyUrl === "string";
+  const hasProxyUsername = typeof update.proxyUsername === "string";
+  const hasProxyPassword = typeof update.proxyPassword === "string" && update.proxyPassword.length > 0;
 
   let nextProxy = current.proxy ? { ...current.proxy } : null;
   if (hasProxyUrl) {

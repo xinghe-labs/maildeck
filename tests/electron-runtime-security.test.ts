@@ -44,6 +44,16 @@ describe("Electron runtime security", () => {
     expect(permissionIndex).toBeLessThan(windowIndex);
   });
 
+  it("takes the single-instance lock before initializing the database", () => {
+    expect(mainSource).toContain("app.requestSingleInstanceLock()");
+    const lockIndex = mainSource.indexOf("app.requestSingleInstanceLock()");
+    const readyIndex = mainSource.indexOf("app.whenReady()");
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(lockIndex).toBeLessThan(readyIndex);
+    // 第二个实例必须拒绝初始化数据库和窗口。
+    expect(mainSource).toContain("app.hasSingleInstanceLock()");
+  });
+
   it("never resumes after an uncaught main-process failure based on message text", () => {
     expect(mainSource).not.toContain("isRecoverableNetworkError");
     expect(mainSource).not.toContain("Suppressed recoverable");

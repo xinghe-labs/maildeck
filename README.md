@@ -81,6 +81,8 @@ user@hotmail.com----password----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx--
 
 ## 注意
 
+应用启动时持有单实例锁：重复启动第二个实例会自动退出并聚焦已有窗口，避免两个进程同时写入 SQLite 数据库导致数据损坏。使用 `OUTLOOK_MANAGER_USER_DATA_DIR` 指定不同数据目录的实例互不影响。
+
 账号需要具备可刷新 access token 的 `refresh_token`。
 
 - Graph token：需要 `Mail.Read` 或等价读取权限。

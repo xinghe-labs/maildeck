@@ -148,6 +148,17 @@ function looksLikeAccessToken(value: string) {
   return trimmed.startsWith("Ew") && trimmed.length > 80 && !trimmed.includes(".");
 }
 
+// 与 accountInputSchema 的字段上限保持一致（ipc-contracts.ts），防止导入路径
+// 绕过契约长度限制把超长字段写进数据库。
+const IMPORT_FIELD_LIMITS = {
+  clientId: 256,
+  refreshToken: 32_768,
+  remark: 1_000,
+  group: 200
+} as const;
+
+export const IMPORT_MAX_ROWS = 5_000;
+
 function validateImportInput(input: AccountInput, rowNumber: number) {
   const email = normalizeEmail(input.email);
   const clientId = input.clientId.trim();
@@ -180,6 +191,21 @@ function validateImportInput(input: AccountInput, rowNumber: number) {
     errors.push(`第 ${rowNumber} 行 refresh_token 看起来像 access_token，请导入 refresh_token`);
   } else if (!looksLikeRefreshToken(refreshToken)) {
     warnings.push(`第 ${rowNumber} 行 refresh_token 不像常见 Microsoft refresh token，请确认不是复制了密码或 access token`);
+  }
+
+  if (clientId.length > IMPORT_FIELD_LIMITS.clientId) {
+    errors.push(`第 ${rowNumber} 行 client_id 超过 ${IMPORT_FIELD_LIMITS.clientId} 字符`);
+  }
+  if (refreshToken.length > IMPORT_FIELD_LIMITS.refreshToken) {
+    errors.push(`第 ${rowNumber} 行 refresh_token 超过 ${IMPORT_FIELD_LIMITS.refreshToken} 字符`);
+  }
+  const remark = input.remark?.trim() || "";
+  if (remark.length > IMPORT_FIELD_LIMITS.remark) {
+    errors.push(`第 ${rowNumber} 行备注超过 ${IMPORT_FIELD_LIMITS.remark} 字符`);
+  }
+  const group = input.group?.trim() || "";
+  if (group.length > IMPORT_FIELD_LIMITS.group) {
+    errors.push(`第 ${rowNumber} 行分组超过 ${IMPORT_FIELD_LIMITS.group} 字符`);
   }
 
   return { email, clientId, refreshToken, errors, warnings };
@@ -528,6 +554,9 @@ export async function findAccountIdsByEmails(emails: Iterable<string>): Promise<
 
 export async function previewAccounts(inputs: AccountInput[]): Promise<ImportPreviewResult> {
   await migrateLegacyAccountsOnce();
+  if (inputs.length > IMPORT_MAX_ROWS) {
+    throw new Error(`单次导入不能超过 ${IMPORT_MAX_ROWS} 行`);
+  }
   const existingEmails = new Set(listAccountEmails().map((account) => account.email));
   const seenEmails = new Set<string>();
   const errors: string[] = [];
@@ -565,6 +594,9 @@ export async function previewAccounts(inputs: AccountInput[]): Promise<ImportPre
 
 export async function upsertAccounts(inputs: AccountInput[]) {
   await migrateLegacyAccountsOnce();
+  if (inputs.length > IMPORT_MAX_ROWS) {
+    throw new Error(`单次导入不能超过 ${IMPORT_MAX_ROWS} 行`);
+  }
   return withStoreLock(async () => {
     let imported = 0;
     let updated = 0;
@@ -599,6 +631,8 @@ export async function upsertAccounts(inputs: AccountInput[]) {
             group: input.group?.trim() || existing.group,
             status: "untested",
             lastError: null,
+            // 新凭据等于一次新尝试，旧失败留下的冷却不再适用。
+            refreshCooldownUntil: null,
             credentialGeneration: existing.credentialGeneration + 1,
             updatedAt: timestamp
           });
@@ -695,6 +729,8 @@ export async function updateAccount(input: AccountUpdateInput): Promise<AccountV
       group: input.group?.trim() || "",
       status: "untested",
       lastError: null,
+      // 新凭据等于一次新尝试，旧失败留下的冷却不再适用。
+      refreshCooldownUntil: null,
       credentialGeneration: account.credentialGeneration + 1,
       updatedAt: nowIso()
     };
@@ -783,10 +819,14 @@ export async function updateAccountRefreshState(
       lastRefreshedAt: refreshTimestamps.lastRefreshedAt,
       lastInboxCount: values.lastInboxCount,
       lastMailAt: values.lastMailAt,
-      lastMailCursor: values.lastMailCursor ?? account.lastMailCursor ?? null,
-      inboxFolderId: values.inboxFolderId ?? account.inboxFolderId ?? null,
-      graphDeltaLink: values.graphDeltaLink ?? account.graphDeltaLink ?? null,
-      refreshCooldownUntil: values.refreshCooldownUntil ?? account.refreshCooldownUntil ?? null,
+      // undefined = 保持原值；显式 null = 清空该字段（如成功后清除冷却、失效后清除 delta link）。
+      lastMailCursor: values.lastMailCursor === undefined ? account.lastMailCursor ?? null : values.lastMailCursor,
+      inboxFolderId: values.inboxFolderId === undefined ? account.inboxFolderId ?? null : values.inboxFolderId,
+      graphDeltaLink: values.graphDeltaLink === undefined ? account.graphDeltaLink ?? null : values.graphDeltaLink,
+      refreshCooldownUntil:
+        values.refreshCooldownUntil === undefined
+          ? account.refreshCooldownUntil ?? null
+          : values.refreshCooldownUntil,
       updatedAt: timestamp
     };
 
@@ -843,7 +883,11 @@ export async function updateAccountRefreshFailure(
       lastError: values.lastError,
       lastCheckedAt: refreshTimestamps.lastCheckedAt,
       lastRefreshedAt: refreshTimestamps.lastRefreshedAt,
-      refreshCooldownUntil: values.refreshCooldownUntil ?? account.refreshCooldownUntil ?? null,
+      // undefined = 保持原值；显式 null = 清空冷却（如测试成功后）。
+      refreshCooldownUntil:
+        values.refreshCooldownUntil === undefined
+          ? account.refreshCooldownUntil ?? null
+          : values.refreshCooldownUntil,
       updatedAt: timestamp
     };
 

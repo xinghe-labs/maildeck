@@ -13,12 +13,23 @@ export function isMailHtmlBody(contentType: string) {
   return token === "html" || token === "text/html";
 }
 
+function decodeCssEscapes(value: string) {
+  // CSS 转义形如 "\72"（后跟可选空白）或 "\000072"；先反转义再匹配，
+  // 避免 url\28 / u\72 l( 之类的写法绕过声明过滤。
+  return value.replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_match: string, hex: string) =>
+    String.fromCodePoint(parseInt(hex, 16))
+  ).replace(/\\(.)/g, "$1");
+}
+
 export function sanitizeMailStyle(value: string) {
   return value
     .split(";")
     .map((declaration) => declaration.trim())
     .filter(Boolean)
-    .filter((declaration) => !/(?:url\s*\(|@import|expression\s*\(|-moz-binding)/i.test(declaration))
+    .filter((declaration) => {
+      const decoded = decodeCssEscapes(declaration);
+      return !/(?:url\s*\(|@import|expression\s*\(|-moz-binding)/i.test(decoded);
+    })
     .join("; ");
 }
 

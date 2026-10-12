@@ -39,6 +39,8 @@ const graphErrorSchema = z.object({
 const graphFolderSchema = z.object({
   id: z.string().min(1),
   displayName: z.string(),
+  // /me/mailFolders/inbox 等已知名解析返回该字段（v1.0 可用）；列表接口不返回。
+  wellKnownName: z.string().nullable().optional(),
   totalItemCount: z.number().int().nonnegative().nullable().optional(),
   unreadItemCount: z.number().int().nonnegative().nullable().optional()
 });
@@ -75,7 +77,12 @@ type GraphMessage = z.infer<typeof graphMessageSchema>;
 const graphFolderListSchema = z.object({ value: z.array(graphFolderSchema) });
 const graphMessageListSchema = z.object({ value: z.array(graphMessageSchema) });
 const graphDeltaSchema = z.object({
-  value: z.array(graphMessageSchema),
+  value: z.array(
+    graphMessageSchema.extend({
+      // Graph delta 对被删除/移出文件夹的邮件返回墓碑条目，必须过滤而不是当消息入库。
+      "@removed": z.object({ reason: z.string() }).optional()
+    })
+  ),
   "@odata.nextLink": z.string().nullable().optional(),
   "@odata.deltaLink": z.string().nullable().optional()
 });
@@ -326,6 +333,26 @@ export async function refreshAccessToken(
   throw new Error(lastError || "Token 刷新失败");
 }
 
+export async function getWellKnownInboxFolder(accessToken: string, proxyUrl = "", signal?: AbortSignal): Promise<MailFolder | null> {
+  // 收件箱用已知名解析：displayName 随邮箱界面语言本地化，字符串匹配不可靠。
+  const payload = parseGraphResponse(
+    graphFolderSchema,
+    await graphFetch(
+      accessToken,
+      "/me/mailFolders/inbox?$select=id,displayName,totalItemCount,unreadItemCount",
+      proxyUrl,
+      signal
+    ),
+    "文件夹"
+  );
+  return {
+    id: payload.id,
+    displayName: payload.displayName,
+    totalItemCount: payload.totalItemCount || 0,
+    unreadItemCount: payload.unreadItemCount || 0
+  };
+}
+
 export async function listMailFolders(accessToken: string, proxyUrl = "", signal?: AbortSignal): Promise<MailFolder[]> {
   const payload = parseGraphResponse(
     graphFolderListSchema,
@@ -418,7 +445,11 @@ export async function deltaMessages(
       "邮件增量"
     );
 
-    messages.push(...(payload.value || []).map(mapMessageSummary));
+    messages.push(
+      ...(payload.value || [])
+        .filter((item) => !item["@removed"])
+        .map(mapMessageSummary)
+    );
     finalDeltaLink = payload["@odata.deltaLink"] || null;
     nextLink = payload["@odata.nextLink"] || null;
 

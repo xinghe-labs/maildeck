@@ -102,7 +102,13 @@ export function transaction<T>(operation: () => T): T {
     db.exec("COMMIT");
     return result;
   } catch (error) {
-    db.exec("ROLLBACK");
+    // SQLITE_FULL/IOERR/BUSY/NOMEM 时 SQLite 已自动回滚，再执行 ROLLBACK 会抛
+    // "no transaction is active" 并覆盖真实错误；吞掉回滚异常，保留原始原因。
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // 事务已不存在，无需处理。
+    }
     throw error;
   }
 }

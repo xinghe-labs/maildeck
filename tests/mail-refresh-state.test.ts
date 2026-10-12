@@ -23,4 +23,9 @@ describe("shouldCommitMailboxRefreshState", () => {
     expect(shouldCommitMailboxRefreshState({ search: "", cursor: "50" })).toBe(false);
     expect(shouldCommitMailboxRefreshState({ search: "invoice", cursor: null })).toBe(false);
   });
+
+  it("rejects skip-based page reads", () => {
+    expect(shouldCommitMailboxRefreshState({ search: "", cursor: null, skip: 50 })).toBe(false);
+    expect(shouldCommitMailboxRefreshState({ search: "", cursor: null, skip: 0 })).toBe(true);
+  });
 });

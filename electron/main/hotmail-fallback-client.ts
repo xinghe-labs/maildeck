@@ -13,12 +13,14 @@ const TOKEN_ENDPOINTS = [
   {
     name: "entra-consumers-delegated",
     url: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
-    scope: "offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read"
+    // 兑换出的 token 会直接交给 IMAP 适配器（XOAUTH2 要求 outlook.office.com 受众），
+    // 因此必须请求 IMAP 资源 scope，而不是 Graph scope。
+    scope: "offline_access https://outlook.office.com/IMAP.AccessAsUser.All"
   },
   {
     name: "entra-common-delegated",
     url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    scope: "offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read"
+    scope: "offline_access https://outlook.office.com/IMAP.AccessAsUser.All"
   }
 ] as const;
 
@@ -112,11 +114,18 @@ export async function refreshHotmailFallbackToken(
     const payload: TokenResponse = parsedPayload.success ? parsedPayload.data : {};
 
     if (response.ok && payload.access_token) {
+      // 校验返回 token 的 scope 受众：只接受 IMAP 受众，避免把 Graph 受众的 token
+      // 交给 IMAP XOAUTH2（必然认证失败，且会把有效凭据误标为 invalid）。
+      const scope = payload.scope || "";
+      if (scope && !scope.includes("https://outlook.office.com/") && !scope.includes("wl.imap")) {
+        errors.push(`${endpoint.name}: 返回了非 IMAP 受众的 token（scope: ${boundedTokenError(scope)}），跳过`);
+        continue;
+      }
       return {
         accessToken: payload.access_token,
         refreshToken: payload.refresh_token || null,
         expiresIn: payload.expires_in || null,
-        scope: payload.scope || "",
+        scope,
         authMode: "imap",
         endpoint: endpoint.name
       };

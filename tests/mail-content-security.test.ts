@@ -44,6 +44,10 @@ describe("sanitizeMailHtml", () => {
 describe("mail document policy", () => {
   it("removes CSS URL loads and embeds a restrictive document CSP", () => {
     expect(sanitizeMailStyle("font-weight: bold; background: url('https://tracker.example/a')")).toBe("font-weight: bold");
+    // CSS 反转义后仍必须被拦下（纵深防御）。
+    expect(sanitizeMailStyle("background: u\\72 l(https://tracker.example/x.png)")).toBe("");
+    expect(sanitizeMailStyle("background: \\75rl(https://tracker.example/x.png)")).toBe("");
+    expect(sanitizeMailStyle("color: red; -moz-binding: url(x)")).toBe("color: red");
     const documentHtml = buildMailHtmlDocument("<p>safe</p>");
     expect(documentHtml).toContain("default-src 'none'");
     expect(documentHtml).toContain("img-src data: cid:");

@@ -81,6 +81,10 @@ export const EMPTY_REFRESH_JOB_SESSION_STATE: RefreshJobSessionState = Object.fr
   canRetryFailedRefresh: false
 });
 
+function operationFingerprint(operation: ActiveOperation) {
+  return `${operation.kind}|${operation.total}|${[...operation.accountIds].sort().join(",")}`;
+}
+
 function normalizeAccountIds(accountIds: readonly string[]) {
   return [...new Set(accountIds.map((accountId) => accountId.trim()).filter(Boolean))];
 }
@@ -108,6 +112,9 @@ class DefaultRefreshJobSession implements RefreshJobSession {
   private readonly listeners = new Set<() => void>();
   private readonly operations = new Map<number, ActiveOperation>();
   private readonly retiredJobIds = new Set<string>();
+  // 退役时 jobId 仍为 null 的 operation 留下的指纹墓碑：同 kind/total/账号集合的
+  // 迟到事件不得绑定到之后启动的新 operation（防止旧 Job 事件污染新 Job 计数）。
+  private readonly retiredOperationFingerprints = new Set<string>();
   private nextToken = 1;
   private lastForegroundProgress: RefreshJobProgressProjection | null = null;
   private failedRefreshAccountIds: readonly string[] = EMPTY_STRINGS;
@@ -290,6 +297,11 @@ class DefaultRefreshJobSession implements RefreshJobSession {
     }
     if (operation.jobId === null) {
       const unassigned = candidates.filter((candidate) => candidate.jobId === null);
+      // 若该 operation 的指纹已被某个退役时未知 jobId 的旧 operation 登记，
+      // 说明这条事件属于旧 Job，不得绑定。
+      if (unassigned.length === 1 && this.retiredOperationFingerprints.has(operationFingerprint(operation))) {
+        return;
+      }
       if (unassigned.length !== 1) {
         return;
       }
@@ -359,6 +371,16 @@ class DefaultRefreshJobSession implements RefreshJobSession {
         const oldest = this.retiredJobIds.values().next().value;
         if (oldest) {
           this.retiredJobIds.delete(oldest);
+        }
+      }
+    } else {
+      // jobId 尚未绑定的 operation 也必须留下墓碑，否则它的迟到事件会被
+      // 之后同指纹的新 operation 误认领。
+      this.retiredOperationFingerprints.add(operationFingerprint(operation));
+      if (this.retiredOperationFingerprints.size > 256) {
+        const oldest = this.retiredOperationFingerprints.values().next().value;
+        if (oldest) {
+          this.retiredOperationFingerprints.delete(oldest);
         }
       }
     }

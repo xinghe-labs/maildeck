@@ -53,6 +53,7 @@ export function useAccountCatalogSession(api: OutlookManagerApi | null) {
     deleteAccount: session?.deleteAccount ?? (async () => null),
     testConnection: session?.testConnection ?? (() => null),
     testFallback: session?.testFallback ?? (() => null),
-    mergeTestResults: session?.mergeTestResults ?? (() => undefined)
+    mergeTestResults: session?.mergeTestResults ?? (() => undefined),
+    getAccountVersions: session?.getAccountVersions ?? (() => new Map())
   }), [session, state]);
 }

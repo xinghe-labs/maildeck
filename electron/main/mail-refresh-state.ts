@@ -24,6 +24,7 @@ export function countNewMessagesAfterRefresh(
   return messages.filter((message) => messageTimeMs(message) > refreshTime).length;
 }
 
-export function shouldCommitMailboxRefreshState(options: { search?: string; cursor?: string | null }) {
-  return !options.search?.trim() && !options.cursor;
+export function shouldCommitMailboxRefreshState(options: { search?: string; cursor?: string | null; skip?: number }) {
+  // skip 与 cursor 同属翻页读取，均不得提交持久化刷新状态。
+  return !options.search?.trim() && !options.cursor && !options.skip;
 }
