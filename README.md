@@ -1,6 +1,8 @@
 # Outlook Manager
 
-桌面版 Microsoft/Outlook 邮箱管理工具。当前 MVP 支持：
+桌面版 Microsoft/Outlook 邮箱管理工具，用于管理**自己拥有或获得授权**的多个邮箱账号（如个人多个备用邮箱、团队共享邮箱、企业租户内批量授权邮箱）。当前 MVP 支持：
+
+> **合规提示**：请仅导入你自己拥有或已获得书面授权的账号。批量导入、读取他人账号违反 Microsoft 服务条款，相关责任由使用者自行承担。
 
 - 导入邮箱账号：支持 CSV、`email----client_id----refresh_token`、`email----password----client_id----refresh_token`
 - 自动识别 Microsoft Graph / Outlook IMAP OAuth token
@@ -63,18 +65,15 @@ CI 还会运行 `npm audit --omit=dev`，确保随应用发布的依赖没有已
 
 ## 导入格式
 
-CSV：
+应用解析以下两种文本格式（字段以 `----` 分隔或 CSV 列），导入前会预检有效行、重复行、错误行、字段顺序和 token 类型：
 
 ```text
 email,client_id,refresh_token,remark,group
-user@hotmail.com,9e5f94bc-e8a4-4e73-b8be-63364c29d753,M.Cxxx,主号,A组
 ```
 
-分隔符格式：
-
 ```text
-user@hotmail.com----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组
-user@hotmail.com----password----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组
+email----client_id----refresh_token----remark----group
+email----password----client_id----refresh_token
 ```
 
 四字段格式中的 `password` 只用于识别字段顺序（通过第二列是否为 UUID 判断 client_id 位置），**不会被读取或保存**。
