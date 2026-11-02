@@ -1,0 +1,20 @@
+# Dependabot 配置：启用版本更新并按 minor/patch 分组，避免逐条 advisory 单开 PR 造成堆积。
+#
+# 背景：2026-11-02 前仓库未配置本文件，Dependabot security updates（仓库级开关）
+# 对每条 advisory 单独开 PR，曾在列表里积压 10 个 open PR。
+# 现在按 minor/patch 打包分组，并限制同时 open 的 PR 数量。
+#
+# 注意：分组只影响 Dependabot version updates；security updates 的 PR 由
+# 仓库 Settings → Code security 的 "Dependabot security updates" 开关控制。
+
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # minor/patch 打包成一个 PR，major 升级仍单独开（便于逐一评估破坏性）
+    groups:
+      patch-and-minor:
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 5
