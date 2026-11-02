@@ -1,5 +1,9 @@
 import { execFile } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
+
+// fs.realpathSync (JS impl) does NOT expand 8.3 short names on Windows;
+// only the libuv-backed native variant does.
+const realPath = (value: string) => realpathSync.native(value);
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -114,7 +118,7 @@ describe("offline-first Windows packaging", () => {
       // CI runners expose TEMP as a short 8.3 path (e.g. C:\Users\RUNNER~1\...) while
       // PowerShell's Get-Location reports the resolved long path; compare real paths.
       expect(state).toEqual({
-        location: realpathSync(fixture.callerDirectory),
+        location: realPath(fixture.callerDirectory),
         csc: "",
         failed: false
       });
@@ -128,7 +132,7 @@ describe("offline-first Windows packaging", () => {
       const { fixture, state } = await runPackagingFixture(7, "original-value");
 
       expect(state).toEqual({
-        location: realpathSync(fixture.callerDirectory),
+        location: realPath(fixture.callerDirectory),
         csc: "original-value",
         failed: true
       });
