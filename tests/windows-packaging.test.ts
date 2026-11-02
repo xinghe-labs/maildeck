@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -111,8 +111,10 @@ describe("offline-first Windows packaging", () => {
     async () => {
       const { fixture, state } = await runPackagingFixture(0, null);
 
+      // CI runners expose TEMP as a short 8.3 path (e.g. C:\Users\RUNNER~1\...) while
+      // PowerShell's Get-Location reports the resolved long path; compare real paths.
       expect(state).toEqual({
-        location: fixture.callerDirectory,
+        location: realpathSync(fixture.callerDirectory),
         csc: "",
         failed: false
       });
@@ -126,7 +128,7 @@ describe("offline-first Windows packaging", () => {
       const { fixture, state } = await runPackagingFixture(7, "original-value");
 
       expect(state).toEqual({
-        location: fixture.callerDirectory,
+        location: realpathSync(fixture.callerDirectory),
         csc: "original-value",
         failed: true
       });
