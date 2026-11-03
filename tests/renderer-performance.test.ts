@@ -45,6 +45,20 @@ describe("renderer performance invariants", () => {
     expect(messageRule).toContain("contain-intrinsic-size:");
   });
 
+  it("keeps sidebar/reader memo isolation by avoiding inline handler props in App", async () => {
+    const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+    // AccountSidebar 的 JSX 块内不允许内联箭头函数 props：新引用会破坏 memo，
+    // 使搜索框每次键入都重渲染整棵树。
+    const sidebarBlock = appSource.match(/<AccountSidebar\b([\s\S]*?)\/>/u)?.[1] || "";
+    expect(sidebarBlock).not.toMatch(/=\{\(\) =>/u);
+
+    for (const component of ["AccountSidebar", "MessageList", "MailReader"]) {
+      const source = await readFile(new URL(`../src/components/${component}.tsx`, import.meta.url), "utf8");
+      expect(source).toMatch(/memo\(function/u);
+    }
+  });
+
   it("lets the fixed Electron shell fit the actual content viewport", async () => {
     const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
     const bodyRule = css.match(/body\s*\{([^}]*)\}/u)?.[1] || "";

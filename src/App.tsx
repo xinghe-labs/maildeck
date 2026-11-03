@@ -8,7 +8,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AccountSidebar } from "./components/AccountSidebar";
 import { ImportModal } from "./components/ImportModal";
 import { MailReader } from "./components/MailReader";
@@ -149,11 +149,13 @@ export default function App() {
     accountId: selectedAccountId,
     cursor: mailCursor,
     error: mailboxError,
+    folders,
     loadingDetail,
     loadingMessages,
     loadingMore,
     messageDetail,
     messages,
+    selectedFolderId,
     selectedMessageId
   } = mailbox.state;
   const {
@@ -170,7 +172,9 @@ export default function App() {
     progressText,
     busyAccountIds,
     singleRefreshBlocked,
-    testRunning
+    testRunning,
+    progress,
+    backgroundProgressText
   } = refreshJobs.state;
   const busyAccountIdSet = useMemo(
     () => new Set(busyAccountIds),
@@ -192,7 +196,6 @@ export default function App() {
     () => accounts.find((account) => account.id === selectedAccountId) || null,
     [accounts, selectedAccountId]
   );
-
   const selectedMessage = useMemo(
     () => messages.find((message) => message.id === selectedMessageId) || null,
     [messages, selectedMessageId]
@@ -217,26 +220,29 @@ export default function App() {
     });
   }, [accounts, accountQuery, statusFilter]);
 
-  function clearErrors() {
+  const clearErrors = useCallback(() => {
     setError("");
     mailbox.clearError();
-  }
+  }, [mailbox]);
 
-  async function loadAccounts(forceReload = true) {
-    if (!desktopApi) {
-      setError("当前页面未运行在 Electron 桌面环境中，请使用 npm run dev 启动桌面应用。");
-      return;
-    }
-    clearErrors();
+  const loadAccounts = useCallback(
+    async (forceReload = true) => {
+      if (!desktopApi) {
+        setError("当前页面未运行在 Electron 桌面环境中，请使用 npm run dev 启动桌面应用。");
+        return;
+      }
+      clearErrors();
 
-    try {
-      await (forceReload ? accountCatalog.reload() : accountCatalog.load());
-    } catch (loadError) {
-      setError(errorMessage(loadError));
-    }
-  }
+      try {
+        await (forceReload ? accountCatalog.reload() : accountCatalog.load());
+      } catch (loadError) {
+        setError(errorMessage(loadError));
+      }
+    },
+    [accountCatalog, clearErrors, desktopApi]
+  );
 
-  async function loadSettings() {
+  const loadSettings = useCallback(async () => {
     if (!desktopApi) {
       return;
     }
@@ -246,9 +252,9 @@ export default function App() {
     } catch (settingsError) {
       setError(errorMessage(settingsError));
     }
-  }
+  }, [desktopApi]);
 
-  async function importFromFile() {
+  const importFromFile = useCallback(async () => {
     if (!desktopApi) {
       setError("文件导入需要在 Electron 桌面应用中使用。");
       return;
@@ -267,63 +273,69 @@ export default function App() {
     } catch (importError) {
       setError(errorMessage(importError));
     }
-  }
+  }, [accountCatalog, clearErrors, desktopApi]);
 
-  async function testConnection(accountId: string) {
-    setTestMenuOpen(false);
-    if (!desktopApi) {
-      setError("连接测试需要在 Electron 桌面应用中使用。");
-      return;
-    }
-    const execution = accountCatalog.testConnection(accountId);
-    if (!execution) {
-      return;
-    }
-    clearErrors();
-
-    try {
-      const result = await execution;
-      if (!result) {
+  const testConnection = useCallback(
+    async (accountId: string) => {
+      setTestMenuOpen(false);
+      if (!desktopApi) {
+        setError("连接测试需要在 Electron 桌面应用中使用。");
         return;
       }
-      if (result.ok) {
-        setToast(result.message);
-      } else {
-        setError(result.error.message);
-      }
-    } catch (testError) {
-      setError(errorMessage(testError));
-    }
-  }
-
-  async function testFallback(accountId: string) {
-    setTestMenuOpen(false);
-    if (!desktopApi) {
-      setError("兜底测试需要在 Electron 桌面应用中使用。");
-      return;
-    }
-    const execution = accountCatalog.testFallback(accountId);
-    if (!execution) {
-      return;
-    }
-    clearErrors();
-
-    try {
-      const result = await execution;
-      if (!result) {
+      const execution = accountCatalog.testConnection(accountId);
+      if (!execution) {
         return;
       }
-      if (result.ok) {
-        setToast(result.message);
-      } else {
-        setError(result.error.message);
-      }
-    } catch (fallbackError) {
-      setError(errorMessage(fallbackError));
-    }
-  }
+      clearErrors();
 
-  async function testFilteredAccounts() {
+      try {
+        const result = await execution;
+        if (!result) {
+          return;
+        }
+        if (result.ok) {
+          setToast(result.message);
+        } else {
+          setError(result.error.message);
+        }
+      } catch (testError) {
+        setError(errorMessage(testError));
+      }
+    },
+    [accountCatalog, clearErrors, desktopApi]
+  );
+
+  const testFallback = useCallback(
+    async (accountId: string) => {
+      setTestMenuOpen(false);
+      if (!desktopApi) {
+        setError("兜底测试需要在 Electron 桌面应用中使用。");
+        return;
+      }
+      const execution = accountCatalog.testFallback(accountId);
+      if (!execution) {
+        return;
+      }
+      clearErrors();
+
+      try {
+        const result = await execution;
+        if (!result) {
+          return;
+        }
+        if (result.ok) {
+          setToast(result.message);
+        } else {
+          setError(result.error.message);
+        }
+      } catch (fallbackError) {
+        setError(errorMessage(fallbackError));
+      }
+    },
+    [accountCatalog, clearErrors, desktopApi]
+  );
+
+  const testFilteredAccounts = useCallback(async () => {
     const accountIds = filteredAccounts.map((account) => account.id);
     if (accountIds.length === 0) {
       return;
@@ -353,9 +365,9 @@ export default function App() {
       setBulkTestAccountIds(new Set());
       setError(errorMessage(testError));
     }
-  }
+  }, [accountCatalog, clearErrors, desktopApi, filteredAccounts, refreshJobs]);
 
-  async function cancelBulkTest() {
+  const cancelBulkTest = useCallback(async () => {
     const api = getDesktopApi();
     if (!api) {
       return;
@@ -369,98 +381,9 @@ export default function App() {
     } catch (cancelError) {
       setError(errorMessage(cancelError));
     }
-  }
+  }, [refreshJobs]);
 
-  async function refreshAccounts(accountIds: string[], doneText = "已刷新", options: { silent?: boolean } = {}) {
-    if (accountIds.length === 0) {
-      return;
-    }
-
-    if (!desktopApi) {
-      setError("桌面接口不可用");
-      return;
-    }
-
-    const kind = options.silent ? "refreshBackground" : "refresh";
-    const execution = refreshJobs.runRefresh(accountIds, kind);
-    if (!execution) {
-      return;
-    }
-    if (!options.silent) {
-      clearErrors();
-    }
-
-    try {
-      const results = await execution;
-      if (!results) {
-        return;
-      }
-      const okCount = results.filter((item) => item.ok).length;
-      await accountCatalog.reload();
-      const changedCount = options.silent ? recordNewMailCounts(results) : 0;
-
-      if (options.silent) {
-        setToast(changedCount > 0 ? `定时刷新发现 ${changedCount} 个账号有新邮件` : `定时刷新完成 ${okCount}/${results.length}`);
-      } else {
-        setToast(`${doneText} ${okCount}/${results.length} 个账号的收件箱`);
-      }
-
-      await mailbox.reloadIfCurrentAccount(accountIds);
-    } catch (refreshError) {
-      const message = errorMessage(refreshError);
-      if (options.silent) {
-        setToast(`定时刷新失败：${message}`);
-      } else {
-        setError(message);
-      }
-    }
-  }
-
-  async function refreshSingleAccount(accountId: string) {
-    if (!desktopApi) {
-      setError("桌面接口不可用");
-      return;
-    }
-
-    const execution = refreshJobs.runRefresh([accountId], "refreshSingle");
-    if (!execution) {
-      return;
-    }
-    clearErrors();
-
-    try {
-      const results = await execution;
-      if (!results) {
-        return;
-      }
-      const result = results[0];
-      const email = accounts.find((account) => account.id === accountId)?.email || "账号";
-      await accountCatalog.reload();
-
-      if (result?.ok) {
-        setToast(`已刷新 ${email}`);
-        await mailbox.reloadIfCurrentAccount([accountId]);
-        return;
-      }
-
-      const refreshMessage = result?.error.message || "刷新账号失败";
-      if (mailbox.isCurrentAccount(accountId)) {
-        setError(refreshMessage);
-      } else {
-        setToast(`${email} 刷新失败：${refreshMessage}`);
-      }
-    } catch (refreshError) {
-      const refreshMessage = errorMessage(refreshError);
-      if (mailbox.isCurrentAccount(accountId)) {
-        setError(refreshMessage);
-      } else {
-        const email = accounts.find((account) => account.id === accountId)?.email || "账号";
-        setToast(`${email} 刷新失败：${refreshMessage}`);
-      }
-    }
-  }
-
-  function recordNewMailCounts(results: RefreshManyResult[]) {
+  const recordNewMailCounts = useCallback((results: RefreshManyResult[]) => {
     const increments: Record<string, number> = {};
 
     for (const result of results) {
@@ -482,9 +405,104 @@ export default function App() {
     }
 
     return Object.keys(increments).length;
-  }
+  }, []);
 
-  async function cancelBulkRefresh() {
+  const refreshAccounts = useCallback(
+    async (accountIds: string[], doneText = "已刷新", options: { silent?: boolean } = {}) => {
+      if (accountIds.length === 0) {
+        return;
+      }
+
+      if (!desktopApi) {
+        setError("桌面接口不可用");
+        return;
+      }
+
+      const kind = options.silent ? "refreshBackground" : "refresh";
+      const execution = refreshJobs.runRefresh(accountIds, kind);
+      if (!execution) {
+        return;
+      }
+      if (!options.silent) {
+        clearErrors();
+      }
+
+      try {
+        const results = await execution;
+        if (!results) {
+          return;
+        }
+        const okCount = results.filter((item) => item.ok).length;
+        await accountCatalog.reload();
+        const changedCount = options.silent ? recordNewMailCounts(results) : 0;
+
+        if (options.silent) {
+          setToast(changedCount > 0 ? `定时刷新发现 ${changedCount} 个账号有新邮件` : `定时刷新完成 ${okCount}/${results.length}`);
+        } else {
+          setToast(`${doneText} ${okCount}/${results.length} 个账号的收件箱`);
+        }
+
+        await mailbox.reloadIfCurrentAccount(accountIds);
+      } catch (refreshError) {
+        const message = errorMessage(refreshError);
+        if (options.silent) {
+          setToast(`定时刷新失败：${message}`);
+        } else {
+          setError(message);
+        }
+      }
+    },
+    [accountCatalog, clearErrors, desktopApi, mailbox, recordNewMailCounts, refreshJobs]
+  );
+
+  const refreshSingleAccount = useCallback(
+    async (accountId: string) => {
+      if (!desktopApi) {
+        setError("桌面接口不可用");
+        return;
+      }
+
+      const execution = refreshJobs.runRefresh([accountId], "refreshSingle");
+      if (!execution) {
+        return;
+      }
+      clearErrors();
+
+      try {
+        const results = await execution;
+        if (!results) {
+          return;
+        }
+        const result = results[0];
+        const email = accounts.find((account) => account.id === accountId)?.email || "账号";
+        await accountCatalog.reload();
+
+        if (result?.ok) {
+          setToast(`已刷新 ${email}`);
+          await mailbox.reloadIfCurrentAccount([accountId]);
+          return;
+        }
+
+        const refreshMessage = result?.error.message || "刷新账号失败";
+        if (mailbox.isCurrentAccount(accountId)) {
+          setError(refreshMessage);
+        } else {
+          setToast(`${email} 刷新失败：${refreshMessage}`);
+        }
+      } catch (refreshError) {
+        const refreshMessage = errorMessage(refreshError);
+        if (mailbox.isCurrentAccount(accountId)) {
+          setError(refreshMessage);
+        } else {
+          const email = accounts.find((account) => account.id === accountId)?.email || "账号";
+          setToast(`${email} 刷新失败：${refreshMessage}`);
+        }
+      }
+    },
+    [accounts, accountCatalog, clearErrors, desktopApi, mailbox, refreshJobs]
+  );
+
+  const cancelBulkRefresh = useCallback(async () => {
     const api = getDesktopApi();
     if (!api) {
       return;
@@ -498,56 +516,74 @@ export default function App() {
     } catch (cancelError) {
       setError(errorMessage(cancelError));
     }
-  }
+  }, [refreshJobs]);
 
-  function refreshFilteredAccounts() {
+  const refreshFilteredAccounts = useCallback(() => {
     // Fire-and-forget: `refreshAccounts` reports its own failures through setError/setToast.
     void refreshAccounts(
       filteredAccounts.map((account) => account.id),
       "已刷新"
     );
-  }
+  }, [filteredAccounts, refreshAccounts]);
 
-  function selectAccount(accountId: string) {
-    const account = accounts.find((item) => item.id === accountId);
-    clearErrors();
-    mailbox.selectAccount(accountId, account?.lastInboxCount ?? null);
-    setNewMailCounts((current) => {
-      if (!current[accountId]) {
-        return current;
-      }
+  const selectAccount = useCallback(
+    (accountId: string) => {
+      const account = accounts.find((item) => item.id === accountId);
+      clearErrors();
+      mailbox.selectAccount(accountId, account?.lastInboxCount ?? null);
+      setNewMailCounts((current) => {
+        if (!current[accountId]) {
+          return current;
+        }
 
-      const next = { ...current };
-      delete next[accountId];
-      return next;
-    });
-  }
+        const next = { ...current };
+        delete next[accountId];
+        return next;
+      });
+    },
+    [accounts, clearErrors, mailbox]
+  );
 
-  function retryFailedRefresh() {
+  const retryFailedRefresh = useCallback(() => {
     void refreshAccounts([...failedRefreshAccountIds], "已重试");
-  }
+  }, [failedRefreshAccountIds, refreshAccounts]);
 
-  function executeMailSearch() {
+  const executeMailSearch = useCallback(() => {
     clearErrors();
     void mailbox.search(mailQuery);
-  }
+  }, [clearErrors, mailQuery, mailbox]);
 
-  function refreshMailbox() {
+  const refreshMailbox = useCallback(() => {
     clearErrors();
     void mailbox.reload(true);
-  }
+  }, [clearErrors, mailbox]);
 
-  function selectMessage(messageId: string) {
-    clearErrors();
-    void mailbox.selectMessage(messageId);
-  }
+  const openImportModal = useCallback(() => setShowImportModal(true), []);
+  const openSettingsModal = useCallback(() => setShowSettingsModal(true), []);
+  const reloadAccounts = useCallback(() => void loadAccounts(), [loadAccounts]);
 
-  function loadMoreMessages() {
+  const selectFolder = useCallback(
+    (folderId: string | null) => {
+      clearErrors();
+      mailbox.selectFolder(folderId);
+    },
+    [clearErrors, mailbox]
+  );
+
+  const selectMessage = useCallback(
+    (messageId: string) => {
+      clearErrors();
+      void mailbox.selectMessage(messageId);
+    },
+    [clearErrors, mailbox]
+  );
+
+  const loadMoreMessages = useCallback(() => {
     clearErrors();
     void mailbox.loadMore();
-  }
+  }, [clearErrors, mailbox]);
 
-  async function deleteSelectedAccount() {
+  const deleteSelectedAccount = useCallback(async () => {
     if (!desktopApi) {
       setError("账号管理需要在 Electron 桌面应用中使用。");
       return;
@@ -558,7 +594,13 @@ export default function App() {
     }
 
     const account = accounts.find((item) => item.id === selectedAccountId);
-    const confirmed = window.confirm(`删除账号 ${account?.email || ""}？`);
+    const confirmed = window.confirm(
+      `删除账号 ${account?.email || ""}？\n\n`
+        + `将删除：\n`
+        + `· 该账号的登录凭据（不可恢复）\n`
+        + `· 本地缓存的所有邮件\n\n`
+        + `此操作不可撤销，请确认没有正在进行的任务。`
+    );
 
     if (!confirmed) {
       return;
@@ -573,7 +615,7 @@ export default function App() {
     } catch (deleteError) {
       setError(errorMessage(deleteError));
     }
-  }
+  }, [accounts, accountCatalog, desktopApi, selectedAccountId]);
 
   useEffect(() => {
     // Fire-and-forget: both loaders catch their own errors and surface them in the UI.
@@ -639,10 +681,10 @@ export default function App() {
           onAccountQueryChange={setAccountQuery}
           onStatusFilterChange={setStatusFilter}
           onSelectAccount={selectAccount}
-          onOpenImport={() => setShowImportModal(true)}
+          onOpenImport={openImportModal}
           onImportFromFile={importFromFile}
-          onReloadAccounts={() => void loadAccounts()}
-          onOpenSettings={() => setShowSettingsModal(true)}
+          onReloadAccounts={reloadAccounts}
+          onOpenSettings={openSettingsModal}
           newMailCounts={newMailCounts}
           busyAccountIds={busyAccountIdSet}
           refreshDisabled={singleRefreshBlocked}
@@ -731,11 +773,24 @@ export default function App() {
           {progressText ? (
             <div className="progress-line">
               <span>{progressText}</span>
+              {progress && progress.total > 0 && progress.phase !== "completed" ? (
+                <span className="progress-track" aria-hidden="true">
+                  <span
+                    className="progress-fill"
+                    style={{ width: `${Math.min(100, Math.round((progress.completed / progress.total) * 100))}%` }}
+                  />
+                </span>
+              ) : null}
               {canRetryFailedRefresh ? (
                 <button type="button" onClick={retryFailedRefresh} disabled={anyJobRunning}>
                   重试失败
                 </button>
               ) : null}
+            </div>
+          ) : null}
+          {backgroundProgressText ? (
+            <div className="progress-line progress-line-background" role="status">
+              <span>{backgroundProgressText}</span>
             </div>
           ) : null}
 
@@ -747,10 +802,15 @@ export default function App() {
               loadingMore={loadingMore}
               mailCursor={mailCursor}
               mailQuery={mailQuery}
+              folders={folders}
+              selectedFolderId={selectedFolderId}
+              inboxFolderId={selectedAccount?.inboxFolderId ?? null}
+              listError={mailboxError}
               canRefresh={Boolean(selectedAccountId)}
               onMailQueryChange={setMailQuery}
               onExecuteSearch={executeMailSearch}
               onRefresh={refreshMailbox}
+              onSelectFolder={selectFolder}
               onSelectMessage={selectMessage}
               onLoadMore={loadMoreMessages}
             />

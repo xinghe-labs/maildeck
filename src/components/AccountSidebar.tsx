@@ -1,5 +1,5 @@
 import { FileUp, Inbox, Loader2, Mail, Plus, RefreshCw, Search, Settings } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
 import type { AccountView } from "../types";
 import { accountMailStats, statusMeta } from "../ui-utils";
@@ -7,7 +7,7 @@ import { accountMailStats, statusMeta } from "../ui-utils";
 const ACCOUNT_ROW_HEIGHT = 88;
 const DEFAULT_VIEWPORT_HEIGHT = 660;
 
-export function AccountSidebar({
+export const AccountSidebar = memo(function AccountSidebar({
   accounts,
   filteredAccounts,
   selectedAccountId,
@@ -45,7 +45,26 @@ export function AccountSidebar({
   onRefreshAccount: (accountId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
+
+  // Ctrl+F / Cmd+F 把焦点导到侧栏搜索框，替代浏览器默认查找。放本组件内
+  // 而不是 App，是为了让搜索框与其焦点行为内聚、可独立测试。
+  useLayoutEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "f") {
+        const input = searchInputRef.current;
+        if (!input) {
+          return;
+        }
+        event.preventDefault();
+        input.focus();
+        input.select();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
   const virtualWindow = resolveFixedVirtualWindow({
     itemCount: filteredAccounts.length,
@@ -127,7 +146,7 @@ export function AccountSidebar({
 
       <div className="sidebar-search">
         <Search size={16} />
-        <input value={accountQuery} onChange={(event) => onAccountQueryChange(event.target.value)} placeholder="搜索邮箱" />
+        <input ref={searchInputRef} value={accountQuery} onChange={(event) => onAccountQueryChange(event.target.value)} placeholder="搜索邮箱" />
       </div>
 
       <div className="sidebar-stats">
@@ -229,4 +248,4 @@ export function AccountSidebar({
       </div>
     </aside>
   );
-}
+});
