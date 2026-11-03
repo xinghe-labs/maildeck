@@ -12,6 +12,23 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+// 断言请求 signal 收到了取消（withRequestTimeout 会合并外部 signal 与超时定时器，
+// 转发的是合并后的新 signal，不再与 controller.signal 同一实例，因此断行为不断身份）。
+async function expectCancellationPropagates(
+  started: ReturnType<typeof deferred<AbortSignal>>,
+  pending: Promise<unknown>,
+  controller: AbortController,
+  canceled: JobCanceledError
+) {
+  const requestSignal = await started.promise;
+  const propagated = new Promise<unknown>((resolve) => {
+    requestSignal.addEventListener("abort", () => resolve(requestSignal.reason), { once: true });
+  });
+  controller.abort(canceled);
+  await expect(propagated).resolves.toBe(canceled);
+  await expect(pending).rejects.toBe(canceled);
+}
+
 function abortableFetch(started: ReturnType<typeof deferred<AbortSignal>>) {
   return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
     const signal = init?.signal as AbortSignal;
@@ -32,13 +49,9 @@ describe("Graph network cancellation", () => {
     vi.stubGlobal("fetch", abortableFetch(started));
     const controller = new AbortController();
     const pending = refreshAccessToken("client-id", "refresh-token", "", controller.signal);
-    const requestSignal = await started.promise;
     const canceled = new JobCanceledError("刷新已取消");
 
-    controller.abort(canceled);
-
-    await expect(pending).rejects.toBe(canceled);
-    expect(requestSignal).toBe(controller.signal);
+    await expectCancellationPropagates(started, pending, controller, canceled);
   });
 
   it("forwards cancellation into Graph API fetch", async () => {
@@ -46,13 +59,9 @@ describe("Graph network cancellation", () => {
     vi.stubGlobal("fetch", abortableFetch(started));
     const controller = new AbortController();
     const pending = listMailFolders("access-token", "", controller.signal);
-    const requestSignal = await started.promise;
     const canceled = new JobCanceledError("刷新已取消");
 
-    controller.abort(canceled);
-
-    await expect(pending).rejects.toBe(canceled);
-    expect(requestSignal).toBe(controller.signal);
+    await expectCancellationPropagates(started, pending, controller, canceled);
   });
 
   it("forwards cancellation into Hotmail fallback token exchange", async () => {
@@ -60,12 +69,8 @@ describe("Graph network cancellation", () => {
     vi.stubGlobal("fetch", abortableFetch(started));
     const controller = new AbortController();
     const pending = refreshHotmailFallbackToken("client-id", "refresh-token", "", controller.signal);
-    const requestSignal = await started.promise;
     const canceled = new JobCanceledError("刷新已取消");
 
-    controller.abort(canceled);
-
-    await expect(pending).rejects.toBe(canceled);
-    expect(requestSignal).toBe(controller.signal);
+    await expectCancellationPropagates(started, pending, controller, canceled);
   });
 });

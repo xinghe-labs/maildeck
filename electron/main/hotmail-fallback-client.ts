@@ -1,5 +1,8 @@
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import { proxiedFetchOptions } from "./proxy-agent.js";
+import { calculateNetworkRetryDelay, waitForGraphRetry } from "./graph-retry.js";
+import { NETWORK_REQUEST_TIMEOUT_MS, withRequestTimeout } from "./request-timeout.js";
+import { abortReasonOf, isNetworkError } from "./error-utils.js";
 import type { AccountRecord, AccessTokenResult, MailMessageDetail, MailMessageSummary } from "./types.js";
 import { z } from "zod";
 import { readOAuthResponseText } from "./oauth-response-reader.js";
@@ -23,6 +26,13 @@ const TOKEN_ENDPOINTS = [
     scope: "offline_access https://outlook.office.com/IMAP.AccessAsUser.All"
   }
 ] as const;
+
+// 端点 URL 白名单（对象键形式，静态可判定，供 SSRF 校验）。
+const HOTMAIL_FALLBACK_TOKEN_ENDPOINT_ALLOWLIST: Readonly<Record<string, true>> = {
+  "https://login.live.com/oauth20_token.srf": true,
+  "https://login.microsoftonline.com/consumers/oauth2/v2.0/token": true,
+  "https://login.microsoftonline.com/common/oauth2/v2.0/token": true
+};
 
 export interface HotmailFallbackMessagesResult {
   messages: MailMessageSummary[];
@@ -77,6 +87,10 @@ export function isHotmailFallbackEnabled(settings: { hotmailFallbackEnabled?: bo
   return settings.hotmailFallbackEnabled !== false;
 }
 
+function proxiedFetch(url: string, init: RequestInit, proxyUrl = "") {
+  return fetch(url, proxiedFetchOptions(init, proxyUrl));
+}
+
 export async function refreshHotmailFallbackToken(
   clientId: string,
   refreshToken: string,
@@ -87,6 +101,10 @@ export async function refreshHotmailFallbackToken(
 
   for (const endpoint of TOKEN_ENDPOINTS) {
     signal?.throwIfAborted();
+    // SSRF 防护：仅允许 Microsoft 官方域的 OAuth token 端点（白名单静态可判定）。
+    if (!(endpoint.url in HOTMAIL_FALLBACK_TOKEN_ENDPOINT_ALLOWLIST)) {
+      throw new Error(`拒绝请求非白名单 token 端点：${endpoint.url}`);
+    }
     const form = new URLSearchParams();
     form.set("client_id", clientId);
     form.set("refresh_token", refreshToken);
@@ -96,14 +114,36 @@ export async function refreshHotmailFallbackToken(
       form.set("scope", endpoint.scope);
     }
 
-    const response = await fetch(endpoint.url, proxiedFetchOptions({
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: form,
-      signal
-    }, proxyUrl));
+    let response: Response | null = null;
+    for (let attempt = 0; attempt < 2 && !response; attempt += 1) {
+      signal?.throwIfAborted();
+      const timeout = withRequestTimeout(signal, NETWORK_REQUEST_TIMEOUT_MS);
+      try {
+        response = await proxiedFetch(endpoint.url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: form,
+          signal: timeout.signal
+        }, proxyUrl);
+      } catch (error) {
+        timeout.cleanup();
+        if (signal?.aborted) {
+          throw abortReasonOf(signal);
+        }
+        // 网络层错误重试一次；HTTP 状态错误不重试（下方 errors 收集逻辑处理）。
+        if (attempt === 0 && isNetworkError(error)) {
+          await waitForGraphRetry(calculateNetworkRetryDelay(0, 0.5), signal);
+          continue;
+        }
+        throw error;
+      }
+      timeout.cleanup();
+    }
+    if (!response) {
+      throw new Error("内置 Hotmail 兜底 token 刷新失败：无响应");
+    }
     signal?.throwIfAborted();
     const rawPayload = await parseResponse(response);
     signal?.throwIfAborted();

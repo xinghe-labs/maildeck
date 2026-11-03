@@ -6,6 +6,15 @@ const MAX_DELAY_MS = 30_000;
 
 export const GRAPH_MAX_ATTEMPTS = 3;
 
+// 网络层错误（fetch reject / 超时）重试用的退避：无 Retry-After 可依，纯指数 + 抖动。
+export function calculateNetworkRetryDelay(retryIndex: number, randomValue: number): number {
+  const exponentialDelay = BASE_DELAY_MS * (2 ** Math.max(0, retryIndex));
+  const jitterWindow = Math.min(250, Math.max(50, Math.round(exponentialDelay * 0.1)));
+  const boundedRandom = Math.min(Math.max(randomValue, 0), 1);
+  const jitter = Math.floor(jitterWindow * boundedRandom);
+  return Math.min(exponentialDelay + jitter, MAX_DELAY_MS);
+}
+
 export interface GraphRetryInput {
   status: number;
   retryAfter: string | null;

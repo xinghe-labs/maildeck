@@ -1,4 +1,5 @@
 import type { AppErrorCode, AppErrorPayload } from "./types.js";
+import { RequestTimeoutError } from "./request-timeout.js";
 import { isJobCanceledError } from "./job-errors.js";
 import { isMailContentTooLargeError, isMailParseFailedError } from "./mail-errors.js";
 import { redactProxyCredentials } from "../shared/proxy-security.js";
@@ -29,8 +30,15 @@ const NETWORK_ERROR_CODES = new Set([
   "ENOTFOUND",
   "EPIPE",
   "ETIMEDOUT",
-  "UND_ERR_CONNECT_TIMEOUT"
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT"
 ]);
+
+// 供请求层判断 fetch reject 是否属于可重试的网络错误（含超时中止）。
+export function isNetworkError(error: unknown): boolean {
+  return hasNetworkErrorCode(error) || error instanceof RequestTimeoutError;
+}
 
 function hasNetworkErrorCode(error: unknown): boolean {
   const visited = new Set<object>();

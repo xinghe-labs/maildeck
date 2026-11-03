@@ -4,6 +4,7 @@ import { MailContentTooLargeError, isMailContentTooLargeError } from "./mail-err
 import { parseMailSourceContent } from "./mail-source-parser.js";
 import { normalizeMailText } from "./mail-text-normalizer.js";
 import { normalizeMailDate } from "./mail-date-normalizer.js";
+import { NETWORK_REQUEST_TIMEOUT_MS } from "./request-timeout.js";
 import type { MailFolder, MailMessageDetail, MailMessageSummary } from "./types.js";
 
 interface ImapMessageListResult {
@@ -51,6 +52,8 @@ async function withClient<T>(
   signal?: AbortSignal
 ) {
   signal?.throwIfAborted();
+  // IMAP 连接同样不允许无限期 hang：greeting/socket 超时后 ImapFlow 会拋出
+  // ETIMEDOUT 类错误，经 error-utils 归一化为 NETWORK_ERROR（可重试）。
   const client = new ImapFlow({
     host: "outlook.office365.com",
     port: 993,
@@ -60,7 +63,9 @@ async function withClient<T>(
       user: email,
       accessToken
     },
-    logger: false
+    logger: false,
+    greetingTimeout: NETWORK_REQUEST_TIMEOUT_MS,
+    socketTimeout: NETWORK_REQUEST_TIMEOUT_MS
   });
   const deferredErrors: Error[] = [];
 

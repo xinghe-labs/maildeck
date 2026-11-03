@@ -8,11 +8,14 @@ import type {
 import { z } from "zod";
 import { proxiedFetchOptions } from "./proxy-agent.js";
 import { GraphRequestError, GraphResponseInvalidError, GraphResponseTooLargeError } from "./graph-errors.js";
-import { calculateGraphRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
+import { calculateGraphRetryDelay, calculateNetworkRetryDelay, GRAPH_MAX_ATTEMPTS, waitForGraphRetry } from "./graph-retry.js";
+import { NETWORK_REQUEST_TIMEOUT_MS, withRequestTimeout } from "./request-timeout.js";
 import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 import { readOAuthResponseText } from "./oauth-response-reader.js";
 import { readResponseTextBounded } from "./bounded-response-reader.js";
+import { abortReasonOf } from "./error-utils.js";
+import { isNetworkError } from "./error-utils.js";
 
 const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
 export const GRAPH_ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
@@ -182,20 +185,41 @@ async function graphRequest(
   signal?: AbortSignal,
   maxResponseBytes = GRAPH_COLLECTION_RESPONSE_MAX_BYTES
 ): Promise<unknown> {
+  let lastNetworkError: unknown = null;
   for (let attempt = 0; attempt < GRAPH_MAX_ATTEMPTS; attempt += 1) {
     signal?.throwIfAborted();
-    const response = await proxiedFetch(
-      url,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json"
+    // 连接不稳定时单个请求不允许无限期 hang 住；超时产生的网络错误参与退避重试。
+    const timeout = withRequestTimeout(signal, NETWORK_REQUEST_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await proxiedFetch(
+        url,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json"
+          },
+          signal: timeout.signal
         },
-        signal
-      },
-      proxyUrl
-    );
+        proxyUrl
+      );
+    } catch (error) {
+      timeout.cleanup();
+      if (signal?.aborted) {
+        throw abortReasonOf(signal);
+      }
+      if (isNetworkError(error)) {
+        lastNetworkError = error;
+        if (attempt + 1 < GRAPH_MAX_ATTEMPTS) {
+          await waitForGraphRetry(calculateNetworkRetryDelay(attempt, 0.5), signal);
+          continue;
+        }
+        throw lastNetworkError;
+      }
+      throw error;
+    }
     const payload = await parseResponse(response, maxResponseBytes);
+    timeout.cleanup();
 
     if (response.ok) {
       return payload;
@@ -293,14 +317,38 @@ export async function refreshAccessToken(
     form.set("refresh_token", refreshToken);
     form.set("grant_type", "refresh_token");
 
-    const response = await proxiedFetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: form,
-      signal
-    }, proxyUrl);
+    // token 端点同样不允许无限期 hang；网络层错误重试一次（HTTP 状态错误不重试，
+    // 避免对已失效的 refresh_token 重复提交）。
+    let response: Response | null = null;
+    for (let attempt = 0; attempt < 2 && !response; attempt += 1) {
+      signal?.throwIfAborted();
+      const timeout = withRequestTimeout(signal, NETWORK_REQUEST_TIMEOUT_MS);
+      try {
+        response = await proxiedFetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: form,
+          signal: timeout.signal
+        }, proxyUrl);
+      } catch (error) {
+        timeout.cleanup();
+        if (signal?.aborted) {
+          throw abortReasonOf(signal);
+        }
+        if (attempt === 0 && isNetworkError(error)) {
+          await waitForGraphRetry(calculateNetworkRetryDelay(0, 0.5), signal);
+          continue;
+        }
+        throw error;
+      }
+      timeout.cleanup();
+    }
+    // 两次尝试要么拿到响应要么已拋出，此处 response 必非 null（类型收窄辅助）。
+    if (!response) {
+      throw new Error("Token 刷新失败：无响应");
+    }
 
     const rawPayload = await parseTokenResponse(response);
     const parsedPayload = tokenResponseSchema.safeParse(rawPayload);
