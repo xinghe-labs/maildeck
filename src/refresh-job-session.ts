@@ -38,6 +38,10 @@ export interface RefreshJobSessionState {
   readonly progress: RefreshJobProgressProjection | null;
   readonly progressText: string;
   readonly canRetryFailedRefresh: boolean;
+  // 定时刷新（refreshBackground）单独投影：前台进度行不能被后台任务污染，
+  // 但用户需要看到“后台正在占用网络”这一事实。
+  readonly backgroundProgress: RefreshJobProgressProjection | null;
+  readonly backgroundProgressText: string;
 }
 
 export interface RefreshJobSession {
@@ -78,7 +82,9 @@ export const EMPTY_REFRESH_JOB_SESSION_STATE: RefreshJobSessionState = Object.fr
   failedRefreshAccountIds: EMPTY_STRINGS,
   progress: null,
   progressText: "",
-  canRetryFailedRefresh: false
+  canRetryFailedRefresh: false,
+  backgroundProgress: null,
+  backgroundProgressText: ""
 });
 
 function operationFingerprint(operation: ActiveOperation) {
@@ -104,6 +110,17 @@ function progressText(progress: RefreshJobProgressProjection | null) {
     return `刷新完成 ${progress.ok}/${progress.total}`;
   }
   const prefix = progress.phase === "canceling" ? "正在取消刷新" : "刷新中";
+  return `${prefix} ${progress.completed}/${progress.total} · 成功 ${progress.ok} · 失败 ${progress.failed}`;
+}
+
+function backgroundProgressText(progress: RefreshJobProgressProjection | null) {
+  if (!progress) {
+    return "";
+  }
+  if (progress.phase === "completed") {
+    return `后台刷新完成 ${progress.ok}/${progress.total}`;
+  }
+  const prefix = progress.phase === "canceling" ? "正在取消后台刷新" : "后台定时刷新中";
   return `${prefix} ${progress.completed}/${progress.total} · 成功 ${progress.ok} · 失败 ${progress.failed}`;
 }
 
@@ -410,6 +427,19 @@ class DefaultRefreshJobSession implements RefreshJobSession {
           failed: foregroundOperation.failed
         }
       : this.lastForegroundProgress;
+    const backgroundOperation = operations.find(
+      (operation) => operation.kind === "refreshBackground"
+    );
+    const backgroundProgress = backgroundOperation
+      ? {
+          kind: "refresh" as const,
+          phase: backgroundOperation.phase,
+          completed: backgroundOperation.completed,
+          total: backgroundOperation.total,
+          ok: backgroundOperation.ok,
+          failed: backgroundOperation.failed
+        }
+      : null;
     const busyAccountIds = Object.freeze(
       operations
         .filter((operation) => operation.kind === "refreshSingle")
@@ -431,7 +461,9 @@ class DefaultRefreshJobSession implements RefreshJobSession {
         operations.length === 0 &&
         progress?.kind === "refresh" &&
         progress.phase === "completed" &&
-        this.failedRefreshAccountIds.length > 0
+        this.failedRefreshAccountIds.length > 0,
+      backgroundProgress,
+      backgroundProgressText: backgroundProgressText(backgroundProgress)
     };
     for (const listener of this.listeners) {
       listener();

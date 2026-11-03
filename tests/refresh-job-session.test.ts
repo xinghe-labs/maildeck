@@ -203,7 +203,16 @@ describe("refresh job session", () => {
     expect(backgroundExecution).not.toBeNull();
     expect(session.getSnapshot()).toMatchObject({
       backgroundRefreshRunning: true,
-      progressText: "测试完成 1/1"
+      progressText: "测试完成 1/1",
+      backgroundProgress: {
+        kind: "refresh",
+        phase: "running",
+        completed: 0,
+        total: 1,
+        ok: 0,
+        failed: 0
+      },
+      backgroundProgressText: "后台定时刷新中 0/1 · 成功 0 · 失败 0"
     });
     expect(session.runTest(["account-b"])).toBeNull();
 
@@ -217,10 +226,23 @@ describe("refresh job session", () => {
       accountId: "account-a"
     });
     expect(session.getSnapshot().progressText).toBe("测试完成 1/1");
+    expect(session.getSnapshot()).toMatchObject({
+      backgroundProgress: {
+        kind: "refresh",
+        phase: "running",
+        completed: 1,
+        total: 1,
+        ok: 1,
+        failed: 0
+      },
+      backgroundProgressText: "后台定时刷新中 1/1 · 成功 1 · 失败 0"
+    });
     fake.refreshRuns[0].deferred.resolve([refreshSuccess("account-a")]);
     await backgroundExecution;
     expect(session.getSnapshot()).toMatchObject({
       backgroundRefreshRunning: false,
+      backgroundProgress: null,
+      backgroundProgressText: "",
       progressText: "测试完成 1/1"
     });
     session.dispose();

@@ -39,6 +39,7 @@ function renderList(props: Partial<ComponentProps<typeof MessageList>> = {}) {
     onMailQueryChange: vi.fn(),
     onExecuteSearch: vi.fn(),
     onRefresh: vi.fn(),
+    onSelectFolder: vi.fn(),
     onSelectMessage: vi.fn(),
     onLoadMore: vi.fn()
   };
@@ -49,7 +50,11 @@ function renderList(props: Partial<ComponentProps<typeof MessageList>> = {}) {
     loadingMore: false,
     mailCursor: null,
     mailQuery: "",
+    folders: [],
+    selectedFolderId: null,
+    inboxFolderId: null,
     canRefresh: true,
+    listError: "",
     ...handlers,
     ...props
   };
@@ -123,6 +128,24 @@ describe("MessageList", () => {
     renderList({ messages: [], loadingMessages: true });
     expect(container.querySelector(".panel-empty")?.textContent).toContain("正在刷新邮件");
     expect(container.textContent).not.toContain("没有邮件可显示");
+  });
+
+  it("distinguishes a failed list load from an empty mailbox and offers retry", () => {
+    const handlers = renderList({ messages: [], listError: "连接超时" });
+    const errorPanel = container.querySelector(".panel-error");
+    expect(errorPanel?.textContent).toContain("邮件列表加载失败");
+    expect(errorPanel?.textContent).toContain("连接超时");
+    expect(container.textContent).not.toContain("没有邮件可显示");
+
+    const retry = container.querySelector<HTMLButtonElement>(".panel-error-retry");
+    expect(retry).not.toBeNull();
+    act(() => retry!.click());
+    expect(handlers.onRefresh).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    renderList({ messages: [], listError: "" });
+    expect(container.querySelector(".panel-error")).toBeNull();
+    expect(container.querySelector(".panel-empty")?.textContent).toContain("没有邮件可显示");
   });
 
   it("shows an attachment marker only for messages that have attachments", () => {
@@ -213,5 +236,49 @@ describe("MessageList", () => {
     });
 
     expect(handlers.onExecuteSearch).not.toHaveBeenCalled();
+  });
+
+  it("marks unread messages with is-unread and leaves read ones unmarked", () => {
+    renderList({
+      messages: [message(1, { isRead: false }), message(2, { isRead: true })]
+    });
+
+    const rows = container.querySelectorAll(".message-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.classList.contains("is-unread")).toBe(true);
+    expect(rows[1]?.classList.contains("is-unread")).toBe(false);
+  });
+
+  it("does not duplicate the inbox option when the folder list already contains it", () => {
+    renderList({
+      messages: [message(1)],
+      inboxFolderId: "inbox-id",
+      folders: [
+        { id: "inbox-id", displayName: "收件箱", totalItemCount: 10, unreadItemCount: 1 },
+        { id: "junk-id", displayName: "垃圾邮件", totalItemCount: 2, unreadItemCount: 0 },
+        { id: "archive-id", displayName: "存档", totalItemCount: 1, unreadItemCount: 0 }
+      ]
+    });
+
+    const select = container.querySelector<HTMLSelectElement>(".folder-select");
+    expect(select).not.toBeNull();
+    const labels = [...select!.options].map((option) => option.textContent);
+    expect(labels.filter((label) => label === "收件箱")).toHaveLength(1);
+    expect(labels).toEqual(["收件箱", "垃圾邮件", "存档"]);
+  });
+
+  it("falls back to a synthetic inbox option when the folder list lacks one", () => {
+    renderList({
+      messages: [message(1)],
+      inboxFolderId: null,
+      folders: [
+        { id: "junk-id", displayName: "垃圾邮件", totalItemCount: 2, unreadItemCount: 0 },
+        { id: "archive-id", displayName: "存档", totalItemCount: 1, unreadItemCount: 0 }
+      ]
+    });
+
+    const select = container.querySelector<HTMLSelectElement>(".folder-select");
+    const labels = [...select!.options].map((option) => option.textContent);
+    expect(labels).toEqual(["收件箱", "垃圾邮件", "存档"]);
   });
 });
