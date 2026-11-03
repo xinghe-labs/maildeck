@@ -15,6 +15,7 @@ reactTestGlobal.IS_REACT_ACT_ENVIRONMENT = true;
 
 function createAdapter(): MailboxSessionAdapter {
   return {
+    listFolders: vi.fn(async () => []),
     listMessages: vi.fn(async () => ({ messages: [], nextCursor: null, totalCount: 0 })),
     getMessage: vi.fn(async () => {
       throw new Error("No message detail expected");

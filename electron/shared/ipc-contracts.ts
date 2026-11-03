@@ -6,6 +6,7 @@ export const ACCOUNT_BATCH_MAX = 5_000;
 export const MAIL_PAGE_MAX = 100;
 export const SEARCH_MAX_CHARS = 500;
 export const CURSOR_MAX_CHARS = 128;
+export const FOLDER_ID_MAX_CHARS = 512;
 export const APP_ERROR_MESSAGE_MAX_CHARS = 4_096;
 export const DIAGNOSTIC_REQUEST_ID_MAX_CHARS = 1_024;
 
@@ -244,11 +245,13 @@ export interface ListMessagesOptions {
   forceRefresh?: boolean;
   cursor?: string;
   since?: string | null;
+  folderId?: string;
 }
 
 export interface GetMessageOptions {
   accountId: string;
   messageId: string;
+  folderId?: string;
 }
 
 export interface MailListResult {
@@ -445,12 +448,13 @@ export const IPC_REQUEST_SCHEMAS = {
         search: z.string().trim().max(SEARCH_MAX_CHARS).optional(),
         forceRefresh: z.boolean().optional(),
         cursor: z.string().trim().max(CURSOR_MAX_CHARS).optional(),
-        since: z.iso.datetime({ offset: true }).nullable().optional()
+        since: z.iso.datetime({ offset: true }).nullable().optional(),
+        folderId: z.string().trim().min(1).max(FOLDER_ID_MAX_CHARS).optional()
       })
     ])
     .transform(([options]) => options),
   getMessage: z
-    .tuple([z.strictObject({ accountId: accountIdSchema, messageId: messageIdSchema })])
+    .tuple([z.strictObject({ accountId: accountIdSchema, messageId: messageIdSchema, folderId: z.string().trim().min(1).max(FOLDER_ID_MAX_CHARS).optional() })])
     .transform(([options]) => options),
   clearCache: z
     .union([z.tuple([]), z.tuple([accountIdSchema])])

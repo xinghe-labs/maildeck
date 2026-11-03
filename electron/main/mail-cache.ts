@@ -338,17 +338,22 @@ function rowToMessage(row: MailMessageRow): MailMessageSummary {
   };
 }
 
-function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nextCursor: string | null | typeof KEEP_EXISTING_CURSOR) {
+function saveMessagesSync(
+  accountId: string,
+  folderId: string,
+  messages: MailMessageSummary[],
+  nextCursor: string | null | typeof KEEP_EXISTING_CURSOR
+) {
   const db = getDatabase();
   const timestamp = nowIso();
   const upsert = db.prepare(`
     INSERT INTO mail_messages (
-      account_id, message_id, subject, from_name, from_address,
+      account_id, folder_id, message_id, subject, from_name, from_address,
       received_date_time, sent_date_time, is_read, importance,
       has_attachments, body_preview, web_link, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account_id, message_id) DO UPDATE SET
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, folder_id, message_id) DO UPDATE SET
       subject = excluded.subject,
       from_name = excluded.from_name,
       from_address = excluded.from_address,
@@ -365,6 +370,7 @@ function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nex
   for (const message of messages) {
     upsert.run(
       accountId,
+      folderId,
       message.id,
       message.subject,
       message.from?.name || null,
@@ -382,32 +388,32 @@ function saveMessagesSync(accountId: string, messages: MailMessageSummary[], nex
 
   if (nextCursor === KEEP_EXISTING_CURSOR) {
     db.prepare(`
-      INSERT INTO mail_cache_meta (account_id, next_cursor, updated_at)
-      VALUES (?, NULL, ?)
-      ON CONFLICT(account_id) DO UPDATE SET
+      INSERT INTO mail_cache_meta (account_id, folder_id, next_cursor, updated_at)
+      VALUES (?, ?, NULL, ?)
+      ON CONFLICT(account_id, folder_id) DO UPDATE SET
         updated_at = excluded.updated_at
-    `).run(accountId, timestamp);
+    `).run(accountId, folderId, timestamp);
   } else {
     db.prepare(`
-      INSERT INTO mail_cache_meta (account_id, next_cursor, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(account_id) DO UPDATE SET
+      INSERT INTO mail_cache_meta (account_id, folder_id, next_cursor, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(account_id, folder_id) DO UPDATE SET
         next_cursor = excluded.next_cursor,
         updated_at = excluded.updated_at
-    `).run(accountId, nextCursor, timestamp);
+    `).run(accountId, folderId, nextCursor, timestamp);
   }
 
   const staleRows = db
     .prepare(`
       SELECT message_id FROM mail_messages
-      WHERE account_id = ?
+      WHERE account_id = ? AND folder_id = ?
       ORDER BY COALESCE(received_date_time, sent_date_time, updated_at) DESC
       LIMIT -1 OFFSET ?
     `)
-    .all(accountId, MAX_MESSAGES_PER_ACCOUNT) as Array<{ message_id: string }>;
-  const deleteMessage = db.prepare("DELETE FROM mail_messages WHERE account_id = ? AND message_id = ?");
+    .all(accountId, folderId, MAX_MESSAGES_PER_ACCOUNT) as Array<{ message_id: string }>;
+  const deleteMessage = db.prepare("DELETE FROM mail_messages WHERE account_id = ? AND folder_id = ? AND message_id = ?");
   for (const row of staleRows) {
-    deleteMessage.run(accountId, row.message_id);
+    deleteMessage.run(accountId, folderId, row.message_id);
   }
 }
 
@@ -429,13 +435,13 @@ async function migrateLegacyCache() {
   transaction(() => {
     for (const record of records) {
       if (record.messages.length > 0) {
-        saveMessagesSync(record.accountId, record.messages, record.nextCursor ?? null);
+        saveMessagesSync(record.accountId, "INBOX", record.messages, record.nextCursor ?? null);
       }
 
       const detailUpsert = db.prepare(`
-        INSERT INTO mail_details (account_id, message_id, detail_json, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(account_id, message_id) DO UPDATE SET
+        INSERT INTO mail_details (account_id, folder_id, message_id, detail_json, updated_at)
+        VALUES (?, 'INBOX', ?, ?, ?)
+        ON CONFLICT(account_id, folder_id, message_id) DO UPDATE SET
           detail_json = excluded.detail_json,
           updated_at = excluded.updated_at
       `);
@@ -466,28 +472,30 @@ async function migrateLegacyCacheOnce() {
   return legacyCacheMigration;
 }
 
-export async function getCachedMessages(accountId: string, search = "", top = 50, enabled = true) {
+export async function getCachedMessages(accountId: string, search = "", top = 50, enabled = true, folderId = "INBOX") {
   await migrateLegacyCacheOnce();
   if (!enabled) {
     return [];
   }
 
   const meta = getDatabase()
-    .prepare("SELECT next_cursor, updated_at FROM mail_cache_meta WHERE account_id = ?")
-    .get(accountId) as MailMetaRow | undefined;
+    .prepare("SELECT next_cursor, updated_at FROM mail_cache_meta WHERE account_id = ? AND folder_id = ?")
+    .get(accountId, folderId) as MailMetaRow | undefined;
   if (!meta || !isFresh(meta.updated_at)) {
     return [];
   }
 
   const query = search.trim().toLowerCase();
+  // SAFETY: node:sqlite 的行类型是 unknown；列集合由 mail_messages 建表语句固定，
+  // 与 MailMessageRow 字段一一对应。
   const rows = getDatabase()
     .prepare(`
       SELECT * FROM mail_messages
-      WHERE account_id = ?
+      WHERE account_id = ? AND folder_id = ?
       ORDER BY COALESCE(received_date_time, sent_date_time, updated_at) DESC
       LIMIT ?
     `)
-    .all(accountId, query ? MAX_MESSAGES_PER_ACCOUNT : Math.max(1, top)) as unknown as MailMessageRow[];
+    .all(accountId, folderId, query ? MAX_MESSAGES_PER_ACCOUNT : Math.max(1, top)) as unknown as MailMessageRow[];
 
   const messages = rows.map(rowToMessage);
 
@@ -501,11 +509,11 @@ export async function getCachedMessages(accountId: string, search = "", top = 50
     : messages;
 }
 
-export async function getCachedCursor(accountId: string) {
+export async function getCachedCursor(accountId: string, folderId = "INBOX") {
   await migrateLegacyCacheOnce();
   const row = getDatabase()
-    .prepare("SELECT next_cursor FROM mail_cache_meta WHERE account_id = ?")
-    .get(accountId) as { next_cursor: string | null } | undefined;
+    .prepare("SELECT next_cursor FROM mail_cache_meta WHERE account_id = ? AND folder_id = ?")
+    .get(accountId, folderId) as { next_cursor: string | null } | undefined;
   return row?.next_cursor || null;
 }
 
@@ -514,20 +522,21 @@ export async function saveCachedMessages(
   messages: MailMessageSummary[],
   enabled = true,
   nextCursor?: string | null,
-  options: { readBack?: boolean; assertCurrent?: () => void } = {}
+  options: { readBack?: boolean; assertCurrent?: () => void; folderId?: string } = {}
 ) {
   await migrateLegacyCacheOnce();
   if (!enabled) {
     return messages;
   }
 
+  const folderId = options.folderId || "INBOX";
   return withCacheLock(async () => {
     options.assertCurrent?.();
     transaction(() => {
-      saveMessagesSync(accountId, messages, nextCursor === undefined ? KEEP_EXISTING_CURSOR : nextCursor);
+      saveMessagesSync(accountId, folderId, messages, nextCursor === undefined ? KEEP_EXISTING_CURSOR : nextCursor);
     });
 
-    return options.readBack === false ? messages : getCachedMessages(accountId, "", MAX_MESSAGES_PER_ACCOUNT, true);
+    return options.readBack === false ? messages : getCachedMessages(accountId, "", MAX_MESSAGES_PER_ACCOUNT, true, folderId);
   });
 }
 
@@ -604,15 +613,15 @@ function serializeMailDetail(detail: MailMessageDetail) {
   return JSON.stringify({ version: 2, detail } satisfies StoredMailDetailV2);
 }
 
-export async function getCachedMessageDetail(accountId: string, messageId: string, enabled = true) {
+export async function getCachedMessageDetail(accountId: string, messageId: string, enabled = true, folderId = "INBOX") {
   await migrateLegacyCacheOnce();
   if (!enabled) {
     return null;
   }
 
   const row = getDatabase()
-    .prepare("SELECT detail_json, updated_at FROM mail_details WHERE account_id = ? AND message_id = ?")
-    .get(accountId, messageId) as MailDetailRow | undefined;
+    .prepare("SELECT detail_json, updated_at FROM mail_details WHERE account_id = ? AND folder_id = ? AND message_id = ?")
+    .get(accountId, folderId, messageId) as MailDetailRow | undefined;
   if (!row || !isFresh(row.updated_at)) {
     return null;
   }
@@ -623,8 +632,8 @@ export async function getCachedMessageDetail(accountId: string, messageId: strin
   }
 
   getDatabase()
-    .prepare("DELETE FROM mail_details WHERE account_id = ? AND message_id = ? AND detail_json = ?")
-    .run(accountId, messageId, row.detail_json);
+    .prepare("DELETE FROM mail_details WHERE account_id = ? AND folder_id = ? AND message_id = ? AND detail_json = ?")
+    .run(accountId, folderId, messageId, row.detail_json);
   return null;
 }
 
@@ -632,36 +641,37 @@ export async function saveCachedMessageDetail(
   accountId: string,
   detail: MailMessageDetail,
   enabled = true,
-  options: { assertCurrent?: () => void } = {}
+  options: { assertCurrent?: () => void; folderId?: string } = {}
 ) {
   await migrateLegacyCacheOnce();
   if (!enabled) {
     return;
   }
 
+  const folderId = options.folderId || "INBOX";
   return withCacheLock(async () => {
     options.assertCurrent?.();
     transaction(() => {
       const db = getDatabase();
       db.prepare(`
-        INSERT INTO mail_details (account_id, message_id, detail_json, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(account_id, message_id) DO UPDATE SET
+        INSERT INTO mail_details (account_id, folder_id, message_id, detail_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(account_id, folder_id, message_id) DO UPDATE SET
           detail_json = excluded.detail_json,
           updated_at = excluded.updated_at
-      `).run(accountId, detail.id, serializeMailDetail(detail), nowIso());
+      `).run(accountId, folderId, detail.id, serializeMailDetail(detail), nowIso());
 
       const staleRows = db
         .prepare(`
           SELECT message_id FROM mail_details
-          WHERE account_id = ?
+          WHERE account_id = ? AND folder_id = ?
           ORDER BY updated_at DESC
           LIMIT -1 OFFSET ?
         `)
-        .all(accountId, MAX_DETAILS_PER_ACCOUNT) as Array<{ message_id: string }>;
-      const deleteDetail = db.prepare("DELETE FROM mail_details WHERE account_id = ? AND message_id = ?");
+        .all(accountId, folderId, MAX_DETAILS_PER_ACCOUNT) as Array<{ message_id: string }>;
+      const deleteDetail = db.prepare("DELETE FROM mail_details WHERE account_id = ? AND folder_id = ? AND message_id = ?");
       for (const row of staleRows) {
-        deleteDetail.run(accountId, row.message_id);
+        deleteDetail.run(accountId, folderId, row.message_id);
       }
     });
   });

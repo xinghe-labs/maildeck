@@ -7,7 +7,7 @@ export interface DatabaseMigration {
   verify?: (database: DatabaseSync) => void;
 }
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 function tableExists(database: DatabaseSync, tableName: string) {
   return Boolean(
@@ -130,17 +130,22 @@ function verifySchemaForVersion(
   assertTableColumns(database, "mail_details", ["account_id", "message_id", "detail_json", "updated_at"]);
   assertTableColumns(database, "schema_migrations", ["id", "version", "updated_at"]);
   assertPrimaryKey(database, "accounts", ["id"]);
-  assertPrimaryKey(database, "mail_cache_meta", ["account_id"]);
-  assertPrimaryKey(database, "mail_messages", ["account_id", "message_id"]);
-  assertPrimaryKey(database, "mail_details", ["account_id", "message_id"]);
   assertPrimaryKey(database, "schema_migrations", ["id"]);
   assertIndexes(database, [
     "idx_accounts_email",
     "idx_accounts_status",
-    "idx_accounts_group_name",
-    "idx_mail_messages_account_updated",
-    "idx_mail_messages_account_received"
+    "idx_accounts_group_name"
   ]);
+
+  if (version <= 5) {
+    assertPrimaryKey(database, "mail_cache_meta", ["account_id"]);
+    assertPrimaryKey(database, "mail_messages", ["account_id", "message_id"]);
+    assertPrimaryKey(database, "mail_details", ["account_id", "message_id"]);
+    assertIndexes(database, [
+      "idx_mail_messages_account_updated",
+      "idx_mail_messages_account_received"
+    ]);
+  }
 
   if (version >= 2) {
     assertAccountColumns(database, ["inbox_folder_id", "refresh_cooldown_until"]);
@@ -168,6 +173,14 @@ function verifySchemaForVersion(
     if (tableExists(database, "access_token_cache")) {
       throw new Error("Database migration verification failed: access_token_cache still exists");
     }
+  }
+  if (version >= 6) {
+    assertTableColumns(database, "mail_cache_meta", ["account_id", "folder_id", "next_cursor", "updated_at"]);
+    assertTableColumns(database, "mail_messages", ["account_id", "folder_id", "message_id"]);
+    assertTableColumns(database, "mail_details", ["account_id", "folder_id", "message_id"]);
+    assertPrimaryKey(database, "mail_cache_meta", ["account_id", "folder_id"]);
+    assertPrimaryKey(database, "mail_messages", ["account_id", "folder_id", "message_id"]);
+    assertPrimaryKey(database, "mail_details", ["account_id", "folder_id", "message_id"]);
   }
 }
 
@@ -321,6 +334,74 @@ const DATABASE_MIGRATIONS: DatabaseMigration[] = [
     },
     verify(database) {
       verifySchemaForVersion(database, 5);
+    }
+  },
+  {
+    // v6：邮件缓存加 folder 维度。SQLite 不能修改主键，需重建表后回填。
+    // 旧数据全部归入 'INBOX'：历史缓存只可能来自收件箱读取路径。
+    version: 6,
+    up(database) {
+      database.exec(`
+        CREATE TABLE mail_cache_meta_v6 (
+          account_id TEXT NOT NULL,
+          folder_id TEXT NOT NULL DEFAULT 'INBOX',
+          next_cursor TEXT,
+          updated_at TEXT,
+          PRIMARY KEY (account_id, folder_id)
+        );
+        INSERT INTO mail_cache_meta_v6 (account_id, folder_id, next_cursor, updated_at)
+          SELECT account_id, 'INBOX', next_cursor, updated_at FROM mail_cache_meta;
+        DROP TABLE mail_cache_meta;
+        ALTER TABLE mail_cache_meta_v6 RENAME TO mail_cache_meta;
+
+        CREATE TABLE mail_messages_v6 (
+          account_id TEXT NOT NULL,
+          folder_id TEXT NOT NULL DEFAULT 'INBOX',
+          message_id TEXT NOT NULL,
+          subject TEXT NOT NULL,
+          from_name TEXT,
+          from_address TEXT,
+          received_date_time TEXT,
+          sent_date_time TEXT,
+          is_read INTEGER NOT NULL DEFAULT 0,
+          importance TEXT NOT NULL DEFAULT 'normal',
+          has_attachments INTEGER NOT NULL DEFAULT 0,
+          body_preview TEXT,
+          web_link TEXT,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, folder_id, message_id)
+        );
+        INSERT INTO mail_messages_v6 (
+          account_id, folder_id, message_id, subject, from_name, from_address,
+          received_date_time, sent_date_time, is_read, importance,
+          has_attachments, body_preview, web_link, updated_at
+        )
+          SELECT account_id, 'INBOX', message_id, subject, from_name, from_address,
+          received_date_time, sent_date_time, is_read, importance,
+          has_attachments, body_preview, web_link, updated_at FROM mail_messages;
+        DROP TABLE mail_messages;
+        ALTER TABLE mail_messages_v6 RENAME TO mail_messages;
+        CREATE INDEX IF NOT EXISTS idx_mail_messages_account_updated
+          ON mail_messages(account_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_mail_messages_account_received
+          ON mail_messages(account_id, received_date_time);
+
+        CREATE TABLE mail_details_v6 (
+          account_id TEXT NOT NULL,
+          folder_id TEXT NOT NULL DEFAULT 'INBOX',
+          message_id TEXT NOT NULL,
+          detail_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (account_id, folder_id, message_id)
+        );
+        INSERT INTO mail_details_v6 (account_id, folder_id, message_id, detail_json, updated_at)
+          SELECT account_id, 'INBOX', message_id, detail_json, updated_at FROM mail_details;
+        DROP TABLE mail_details;
+        ALTER TABLE mail_details_v6 RENAME TO mail_details;
+      `);
+    },
+    verify(database) {
+      verifySchemaForVersion(database, 6);
     }
   }
 ];

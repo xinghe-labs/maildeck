@@ -64,6 +64,7 @@ describe("mailbox session", () => {
     let session: MailboxSession | null = null;
     try {
       const adapter: MailboxSessionAdapter = {
+        listFolders: vi.fn(async () => []),
         listMessages: vi.fn(async () => listResult([summary("message-a")])),
         getMessage: vi.fn(async () => detail("message-a"))
       };
@@ -105,6 +106,7 @@ describe("mailbox session", () => {
   it("ignores a late account result after another account is selected", async () => {
     const accountA = deferred<MailListResult>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn((options) =>
         options.accountId === "account-a"
           ? accountA.promise
@@ -136,6 +138,7 @@ describe("mailbox session", () => {
 
   it("reloads only when the current account belongs to the expected set", async () => {
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn(async (options) =>
         listResult([summary(`message-${options.accountId}`)])
       ),
@@ -166,6 +169,7 @@ describe("mailbox session", () => {
   it("ignores a late pagination failure from the previously selected account", async () => {
     const latePage = deferred<MailListResult>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn((options) => {
         if (options.accountId === "account-a" && options.cursor) {
           return latePage.promise;
@@ -200,6 +204,7 @@ describe("mailbox session", () => {
 
   it("deduplicates pagination results and clears the cursor at the total count", async () => {
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn((options) => {
         if (options.cursor) {
           return Promise.resolve(
@@ -230,6 +235,7 @@ describe("mailbox session", () => {
   it("keeps a late detail result from replacing the newly selected message", async () => {
     const firstDetail = deferred<MailMessageDetail>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn(async () =>
         listResult([summary("message-1"), summary("message-2")])
       ),
@@ -259,6 +265,7 @@ describe("mailbox session", () => {
   it("does not let detail success clear a concurrent pagination error", async () => {
     const pendingDetail = deferred<MailMessageDetail>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn((options) =>
         options.cursor
           ? Promise.reject(new Error("pagination failed"))
@@ -287,6 +294,7 @@ describe("mailbox session", () => {
     const pendingPage = deferred<MailListResult>();
     const pendingDetail = deferred<MailMessageDetail>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn((options) =>
         options.cursor
           ? pendingPage.promise
@@ -315,6 +323,7 @@ describe("mailbox session", () => {
   it("starts a new generation when the search query changes", async () => {
     const oldSearch = deferred<MailListResult>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn((options) =>
         options.search === "old"
           ? oldSearch.promise
@@ -342,6 +351,7 @@ describe("mailbox session", () => {
 
   it("keeps the active search query when switching accounts", async () => {
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn(async (options) =>
         listResult([summary(`${options.accountId}-${options.search}`)])
       ),
@@ -371,6 +381,7 @@ describe("mailbox session", () => {
   it("does not update or notify after disposal", async () => {
     const pendingList = deferred<MailListResult>();
     const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
       listMessages: vi.fn(() => pendingList.promise),
       getMessage: vi.fn(async (options) => detail(options.messageId))
     };
@@ -389,6 +400,135 @@ describe("mailbox session", () => {
 
     expect(session.getSnapshot()).toBe(snapshotAtDisposal);
     expect(listener).toHaveBeenCalledTimes(notificationCountAtDisposal);
+  });
+});
+
+
+describe("mailbox session folders", () => {
+  it("loads folders on account selection and lists messages with the selected folderId", async () => {
+    vi.useFakeTimers();
+    let session: MailboxSession | null = null;
+    try {
+      const adapter: MailboxSessionAdapter = {
+        listFolders: vi.fn(async () => [
+          { id: "inbox-id", displayName: "Inbox", totalItemCount: 1, unreadItemCount: 0 },
+          { id: "sent-id", displayName: "Sent", totalItemCount: 2, unreadItemCount: 0 }
+        ]),
+        listMessages: vi.fn(async (options: { folderId?: string }) =>
+          listResult([summary(options.folderId ? "message-sent" : "message-inbox")])
+        ),
+        getMessage: vi.fn(async () => detail("message-inbox"))
+      };
+      session = createMailboxSession(adapter, { selectionDelayMs: 180 });
+
+      session.reconcileAccounts([{ id: "account-a", lastInboxCount: 1 }]);
+      await flushAsyncWork();
+      expect(adapter.listFolders).toHaveBeenCalledWith("account-a");
+      expect(session.getSnapshot()).toMatchObject({
+        accountId: "account-a",
+        selectedFolderId: null,
+        folders: [
+          { id: "inbox-id", displayName: "Inbox" },
+          { id: "sent-id", displayName: "Sent" }
+        ]
+      });
+
+      await vi.advanceTimersByTimeAsync(180);
+      await flushAsyncWork();
+      const inboxCalls = (adapter.listMessages as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [Record<string, unknown>]
+      >;
+      expect(inboxCalls.at(-1)?.[0]).not.toHaveProperty("folderId");
+
+      session.selectFolder("sent-id");
+      await flushAsyncWork();
+
+      expect(session.getSnapshot()).toMatchObject({ selectedFolderId: "sent-id" });
+      expect(session.getSnapshot().messages.map((message) => message.id)).toEqual(["message-sent"]);
+      const sentCalls = (adapter.listMessages as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [Record<string, unknown>]
+      >;
+      expect(sentCalls.at(-1)?.[0]).toMatchObject({ accountId: "account-a", folderId: "sent-id" });
+      expect((adapter.getMessage as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toMatchObject({
+        accountId: "account-a",
+        folderId: "sent-id"
+      });
+    } finally {
+      session?.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a stale folder list result after switching folders", async () => {
+    const sentResult = deferred<MailListResult>();
+    const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
+      listMessages: vi.fn((options: { folderId?: string }) =>
+        options.folderId === "sent-id" ? sentResult.promise : Promise.resolve(listResult([summary("draft-a")]))
+      ),
+      getMessage: vi.fn(async () => {
+        throw new Error("No message detail expected");
+      })
+    };
+    const session = createMailboxSession(adapter);
+
+    try {
+      session.selectAccount("account-a");
+      await flushAsyncWork();
+      session.selectFolder("sent-id");
+      await flushAsyncWork();
+      expect(session.getSnapshot().messages).toEqual([]);
+
+      session.selectFolder("drafts-id");
+      await flushAsyncWork();
+      expect(session.getSnapshot()).toMatchObject({ selectedFolderId: "drafts-id" });
+      expect(session.getSnapshot().messages.map((message) => message.id)).toEqual(["draft-a"]);
+
+      sentResult.resolve(listResult([summary("sent-late")]));
+      await flushAsyncWork();
+      expect(session.getSnapshot().selectedFolderId).toBe("drafts-id");
+      expect(session.getSnapshot().messages.map((message) => message.id)).toEqual(["draft-a"]);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("resets the selected folder when another account is selected", async () => {
+    vi.useFakeTimers();
+    let session: MailboxSession | null = null;
+    try {
+      const adapter: MailboxSessionAdapter = {
+        listFolders: vi.fn(async () => [
+          { id: "sent-id", displayName: "Sent", totalItemCount: 0, unreadItemCount: 0 }
+        ]),
+        listMessages: vi.fn(async () => listResult([])),
+        getMessage: vi.fn(async () => {
+          throw new Error("No message detail expected");
+        })
+      };
+      session = createMailboxSession(adapter, { selectionDelayMs: 180 });
+
+      session.reconcileAccounts([{ id: "account-a", lastInboxCount: 0 }]);
+      await flushAsyncWork();
+      session.selectFolder("sent-id");
+      await flushAsyncWork();
+      expect(session.getSnapshot().selectedFolderId).toBe("sent-id");
+
+      session.reconcileAccounts([{ id: "account-b", lastInboxCount: 0 }]);
+      await flushAsyncWork();
+
+      expect(session.getSnapshot()).toMatchObject({ accountId: "account-b", selectedFolderId: null });
+      await vi.advanceTimersByTimeAsync(180);
+      await flushAsyncWork();
+      const calls = (adapter.listMessages as ReturnType<typeof vi.fn>).mock.calls as Array<
+        [Record<string, unknown>]
+      >;
+      expect(calls.at(-1)?.[0]).toMatchObject({ accountId: "account-b" });
+      expect(calls.at(-1)?.[0]).not.toHaveProperty("folderId");
+    } finally {
+      session?.dispose();
+      vi.useRealTimers();
+    }
   });
 });
 

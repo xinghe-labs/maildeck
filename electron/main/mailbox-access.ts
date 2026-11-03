@@ -49,6 +49,10 @@ import type {
   TestManyResult
 } from "./types.js";
 
+// 收件箱缓存在三张表中的规范 folder 键固定为 'INBOX'（与迁移回填一致），
+// 与账号级增量刷新共用同一批行；其他文件夹用真实服务器 folder id 作键。
+const PRIMARY_FOLDER_KEY = "INBOX";
+
 export interface MailboxAccess {
   readonly listFolders: (accountId: string, signal?: AbortSignal) => Promise<MailFolder[]>;
   readonly testConnection: (accountId: string, forceRefresh: boolean, signal?: AbortSignal) => Promise<TestManyResult>;
@@ -346,14 +350,19 @@ class DefaultMailboxAccess implements MailboxAccess {
     const guard = this.beginOperation(options.accountId, signal);
     const search = options.search?.trim() || "";
     const top = options.top || 50;
+    const requestedFolderId = options.folderId?.trim() || "";
+    // 显式 folderId 表示用户在浏览非收件箱文件夹：fallback 只能读收件箱，
+    // 账号级刷新状态只描述收件箱，这两条路径都必须跳过。
+    const isFolderBrowse = requestedFolderId.length > 0;
+    const folderKey = isFolderBrowse ? requestedFolderId : PRIMARY_FOLDER_KEY;
     const account = await getAccountRecord(options.accountId);
 
     if (!options.forceRefresh && !options.cursor && !options.skip) {
-      const cached = await getCachedMessages(options.accountId, search, top, this.settings.cacheMessages);
+      const cached = await getCachedMessages(options.accountId, search, top, this.settings.cacheMessages, folderKey);
       guard.assertCurrent();
       if (cached.length > 0) {
-        const totalCount = account.lastInboxCount || cached.length;
-        const cachedCursor = cached.length < totalCount ? await getCachedCursor(options.accountId) : null;
+        const totalCount = isFolderBrowse ? cached.length : account.lastInboxCount || cached.length;
+        const cachedCursor = cached.length < totalCount ? await getCachedCursor(options.accountId, folderKey) : null;
         guard.assertCurrent();
         return { messages: cached, nextCursor: cachedCursor, totalCount };
       }
@@ -384,17 +393,27 @@ class DefaultMailboxAccess implements MailboxAccess {
         result: Awaited<ReturnType<typeof listImapMessages>>;
       };
       try {
-        const folders = await listImapFolders(token.email, token.accessToken, this.settings.proxyUrl, signal);
-        const inbox = pickInboxFolder(folders);
-        if (!inbox) {
+        const targetFolderId = isFolderBrowse
+          ? requestedFolderId
+          : await (async () => {
+              // 收件箱路径保持既有行为：优先用持久化的 inboxFolderId，
+              // 没有时按名称重新发现并持久化。
+              if (account.inboxFolderId) {
+                return account.inboxFolderId;
+              }
+              const folders = await listImapFolders(token.email, token.accessToken, this.settings.proxyUrl, signal);
+              const inbox = pickInboxFolder(folders);
+              return inbox?.id || "";
+            })();
+        if (!targetFolderId) {
           return { messages: [], nextCursor: null, totalCount: 0 };
         }
         loaded = {
-          inboxId: inbox.id,
+          inboxId: targetFolderId,
           result: await listImapMessages(
             token.email,
             token.accessToken,
-            inbox.id,
+            targetFolderId,
             top,
             search,
             options.cursor || "",
@@ -403,7 +422,9 @@ class DefaultMailboxAccess implements MailboxAccess {
           )
         };
       } catch (error) {
-        if (search || options.cursor || options.skip) {
+        // 文件夹浏览是用户主动查看任意文件夹，而 Hotmail 兜底只能读收件箱：
+        // 非收件箱路径出错必须直接报错，不得静默换成兜底数据。
+        if (isFolderBrowse || search || options.cursor || options.skip) {
           throw error;
         }
         guard.assertCurrent();
@@ -417,26 +438,32 @@ class DefaultMailboxAccess implements MailboxAccess {
       if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor, skip: options.skip })) {
         guard.assertCurrent();
         await saveCachedMessages(options.accountId, messages, this.settings.cacheMessages, nextCursor, {
-          assertCurrent: guard.assertCurrent
+          assertCurrent: guard.assertCurrent,
+          // 文件夹浏览写入对应 folder 键；收件箱路径用默认 'INBOX' 键。
+          folderId: isFolderBrowse ? requestedFolderId : PRIMARY_FOLDER_KEY
         });
-        guard.assertCurrent();
-        await updateAccountRefreshState(options.accountId, {
-          status: "valid",
-          lastError: null,
-          lastInboxCount: loaded.result.totalCount,
-          lastMailAt: latestMailTime(messages),
-          lastMailCursor: maxCursorFor(messages),
-          inboxFolderId: loaded.inboxId,
-          graphDeltaLink: null,
-          refreshCooldownUntil: null
-        }, {
-          assertCurrent: guard.assertCurrent
-        });
+        // 账号级刷新状态（lastInboxCount、游标、delta link）只描述收件箱：
+        // 浏览其他文件夹的读取不得覆盖这些值。
+        if (!isFolderBrowse) {
+          guard.assertCurrent();
+          await updateAccountRefreshState(options.accountId, {
+            status: "valid",
+            lastError: null,
+            lastInboxCount: loaded.result.totalCount,
+            lastMailAt: latestMailTime(messages),
+            lastMailCursor: maxCursorFor(messages),
+            inboxFolderId: loaded.inboxId,
+            graphDeltaLink: null,
+            refreshCooldownUntil: null
+          }, {
+            assertCurrent: guard.assertCurrent
+          });
+        }
       }
       return { messages, nextCursor, totalCount: loaded.result.totalCount };
     }
 
-    let inbox = account.inboxFolderId
+    let inbox = account.inboxFolderId && !isFolderBrowse
       ? {
           id: account.inboxFolderId,
           displayName: "Inbox",
@@ -448,7 +475,25 @@ class DefaultMailboxAccess implements MailboxAccess {
     const skip = options.cursor ? Number(options.cursor) || 0 : options.skip || 0;
 
     try {
-      if (inbox) {
+      if (isFolderBrowse) {
+        // 文件夹浏览：直接读指定文件夹，不走收件箱发现。
+        messages = await listMessages(
+          token.accessToken,
+          requestedFolderId,
+          top,
+          skip,
+          search,
+          options.since || null,
+          this.settings.proxyUrl,
+          signal
+        );
+        inbox = {
+          id: requestedFolderId,
+          displayName: requestedFolderId,
+          totalItemCount: 0,
+          unreadItemCount: 0
+        };
+      } else if (inbox) {
         try {
           messages = await listMessages(
             token.accessToken,
@@ -489,7 +534,8 @@ class DefaultMailboxAccess implements MailboxAccess {
         return { messages: [], nextCursor: null, totalCount: 0 };
       }
     } catch (error) {
-      if (search || options.cursor || options.skip) {
+      // 同 IMAP：文件夹浏览不回退 Hotmail 兜底。
+      if (isFolderBrowse || search || options.cursor || options.skip) {
         throw error;
       }
       guard.assertCurrent();
@@ -498,26 +544,30 @@ class DefaultMailboxAccess implements MailboxAccess {
       return this.fallbackListResult(fallback);
     }
 
-    const totalCount = inbox.totalItemCount || messages.length;
+    const totalCount = isFolderBrowse ? messages.length : inbox.totalItemCount || messages.length;
     const loadedCount = skip + messages.length;
     const nextCursor = messages.length >= top && loadedCount < totalCount ? String(loadedCount) : null;
     if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor, skip: options.skip })) {
       guard.assertCurrent();
       await saveCachedMessages(options.accountId, messages, this.settings.cacheMessages, nextCursor, {
-        assertCurrent: guard.assertCurrent
+        assertCurrent: guard.assertCurrent,
+        // 文件夹浏览写入对应 folder 键；收件箱路径用默认 'INBOX' 键。
+        folderId: isFolderBrowse ? requestedFolderId : PRIMARY_FOLDER_KEY
       });
-      guard.assertCurrent();
-      await updateAccountRefreshState(options.accountId, {
-        status: "valid",
-        lastError: null,
-        lastInboxCount: totalCount,
-        lastMailAt: latestMailTime(messages),
-        lastMailCursor: null,
-        inboxFolderId: inbox.id,
-        refreshCooldownUntil: null
-      }, {
-        assertCurrent: guard.assertCurrent
-      });
+      if (!isFolderBrowse) {
+        guard.assertCurrent();
+        await updateAccountRefreshState(options.accountId, {
+          status: "valid",
+          lastError: null,
+          lastInboxCount: totalCount,
+          lastMailAt: latestMailTime(messages),
+          lastMailCursor: null,
+          inboxFolderId: inbox.id,
+          refreshCooldownUntil: null
+        }, {
+          assertCurrent: guard.assertCurrent
+        });
+      }
     }
     return { messages, nextCursor, totalCount };
   };
@@ -525,10 +575,14 @@ class DefaultMailboxAccess implements MailboxAccess {
   readonly getMessage = async (options: GetMessageOptions, signal: AbortSignal): Promise<MailMessageDetail> => {
     const guard = this.beginOperation(options.accountId, signal);
     const isHelperMessage = options.messageId.startsWith("helper:");
+    const isFolderBrowse = Boolean(options.folderId?.trim());
+    // folderId 与缓存键、fallback 判定共用同一规则：显式指定即文件夹浏览。
+    const folderKey = options.folderId?.trim() || PRIMARY_FOLDER_KEY;
     const cached = await getCachedMessageDetail(
       options.accountId,
       options.messageId,
-      this.settings.cacheBodies || isHelperMessage
+      this.settings.cacheBodies || isHelperMessage,
+      folderKey
     );
     guard.assertCurrent();
     if (cached) {
@@ -549,6 +603,17 @@ class DefaultMailboxAccess implements MailboxAccess {
       );
       if (token.authMode !== "imap") {
         detail = await getMessage(token.accessToken, options.messageId, this.settings.proxyUrl, signal);
+      } else if (isFolderBrowse) {
+        // 文件夹浏览：直接在指定文件夹内取正文；正文拿不到时不触发兜底，
+        // 也不得把 rediscovered 收件箱写回账号状态。
+        detail = await getImapMessage(
+          token.email,
+          token.accessToken,
+          options.folderId!.trim(),
+          options.messageId,
+          this.settings.proxyUrl,
+          signal
+        );
       } else {
         const account = await getAccountRecord(options.accountId);
         const folderIds = account.inboxFolderId ? [account.inboxFolderId] : [];
@@ -594,8 +659,7 @@ class DefaultMailboxAccess implements MailboxAccess {
         }
       }
     } catch (error) {
-      guard.assertCurrent();
-      if (!this.shouldTryHotmailFallbackDetail(options.messageId, error)) {
+      if (isFolderBrowse || !this.shouldTryHotmailFallbackDetail(options.messageId, error)) {
         throw error;
       }
       detail = (await this.fetchHotmailFallbackDetail(options.accountId, options.messageId, error, guard)).detail;
@@ -609,7 +673,8 @@ class DefaultMailboxAccess implements MailboxAccess {
     }
     guard.assertCurrent();
     await saveCachedMessageDetail(options.accountId, detail, this.settings.cacheBodies, {
-      assertCurrent: guard.assertCurrent
+      assertCurrent: guard.assertCurrent,
+      folderId: folderKey
     });
     return detail;
   };

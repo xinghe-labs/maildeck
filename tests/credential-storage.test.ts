@@ -162,7 +162,7 @@ describe("credential storage migration", () => {
     expect(message).toEqual({ subject: "Preserved subject", body_preview: "Preserved preview" });
     expect(detail).toEqual({ detail_json: '{"body":"Preserved detail"}' });
     expect(cacheMeta).toEqual({ next_cursor: "cursor-42" });
-    expect(migration.version).toBe(5);
+    expect(migration.version).toBe(6);
   });
 
   it("increments generations on reimport and refuses stale refresh-token writes", async () => {

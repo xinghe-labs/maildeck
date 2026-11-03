@@ -24,9 +24,6 @@ async function createTemporaryUserData() {
 
 function createVersionFixture(databasePath: string, version: number) {
   const database = new DatabaseSync(databasePath);
-  const version2Columns = version >= 2 ? "inbox_folder_id TEXT, refresh_cooldown_until TEXT," : "";
-  const version3Columns = version >= 3 ? "graph_delta_link TEXT," : "";
-  const version5Columns = version >= 5 ? "credential_generation INTEGER NOT NULL DEFAULT 0," : "";
 
   database.exec(`
     CREATE TABLE accounts (
@@ -43,17 +40,8 @@ function createVersionFixture(databasePath: string, version: number) {
       last_inbox_count INTEGER NOT NULL DEFAULT 0,
       last_mail_at TEXT,
       last_mail_cursor TEXT,
-      ${version2Columns}
-      ${version3Columns}
-      ${version5Columns}
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    );
-    INSERT INTO accounts (
-      id, email, client_id, encrypted_refresh_token, created_at, updated_at
-    ) VALUES (
-      'account-${version}', 'person${version}@example.com', 'client-${version}', 'safe:dG9rZW4=',
-      '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
     );
 
     CREATE INDEX idx_accounts_email ON accounts(email);
@@ -64,9 +52,6 @@ function createVersionFixture(databasePath: string, version: number) {
       account_id TEXT PRIMARY KEY,
       next_cursor TEXT,
       updated_at TEXT
-    );
-    INSERT INTO mail_cache_meta VALUES (
-      'account-${version}', 'cursor-${version}', '2026-01-01T00:00:00.000Z'
     );
 
     CREATE TABLE mail_messages (
@@ -85,12 +70,6 @@ function createVersionFixture(databasePath: string, version: number) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (account_id, message_id)
     );
-    INSERT INTO mail_messages (
-      account_id, message_id, subject, body_preview, updated_at
-    ) VALUES (
-      'account-${version}', 'message-${version}', 'Subject ${version}', 'Preview ${version}',
-      '2026-01-01T00:00:00.000Z'
-    );
 
     CREATE INDEX idx_mail_messages_account_updated ON mail_messages(account_id, updated_at);
     CREATE INDEX idx_mail_messages_account_received ON mail_messages(account_id, received_date_time);
@@ -102,18 +81,49 @@ function createVersionFixture(databasePath: string, version: number) {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (account_id, message_id)
     );
-    INSERT INTO mail_details VALUES (
-      'account-${version}', 'message-${version}', '{"body":"Detail ${version}"}',
-      '2026-01-01T00:00:00.000Z'
-    );
+  `);
+  const accountId = `account-${version}`;
+  const messageId = `message-${version}`;
+  database
+    .prepare(`
+      INSERT INTO accounts (
+        id, email, client_id, encrypted_refresh_token, created_at, updated_at
+      ) VALUES (?, ?, ?, 'safe:dG9rZW4=',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+    `)
+    .run(accountId, `person${version}@example.com`, `client-${version}`);
+  database
+    .prepare("INSERT INTO mail_cache_meta (account_id, next_cursor, updated_at) VALUES (?, ?, '2026-01-01T00:00:00.000Z')")
+    .run(accountId, `cursor-${version}`);
+  database
+    .prepare("INSERT INTO mail_messages (account_id, message_id, subject, body_preview, updated_at) VALUES (?, ?, ?, ?, '2026-01-01T00:00:00.000Z')")
+    .run(accountId, messageId, `Subject ${version}`, `Preview ${version}`);
+  database
+    .prepare("INSERT INTO mail_details (account_id, message_id, detail_json, updated_at) VALUES (?, ?, ?, '2026-01-01T00:00:00.000Z')")
+    .run(accountId, messageId, `{"body":"Detail ${version}"}`);
 
+  // 逐列补齐版本化列：每条语句都是完整字面量，无任何插值参与 SQL 拼接。
+  if (version >= 2) {
+    database.exec("ALTER TABLE accounts ADD COLUMN inbox_folder_id TEXT");
+    database.exec("ALTER TABLE accounts ADD COLUMN refresh_cooldown_until TEXT");
+  }
+  if (version >= 3) {
+    database.exec("ALTER TABLE accounts ADD COLUMN graph_delta_link TEXT");
+  }
+  if (version >= 5) {
+    database.exec("ALTER TABLE accounts ADD COLUMN credential_generation INTEGER NOT NULL DEFAULT 0");
+  }
+
+  database.exec(`
     CREATE TABLE schema_migrations (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       version INTEGER NOT NULL,
       updated_at TEXT NOT NULL
     );
-    INSERT INTO schema_migrations VALUES (1, ${version}, '2026-01-01T00:00:00.000Z');
   `);
+  database
+    .prepare("INSERT INTO schema_migrations VALUES (1, ?, '2026-01-01T00:00:00.000Z')")
+    .run(version);
 
   if (version === 4) {
     database.exec(`
@@ -126,7 +136,7 @@ function createVersionFixture(databasePath: string, version: number) {
         updated_at TEXT NOT NULL
       );
       INSERT INTO access_token_cache VALUES (
-        'account-${version}', 'safe:bGVnYWN5LWFjY2Vzcw==', 9999999999999, 'Mail.Read', 'graph',
+        'account-4', 'safe:bGVnYWN5LWFjY2Vzcw==', 9999999999999, 'Mail.Read', 'graph',
         '2026-01-01T00:00:00.000Z'
       );
     `);
@@ -162,7 +172,7 @@ describe("ordered database migrations", () => {
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'access_token_cache'")
       .get();
 
-    expect(migration.version).toBe(5);
+    expect(migration.version).toBe(6);
     expect(accountColumns.map((column) => column.name)).toEqual(
       expect.arrayContaining(["inbox_folder_id", "graph_delta_link", "refresh_cooldown_until", "credential_generation"])
     );
@@ -172,7 +182,7 @@ describe("ordered database migrations", () => {
     expect(cacheMeta).toEqual({ next_cursor: `cursor-${version}` });
     expect(accessTokenTable).toBeUndefined();
 
-    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\.pre-v5\..+\.db\.bak$/u.test(name));
+    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
     expect(backupNames).toHaveLength(1);
     const backup = new DatabaseSync(path.join(directory, backupNames[0]));
     expect(backup.prepare("SELECT version FROM schema_migrations WHERE id = 1").get()).toEqual({ version });
@@ -245,7 +255,7 @@ describe("ordered database migrations", () => {
     expect(original.prepare("SELECT type FROM sqlite_master WHERE name = 'access_token_cache'").get()).toEqual({ type: "view" });
     original.close();
 
-    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\.pre-v5\..+\.db\.bak$/u.test(name));
+    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
     expect(backupNames).toHaveLength(1);
     const backup = new DatabaseSync(path.join(directory, backupNames[0]));
     expect(backup.prepare("SELECT version FROM schema_migrations WHERE id = 1").get()).toEqual({ version: 4 });
@@ -279,7 +289,7 @@ describe("ordered database migrations", () => {
 
     const upgraded = getDatabase();
 
-    expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE id = 1").get()).toEqual({ version: 5 });
+    expect(upgraded.prepare("SELECT version FROM schema_migrations WHERE id = 1").get()).toEqual({ version: 6 });
     expect(
       upgraded.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'access_token_cache'").get()
     ).toBeUndefined();
@@ -300,7 +310,7 @@ describe("ordered database migrations", () => {
 
     expect(() => getDatabase()).toThrow(/backup preserved/u);
 
-    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\.pre-v5\..+\.db\.bak$/u.test(name));
+    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
     expect(backupNames).toHaveLength(1);
     const backup = new DatabaseSync(path.join(directory, backupNames[0]));
     expect((backup.prepare("PRAGMA table_info(schema_migrations)").all() as Array<{ name: string }>).map(({ name }) => name)).toContain(
@@ -331,7 +341,7 @@ describe("ordered database migrations", () => {
         subject: "Committed in WAL"
       });
 
-      const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\.pre-v5\..+\.db\.bak$/u.test(name));
+      const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
       expect(backupNames).toHaveLength(1);
       const backup = new DatabaseSync(path.join(directory, backupNames[0]));
       expect(backup.prepare("SELECT subject FROM mail_messages WHERE message_id = 'message-4'").get()).toEqual({
@@ -352,7 +362,7 @@ describe("ordered database migrations", () => {
     const databasePath = path.join(directory, "outlook-manager.db");
     createVersionFixture(databasePath, 4);
     const newer = new DatabaseSync(databasePath);
-    newer.prepare("UPDATE schema_migrations SET version = 6 WHERE id = 1").run();
+    newer.prepare("UPDATE schema_migrations SET version = 7 WHERE id = 1").run();
     newer.close();
     const { getDatabase } = await import("../electron/main/database.js");
 

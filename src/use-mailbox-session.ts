@@ -23,6 +23,7 @@ export function useMailboxSession(adapter: MailboxSessionAdapter | null) {
   return useMemo(() => ({
     state,
     selectAccount: session?.selectAccount ?? (() => undefined),
+    selectFolder: session?.selectFolder ?? (() => undefined),
     reconcileAccounts: session?.reconcileAccounts ?? (() => undefined),
     isCurrentAccount: session?.isCurrentAccount ?? (() => false),
     updateTotalCount: session?.updateTotalCount ?? (() => undefined),
