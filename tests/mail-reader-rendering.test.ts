@@ -99,4 +99,56 @@ describe("MailReader rendering cost", () => {
     expect(mailPolicy.sanitize).toHaveBeenCalledTimes(1);
     expect(mailPolicy.buildDocument).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps the previous message visible while loading the next one", () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    const plainDetail = (content: string): MailMessageDetail => ({
+      ...detail(content),
+      body: { contentType: "text", content }
+    });
+
+    act(() => root.render(createElement(MailReader, {
+      selectedMessage: summary,
+      messageDetail: plainDetail("Old body"),
+      loadingDetail: false
+    })));
+    act(() => root.render(createElement(MailReader, {
+      selectedMessage: summary,
+      messageDetail: null,
+      loadingDetail: true
+    })));
+
+    // 防白闪：切换中仍渲染旧正文，并标记 stale 态。
+    expect(container.textContent).toContain("Old body");
+    expect(container.querySelector(".reader-panel.is-stale")).not.toBeNull();
+    expect(container.querySelector(".reader-loading-chip")).not.toBeNull();
+
+    act(() => root.render(createElement(MailReader, {
+      selectedMessage: summary,
+      messageDetail: plainDetail("New body"),
+      loadingDetail: false
+    })));
+
+    // 加载完成后切换到新正文，stale 态解除。
+    expect(container.textContent).toContain("New body");
+    expect(container.querySelector(".reader-panel.is-stale")).toBeNull();
+  });
+
+  it("shows the loading placeholder when there is no previous content", () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    act(() => root.render(createElement(MailReader, {
+      selectedMessage: summary,
+      messageDetail: null,
+      loadingDetail: true
+    })));
+
+    expect(container.textContent).toContain("正在读取邮件");
+    expect(container.querySelector(".mail-content-frame")).toBeNull();
+  });
 });
