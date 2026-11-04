@@ -1,5 +1,5 @@
 param(
-  [string]$Repo = "xinghe118/outlook-manager",
+  [string]$Repo = "xinghe-labs/outlook-manager",
   [switch]$SkipBuild,
   [switch]$Draft,
   [switch]$Prerelease,
