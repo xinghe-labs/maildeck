@@ -81,7 +81,7 @@ function createWindow() {
     minHeight: 720,
     title: "Outlook Manager",
     icon: path.join(__dirname, "../../build/icon.ico"),
-    backgroundColor: "#eef2f1",
+    backgroundColor: "#fafafa", // 与 --bg-app 一致：窗口映射到首帧之间不留异色
     webPreferences: {
       preload: path.join(__dirname, "../preload/index.cjs"),
       ...SECURE_WEB_PREFERENCES
