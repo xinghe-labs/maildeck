@@ -69,6 +69,7 @@ function renderMessageList(props: Partial<Parameters<typeof MessageList>[0]> = {
         listError: "",
         onMailQueryChange: vi.fn(),
         onExecuteSearch: vi.fn(),
+    onClearSearch: vi.fn(),
         onRefresh: vi.fn(),
         onSelectFolder: vi.fn(),
         onSelectMessage: vi.fn(),

@@ -38,6 +38,7 @@ function renderList(props: Partial<ComponentProps<typeof MessageList>> = {}) {
   const handlers = {
     onMailQueryChange: vi.fn(),
     onExecuteSearch: vi.fn(),
+    onClearSearch: vi.fn(),
     onRefresh: vi.fn(),
     onSelectFolder: vi.fn(),
     onSelectMessage: vi.fn(),
@@ -122,12 +123,12 @@ describe("MessageList", () => {
 
   it("shows the empty placeholder only when the list is settled and empty", () => {
     renderList({ messages: [] });
-    expect(container.querySelector(".panel-empty")?.textContent).toContain("没有邮件可显示");
+    expect(container.querySelector(".panel-empty")?.textContent).toContain("这个文件夹里还没有邮件");
 
     act(() => root.unmount());
     renderList({ messages: [], loadingMessages: true });
     expect(container.querySelector(".panel-empty")?.textContent).toContain("正在刷新邮件");
-    expect(container.textContent).not.toContain("没有邮件可显示");
+    expect(container.textContent).not.toContain("这个文件夹里还没有邮件");
   });
 
   it("distinguishes a failed list load from an empty mailbox and offers retry", () => {
@@ -135,7 +136,7 @@ describe("MessageList", () => {
     const errorPanel = container.querySelector(".panel-error");
     expect(errorPanel?.textContent).toContain("邮件列表加载失败");
     expect(errorPanel?.textContent).toContain("连接超时");
-    expect(container.textContent).not.toContain("没有邮件可显示");
+    expect(container.textContent).not.toContain("这个文件夹里还没有邮件");
 
     const retry = container.querySelector<HTMLButtonElement>(".panel-error-retry");
     expect(retry).not.toBeNull();
@@ -145,7 +146,7 @@ describe("MessageList", () => {
     act(() => root.unmount());
     renderList({ messages: [], listError: "" });
     expect(container.querySelector(".panel-error")).toBeNull();
-    expect(container.querySelector(".panel-empty")?.textContent).toContain("没有邮件可显示");
+    expect(container.querySelector(".panel-empty")?.textContent).toContain("这个文件夹里还没有邮件");
   });
 
   it("shows an attachment marker only for messages that have attachments", () => {
