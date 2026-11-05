@@ -1,5 +1,4 @@
 import {
-  AlertCircle,
   CheckCircle2,
   ChevronDown,
   Loader2,
@@ -8,20 +7,24 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountSidebar } from "./components/AccountSidebar";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ErrorBanner } from "./components/ErrorBanner";
 import { ImportModal } from "./components/ImportModal";
 import { MailReader } from "./components/MailReader";
 import { MessageList } from "./components/MessageList";
+import { ModalShell } from "./components/ModalShell";
 import { SettingsModal } from "./components/SettingsModal";
 import { getDesktopApi } from "./desktop-api";
+import { splitErrorMessage } from "./error-display";
 import type {
   AccountUpdateInput,
   AccountView,
   AppSettings,
   RefreshManyResult
 } from "./types";
-import { formatRelativeTime } from "./ui-utils";
+import { accountInboxSummary } from "./ui-utils";
 import { errorMessage } from "./app-error";
 import { useAccountCatalogSession } from "./use-account-catalog-session";
 import { useMailboxSession } from "./use-mailbox-session";
@@ -82,41 +85,13 @@ function EditAccountModal({
   }
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal dark-modal" onSubmit={submit}>
-        <div className="modal-header">
-          <div>
-            <h2>编辑邮箱</h2>
-            <p>Refresh Token 留空则保持不变</p>
-          </div>
-          <button className="toolbar-icon" type="button" onClick={onClose} title="关闭">
-            <X size={18} />
-          </button>
-        </div>
-        <div className="form-grid">
-          <label>
-            邮箱
-            <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
-          </label>
-          <label>
-            Client ID
-            <input value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })} required />
-          </label>
-          <label className="span-2">
-            Refresh Token
-            <textarea value={form.refreshToken} onChange={(event) => setForm({ ...form, refreshToken: event.target.value })} />
-          </label>
-          <label>
-            备注
-            <input value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
-          </label>
-          <label>
-            分组
-            <input value={form.group} onChange={(event) => setForm({ ...form, group: event.target.value })} />
-          </label>
-        </div>
-        {error ? <div className="error-box">{error}</div> : null}
-        <div className="modal-actions">
+    <ModalShell
+      title="编辑邮箱"
+      subtitle="Refresh Token 留空则保持不变"
+      onClose={onClose}
+      onSubmit={submit}
+      footer={
+        <>
           <button type="button" className="secondary-button dark-button" onClick={onClose}>
             取消
           </button>
@@ -124,9 +99,33 @@ function EditAccountModal({
             {loading ? <Loader2 size={16} className="spin" /> : <Pencil size={16} />}
             保存修改
           </button>
-        </div>
-      </form>
-    </div>
+        </>
+      }
+    >
+      <div className="form-grid">
+        <label>
+          邮箱
+          <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
+        </label>
+        <label>
+          Client ID
+          <input value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })} required />
+        </label>
+        <label className="span-2">
+          Refresh Token
+          <textarea value={form.refreshToken} onChange={(event) => setForm({ ...form, refreshToken: event.target.value })} />
+        </label>
+        <label>
+          备注
+          <input value={form.remark} onChange={(event) => setForm({ ...form, remark: event.target.value })} />
+        </label>
+        <label>
+          分组
+          <input value={form.group} onChange={(event) => setForm({ ...form, group: event.target.value })} />
+        </label>
+      </div>
+      {error ? <div className="error-box">{error}</div> : null}
+    </ModalShell>
   );
 }
 export default function App() {
@@ -138,9 +137,12 @@ export default function App() {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [testMenuOpen, setTestMenuOpen] = useState(false);
+  const testMenuRef = useRef<HTMLDivElement | null>(null);
   const [newMailCounts, setNewMailCounts] = useState<Record<string, number>>({});
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<AccountView | null>(null);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const desktopApi = getDesktopApi();
   const accountCatalog = useAccountCatalogSession(desktopApi ?? null);
   const mailbox = useMailboxSession(desktopApi?.mail ?? null);
@@ -360,7 +362,7 @@ export default function App() {
       }
       const validCount = results.filter((item) => item.ok).length;
       accountCatalog.mergeTestResults(results, accountVersionsAtStart);
-      setToast(`已测试 ${validCount}/${results.length} 个账号`);
+      setToast(`已测试 ${results.length} 个账号：可用 ${validCount}、失效 ${results.length - validCount}`);
     } catch (testError) {
       setBulkTestAccountIds(new Set());
       setError(errorMessage(testError));
@@ -437,9 +439,13 @@ export default function App() {
         const changedCount = options.silent ? recordNewMailCounts(results) : 0;
 
         if (options.silent) {
-          setToast(changedCount > 0 ? `定时刷新发现 ${changedCount} 个账号有新邮件` : `定时刷新完成 ${okCount}/${results.length}`);
+          setToast(
+            changedCount > 0
+              ? `定时刷新发现 ${changedCount} 个账号有新邮件`
+              : `定时刷新完成：成功 ${okCount}、失败 ${results.length - okCount}`
+          );
         } else {
-          setToast(`${doneText} ${okCount}/${results.length} 个账号的收件箱`);
+          setToast(`${doneText} ${results.length} 个账号：成功 ${okCount}、失败 ${results.length - okCount}`);
         }
 
         await mailbox.reloadIfCurrentAccount(accountIds);
@@ -487,7 +493,7 @@ export default function App() {
         if (mailbox.isCurrentAccount(accountId)) {
           setError(refreshMessage);
         } else {
-          setToast(`${email} 刷新失败：${refreshMessage}`);
+          setToast(`${email} 刷新失败：${splitErrorMessage(refreshMessage).title}`);
         }
       } catch (refreshError) {
         const refreshMessage = errorMessage(refreshError);
@@ -495,7 +501,7 @@ export default function App() {
           setError(refreshMessage);
         } else {
           const email = accounts.find((account) => account.id === accountId)?.email || "账号";
-          setToast(`${email} 刷新失败：${refreshMessage}`);
+          setToast(`${email} 刷新失败：${splitErrorMessage(refreshMessage).title}`);
         }
       }
     },
@@ -553,6 +559,11 @@ export default function App() {
     void mailbox.search(mailQuery);
   }, [clearErrors, mailQuery, mailbox]);
 
+  const clearMailSearch = useCallback(() => {
+    setMailQuery("");
+    void mailbox.search("");
+  }, [mailbox]);
+
   const refreshMailbox = useCallback(() => {
     clearErrors();
     void mailbox.reload(true);
@@ -583,39 +594,38 @@ export default function App() {
     void mailbox.loadMore();
   }, [clearErrors, mailbox]);
 
-  const deleteSelectedAccount = useCallback(async () => {
+  const requestDeleteAccount = useCallback(() => {
+    if (selectedAccount) {
+      setDeleteTarget(selectedAccount);
+    }
+  }, [selectedAccount]);
+
+  const confirmDeleteAccount = useCallback(async () => {
+    const target = deleteTarget;
+    if (!target) {
+      return;
+    }
     if (!desktopApi) {
       setError("账号管理需要在 Electron 桌面应用中使用。");
+      setDeleteTarget(null);
       return;
     }
 
-    if (!selectedAccountId) {
-      return;
-    }
-
-    const account = accounts.find((item) => item.id === selectedAccountId);
-    const confirmed = window.confirm(
-      `删除账号 ${account?.email || ""}？\n\n`
-        + `将删除：\n`
-        + `· 该账号的登录凭据（不可恢复）\n`
-        + `· 本地缓存的所有邮件\n\n`
-        + `此操作不可撤销，请确认没有正在进行的任务。`
-    );
-
-    if (!confirmed) {
-      return;
-    }
-
+    setDeletingAccount(true);
     try {
-      const nextAccounts = await accountCatalog.deleteAccount(selectedAccountId);
+      const nextAccounts = await accountCatalog.deleteAccount(target.id);
       if (!nextAccounts) {
         return;
       }
-      setToast("账号已删除");
+      setToast(`已删除 ${target.email}`);
+      setDeleteTarget(null);
     } catch (deleteError) {
       setError(errorMessage(deleteError));
+      setDeleteTarget(null);
+    } finally {
+      setDeletingAccount(false);
     }
-  }, [accounts, accountCatalog, desktopApi, selectedAccountId]);
+  }, [accountCatalog, deleteTarget, desktopApi]);
 
   useEffect(() => {
     // Fire-and-forget: both loaders catch their own errors and surface them in the UI.
@@ -668,6 +678,33 @@ export default function App() {
     setTestMenuOpen(false);
   }, [selectedAccountId]);
 
+  // 下拉菜单必须能用 Esc 和“点别处”关掉，否则它会一直悬在工具栏上挡住后面的按钮。
+  useEffect(() => {
+    if (!testMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      const menu = testMenuRef.current;
+      if (menu && event.target instanceof Node && !menu.contains(event.target)) {
+        setTestMenuOpen(false);
+      }
+    }
+
+    function handleMenuKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setTestMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleMenuKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleMenuKeyDown);
+    };
+  }, [testMenuOpen]);
+
   return (
     <div className="mail-app">
       <div className="mail-shell">
@@ -698,17 +735,15 @@ export default function App() {
               <h2>{selectedAccount?.email || "未选择邮箱"}</h2>
               <p>
                 {selectedAccount
-                  ? `收件箱 ${selectedAccount.lastInboxCount ?? messages.length} 封 · 最新邮件 ${formatRelativeTime(
-                      selectedAccount.lastMailAt
-                    )}`
+                  ? accountInboxSummary(selectedAccount, messages.length)
                   : "选择账号后可读取文件夹和邮件"}
               </p>
             </div>
             <div className="toolbar-group">
-              <div className="toolbar-menu">
+              <div className="toolbar-menu" ref={testMenuRef}>
                 <button
-                  className="toolbar-button"
-                  onClick={() => setTestMenuOpen((open) => !open)}
+                  className="toolbar-button toolbar-button-main"
+                  onClick={() => selectedAccountId && void testConnection(selectedAccountId)}
                   disabled={!selectedAccountId || selectedAccountTesting}
                   title="测试当前账号"
                 >
@@ -718,15 +753,43 @@ export default function App() {
                     <CheckCircle2 size={15} />
                   )}
                   测试
+                </button>
+                <button
+                  className="toolbar-button toolbar-button-caret"
+                  onClick={() => setTestMenuOpen((open) => !open)}
+                  disabled={!selectedAccountId || selectedAccountTesting}
+                  title="更多测试选项"
+                  aria-label="更多测试选项"
+                  aria-haspopup="menu"
+                  aria-expanded={testMenuOpen}
+                >
                   <ChevronDown size={13} />
                 </button>
                 {testMenuOpen ? (
-                  <div className="toolbar-menu-popover">
-                    <button type="button" onClick={() => selectedAccountId && testConnection(selectedAccountId)}>
+                  <div className="toolbar-menu-popover" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setTestMenuOpen(false);
+                        if (selectedAccountId) {
+                          void testConnection(selectedAccountId);
+                        }
+                      }}
+                    >
                       <CheckCircle2 size={14} />
                       测试连接
                     </button>
-                    <button type="button" onClick={() => selectedAccountId && testFallback(selectedAccountId)}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setTestMenuOpen(false);
+                        if (selectedAccountId) {
+                          void testFallback(selectedAccountId);
+                        }
+                      }}
+                    >
                       <CheckCircle2 size={14} />
                       兜底测试
                     </button>
@@ -735,12 +798,12 @@ export default function App() {
               </div>
               <button className="toolbar-button" onClick={testFilteredAccounts} disabled={filteredAccounts.length === 0 || anyJobRunning} title="批量测试">
                 {testRunning ? <Loader2 size={15} className="spin" /> : <CheckCircle2 size={15} />}
-                批测
+                批量测试
               </button>
               {testRunning ? (
                 <button className="toolbar-button" onClick={cancelBulkTest} title="取消批量测试">
                   <X size={15} />
-                  停测
+                  停止测试
                 </button>
               ) : null}
               <button className="toolbar-button" onClick={refreshFilteredAccounts} disabled={filteredAccounts.length === 0 || anyJobRunning} title="刷新邮件">
@@ -750,26 +813,21 @@ export default function App() {
               {manualRefreshRunning ? (
                 <button className="toolbar-button" onClick={cancelBulkRefresh} title="取消批量刷新">
                   <X size={15} />
-                  停刷
+                  停止刷新
                 </button>
               ) : null}
               <button className="toolbar-button" onClick={() => selectedAccount && setEditingAccount(selectedAccount)} disabled={!selectedAccount} title="编辑账号">
                 <Pencil size={15} />
                 编辑
               </button>
-              <button className="toolbar-button danger-outline" onClick={deleteSelectedAccount} disabled={!selectedAccountId} title="删除账号">
+              <button className="toolbar-button danger-outline" onClick={requestDeleteAccount} disabled={!selectedAccount} title="删除账号">
                 <Trash2 size={15} />
                 删除
               </button>
             </div>
           </header>
 
-          {displayedError ? (
-            <div className="error-banner">
-              <AlertCircle size={16} />
-              {displayedError}
-            </div>
-          ) : null}
+          {displayedError ? <ErrorBanner message={displayedError} onDismiss={clearErrors} /> : null}
           {progressText ? (
             <div className="progress-line">
               <span>{progressText}</span>
@@ -783,7 +841,7 @@ export default function App() {
               ) : null}
               {canRetryFailedRefresh ? (
                 <button type="button" onClick={retryFailedRefresh} disabled={anyJobRunning}>
-                  重试失败
+                  重试失败账号
                 </button>
               ) : null}
             </div>
@@ -805,10 +863,11 @@ export default function App() {
               folders={folders}
               selectedFolderId={selectedFolderId}
               inboxFolderId={selectedAccount?.inboxFolderId ?? null}
-              listError={mailboxError}
+              listError={mailbox.state.listError}
               canRefresh={Boolean(selectedAccountId)}
               onMailQueryChange={setMailQuery}
               onExecuteSearch={executeMailSearch}
+              onClearSearch={clearMailSearch}
               onRefresh={refreshMailbox}
               onSelectFolder={selectFolder}
               onSelectMessage={selectMessage}
@@ -852,6 +911,24 @@ export default function App() {
             setToast("设置已保存");
           }}
         />
+      ) : null}
+
+      {deleteTarget ? (
+        <ConfirmDialog
+          title={`删除账号 ${deleteTarget.email}`}
+          subtitle="此操作不可撤销"
+          confirmLabel="删除账号"
+          busy={deletingAccount}
+          onConfirm={() => void confirmDeleteAccount()}
+          onClose={() => setDeleteTarget(null)}
+        >
+          <p>将一并删除：</p>
+          <ul>
+            <li>该账号的登录凭据（不可恢复）</li>
+            <li>本地缓存的全部邮件</li>
+          </ul>
+          <p>如果这个账号正在测试或刷新，请先等待任务结束。</p>
+        </ConfirmDialog>
       ) : null}
 
       {toast ? <div className="toast">{toast}</div> : null}

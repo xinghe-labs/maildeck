@@ -1,5 +1,6 @@
-import { AlertCircle, ClipboardList, Inbox, Loader2, Paperclip, Plus, RefreshCw, Search } from "lucide-react";
+import { AlertCircle, ClipboardList, Inbox, Loader2, Paperclip, Plus, RefreshCw, Search, X } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { splitErrorMessage } from "../error-display";
 import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
 import type { MailFolder, MailMessageSummary } from "../types";
 import { formatDateShort, senderLabel } from "../ui-utils";
@@ -41,6 +42,7 @@ export const MessageList = memo(function MessageList({
   listError,
   onMailQueryChange,
   onExecuteSearch,
+  onClearSearch,
   onRefresh,
   onSelectFolder,
   onSelectMessage,
@@ -59,6 +61,7 @@ export const MessageList = memo(function MessageList({
   listError: string;
   onMailQueryChange: (value: string) => void;
   onExecuteSearch: () => void;
+  onClearSearch: () => void;
   onRefresh: () => void;
   onSelectFolder: (folderId: string | null) => void;
   onSelectMessage: (messageId: string) => void;
@@ -66,6 +69,14 @@ export const MessageList = memo(function MessageList({
 }) {
   // 文件夹多于一个才显示下拉框：只有收件箱（或列表加载失败）时保持原标题。
   const showFolderPicker = folders.length > 1;
+  const trimmedQuery = mailQuery.trim();
+  const listErrorDisplay = splitErrorMessage(listError);
+  // 空列表必须说清楚“为什么空”：没选账号 / 搜索无结果 / 文件夹本身空，不能笼统写“没有邮件”。
+  const emptyHint = !canRefresh
+    ? "先在左侧选择一个邮箱"
+    : trimmedQuery
+      ? `没有找到匹配「${trimmedQuery}」的邮件`
+      : "这个文件夹里还没有邮件";
   // Graph/IMAP 的文件夹列表本身就含收件箱，若不剔除会与内置的「收件箱」选项重复。
   const inboxFolder = useMemo(() => {
     if (inboxFolderId) {
@@ -167,9 +178,25 @@ export const MessageList = memo(function MessageList({
                 if (event.key === "Enter" && canRefresh) {
                   onExecuteSearch();
                 }
+                if (event.key === "Escape" && mailQuery) {
+                  event.preventDefault();
+                  onClearSearch();
+                }
               }}
               placeholder="搜索主题，回车执行"
+              aria-label="搜索邮件主题"
             />
+            {mailQuery ? (
+              <button
+                type="button"
+                className="search-clear"
+                onClick={onClearSearch}
+                title="清除搜索"
+                aria-label="清除搜索"
+              >
+                <X size={13} />
+              </button>
+            ) : null}
           </div>
           <button className="toolbar-icon" onClick={onRefresh} disabled={!canRefresh || loadingMessages} title="强制刷新">
             {loadingMessages ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
@@ -193,7 +220,13 @@ export const MessageList = memo(function MessageList({
           <div className="panel-empty panel-error">
             <AlertCircle size={24} />
             <p>邮件列表加载失败</p>
-            <p className="panel-error-detail">{listError}</p>
+            {listErrorDisplay.title ? <p className="panel-error-title">{listErrorDisplay.title}</p> : null}
+            {listErrorDisplay.detail ? (
+              <details className="panel-error-details">
+                <summary>查看详情</summary>
+                <pre>{listErrorDisplay.detail}</pre>
+              </details>
+            ) : null}
             <button type="button" className="panel-error-retry" onClick={onRefresh} disabled={!canRefresh}>
               重试
             </button>
@@ -203,7 +236,12 @@ export const MessageList = memo(function MessageList({
         {!loadingMessages && messages.length === 0 && !listError ? (
           <div className="panel-empty">
             <ClipboardList size={24} />
-            <p>没有邮件可显示</p>
+            <p>{emptyHint}</p>
+            {trimmedQuery ? (
+              <button type="button" className="panel-error-retry" onClick={onClearSearch}>
+                清除搜索
+              </button>
+            ) : null}
           </div>
         ) : null}
 

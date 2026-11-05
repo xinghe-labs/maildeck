@@ -1,8 +1,10 @@
-import { Loader2, Settings, X } from "lucide-react";
+import { Loader2, Settings } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { getDesktopApi } from "../desktop-api";
 import { errorMessage } from "../app-error";
+import { APP_VERSION } from "../app-version";
 import type { AppSettings, AppSettingsUpdate } from "../types";
+import { ModalShell } from "./ModalShell";
 
 interface SettingsFormState {
   cacheMessages: boolean;
@@ -89,17 +91,25 @@ export function SettingsModal({
   }
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal dark-modal" onSubmit={submit}>
-        <div className="modal-header">
-          <div>
-            <h2>设置</h2>
-            <p>代理仅支持 HTTP/HTTPS，留空表示直连</p>
-          </div>
-          <button className="toolbar-icon" type="button" onClick={onClose} title="关闭">
-            <X size={18} />
+    <ModalShell
+      title="设置"
+      subtitle="缓存、网络与自动刷新的默认行为"
+      onClose={onClose}
+      onSubmit={submit}
+      footer={
+        <>
+          <button type="button" className="secondary-button dark-button" onClick={onClose}>
+            取消
           </button>
-        </div>
+          <button className="primary-button dark-primary" type="submit" disabled={loading || proxyProtocolUnsupported}>
+            {loading ? <Loader2 size={16} className="spin" /> : <Settings size={16} />}
+            保存设置
+          </button>
+        </>
+      }
+    >
+      <section className="settings-section">
+        <h3>邮件与缓存</h3>
         <div className="settings-grid">
           <label className="check-row">
             <input
@@ -126,7 +136,15 @@ export function SettingsModal({
               value={form.batchConcurrency}
               onChange={(event) => setForm({ ...form, batchConcurrency: Number(event.target.value) || 1 })}
             />
+            <span className="field-hint">同时测试/刷新的账号数，网络较差时建议 2–4。</span>
           </label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>网络与认证</h3>
+        <p className="settings-section-hint">代理仅支持 HTTP/HTTPS，留空表示直连。</p>
+        <div className="settings-grid">
           <label>
             代理地址
             <input
@@ -143,6 +161,7 @@ export function SettingsModal({
               onChange={(event) => setForm({ ...form, proxyUsername: event.target.value, clearProxyPassword: false })}
               disabled={!hasProxyEndpoint}
               autoComplete="username"
+              placeholder={hasProxyEndpoint ? "可选" : "先填写代理地址"}
             />
           </label>
           <label>
@@ -156,11 +175,13 @@ export function SettingsModal({
               disabled={!hasProxyEndpoint}
               autoComplete="new-password"
               placeholder={
-                settings.proxyHasPassword
-                  ? proxyIdentityUnchanged
-                    ? "已保存，留空保留"
-                    : "留空将清除旧密码"
-                  : "可选"
+                !hasProxyEndpoint
+                  ? "先填写代理地址"
+                  : settings.proxyHasPassword
+                    ? proxyIdentityUnchanged
+                      ? "已保存，留空保留"
+                      : "留空将清除旧密码"
+                    : "可选"
               }
             />
           </label>
@@ -185,13 +206,20 @@ export function SettingsModal({
             />
             内置 Hotmail 兜底
           </label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>自动刷新</h3>
+        <p className="settings-section-hint">应用打开时才会定时刷新；关闭窗口后刷新停止。</p>
+        <div className="settings-grid">
           <label className="check-row">
             <input
               type="checkbox"
               checked={form.autoRefreshEnabled}
               onChange={(event) => setForm({ ...form, autoRefreshEnabled: event.target.checked })}
             />
-            后台定时刷新
+            应用打开时定时刷新
           </label>
           <label>
             刷新间隔（分钟）
@@ -207,20 +235,13 @@ export function SettingsModal({
             />
           </label>
         </div>
-        {proxyProtocolUnsupported ? (
-          <div className="error-box">当前代理协议不受支持，请改为 HTTP/HTTPS 或清空代理地址。</div>
-        ) : null}
-        {error ? <div className="error-box">{error}</div> : null}
-        <div className="modal-actions">
-          <button type="button" className="secondary-button dark-button" onClick={onClose}>
-            取消
-          </button>
-          <button className="primary-button dark-primary" type="submit" disabled={loading || proxyProtocolUnsupported}>
-            {loading ? <Loader2 size={16} className="spin" /> : <Settings size={16} />}
-            保存设置
-          </button>
-        </div>
-      </form>
-    </div>
+      </section>
+
+      {proxyProtocolUnsupported ? (
+        <div className="error-box">当前代理协议不受支持，请改为 HTTP/HTTPS 或清空代理地址。</div>
+      ) : null}
+      {error ? <div className="error-box">{error}</div> : null}
+      <p className="settings-version">Outlook Manager v{APP_VERSION}</p>
+    </ModalShell>
   );
 }

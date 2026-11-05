@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, session } from "electron";
+import { app, BrowserWindow, dialog, Menu, session } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
@@ -87,7 +87,6 @@ function createWindow() {
       ...SECURE_WEB_PREFERENCES
     }
   });
-
   const indexFilePath = path.join(__dirname, "../../dist/index.html");
   guardExternalNavigation(window, isDev ? new URL(process.env.VITE_DEV_SERVER_URL!).origin : null, isDev ? null : indexFilePath);
 
@@ -97,6 +96,69 @@ function createWindow() {
   } else {
     void window.loadFile(indexFilePath);
   }
+}
+
+// 默认菜单把 DevTools/重新加载/强制重新加载 摆在一个键就能点到的地方，
+// 普通用户很容易误触；这里换成只保留“编辑/视图/帮助”，开发菜单只在 dev 下挂载。
+function buildApplicationMenu() {
+  const template: Electron.MenuItemConstructorOptions[] = [];
+
+  if (isDev) {
+    template.push({
+      label: "开发",
+      submenu: [{ role: "toggleDevTools" }, { role: "reload" }]
+    });
+  }
+
+  template.push(
+    {
+      label: "编辑",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" }
+      ]
+    },
+    {
+      label: "视图",
+      submenu: [
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" }
+      ]
+    },
+    {
+      label: "帮助",
+      submenu: [
+        {
+          label: "关于 Outlook Manager",
+          click: () => {
+            const [window] = BrowserWindow.getAllWindows();
+            const options = {
+              type: "info" as const,
+              title: "关于",
+              message: `Outlook Manager v${app.getVersion()}`,
+              detail: `Microsoft 邮箱工作台\n\nElectron ${process.versions.electron}\nNode ${process.versions.node}\n\n数据目录：${app.getPath("userData")}`,
+              buttons: ["好"]
+            };
+            if (window) {
+              void dialog.showMessageBox(window, options);
+            } else {
+              void dialog.showMessageBox(options);
+            }
+          }
+        }
+      ]
+    }
+  );
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 if (app.hasSingleInstanceLock()) {
@@ -119,6 +181,7 @@ if (app.hasSingleInstanceLock()) {
       return;
     }
     registerIpcHandlers();
+    buildApplicationMenu();
     createWindow();
 
     app.on("activate", () => {

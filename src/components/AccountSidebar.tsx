@@ -1,5 +1,6 @@
-import { FileUp, Inbox, Loader2, Mail, Plus, RefreshCw, Search, Settings } from "lucide-react";
+import { FileUp, Inbox, Loader2, Mail, Plus, RefreshCw, Search, Settings, X } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { splitErrorMessage } from "../error-display";
 import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
 import type { AccountView } from "../types";
 import { accountMailStats, statusMeta } from "../ui-utils";
@@ -76,6 +77,14 @@ export const AccountSidebar = memo(function AccountSidebar({
     () => filteredAccounts.slice(virtualWindow.startIndex, virtualWindow.endIndex),
     [filteredAccounts, virtualWindow.startIndex, virtualWindow.endIndex]
   );
+  // 筛选标签上带数量：否则“失效”一点进去变空列表，用户不知道是没结果还是没数据。
+  const statusCounts = useMemo(() => {
+    const counts = { all: accounts.length, valid: 0, invalid: 0, untested: 0 };
+    for (const account of accounts) {
+      counts[account.status] += 1;
+    }
+    return counts;
+  }, [accounts]);
 
   useLayoutEffect(() => {
     const scrollArea = scrollRef.current;
@@ -146,7 +155,30 @@ export const AccountSidebar = memo(function AccountSidebar({
 
       <div className="sidebar-search">
         <Search size={16} />
-        <input ref={searchInputRef} value={accountQuery} onChange={(event) => onAccountQueryChange(event.target.value)} placeholder="搜索邮箱" />
+        <input
+          ref={searchInputRef}
+          value={accountQuery}
+          onChange={(event) => onAccountQueryChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && accountQuery) {
+              event.preventDefault();
+              onAccountQueryChange("");
+            }
+          }}
+          placeholder="搜索邮箱"
+          aria-label="搜索邮箱账号"
+        />
+        {accountQuery ? (
+          <button
+            type="button"
+            className="search-clear"
+            onClick={() => onAccountQueryChange("")}
+            title="清除搜索"
+            aria-label="清除搜索"
+          >
+            <X size={13} />
+          </button>
+        ) : null}
       </div>
 
       <div className="sidebar-stats">
@@ -157,16 +189,16 @@ export const AccountSidebar = memo(function AccountSidebar({
 
       <div className="segmented slim-segmented">
         <button type="button" className={statusFilter === "all" ? "active" : ""} onClick={() => onStatusFilterChange("all")}>
-          全部
+          全部 <span className="segment-count">{statusCounts.all}</span>
         </button>
         <button type="button" className={statusFilter === "valid" ? "active" : ""} onClick={() => onStatusFilterChange("valid")}>
-          可用
+          可用 <span className="segment-count">{statusCounts.valid}</span>
         </button>
         <button type="button" className={statusFilter === "invalid" ? "active" : ""} onClick={() => onStatusFilterChange("invalid")}>
-          失效
+          失效 <span className="segment-count">{statusCounts.invalid}</span>
         </button>
         <button type="button" className={statusFilter === "untested" ? "active" : ""} onClick={() => onStatusFilterChange("untested")}>
-          未测
+          未测 <span className="segment-count">{statusCounts.untested}</span>
         </button>
       </div>
 
@@ -188,7 +220,29 @@ export const AccountSidebar = memo(function AccountSidebar({
         {!loadingAccounts && filteredAccounts.length === 0 ? (
           <div className="panel-empty account-scroll-state">
             <Inbox size={24} />
-            <p>没有符合条件的邮箱</p>
+            {accounts.length === 0 ? (
+              <>
+                <p>还没有导入任何邮箱</p>
+                <p className="panel-empty-hint">粘贴 refresh_token 或导入 CSV，就能开始读取邮件。</p>
+                <button type="button" className="panel-error-retry" onClick={onOpenImport}>
+                  导入第一个账号
+                </button>
+              </>
+            ) : (
+              <>
+                <p>没有符合条件的邮箱</p>
+                <button
+                  type="button"
+                  className="panel-error-retry"
+                  onClick={() => {
+                    onAccountQueryChange("");
+                    onStatusFilterChange("all");
+                  }}
+                >
+                  清除筛选
+                </button>
+              </>
+            )}
           </div>
         ) : null}
 
@@ -220,8 +274,10 @@ export const AccountSidebar = memo(function AccountSidebar({
                     <div className="account-text">
                       <strong>{account.email}</strong>
                       <div className="account-meta-row">
-                        <span>{account.remark || "Hotmail OAuth"}</span>
-                        <span>{accountMailStats(account)}</span>
+                        <span className="account-remark">{account.remark || account.group}</span>
+                        <span className={`account-stats ${account.status === "invalid" && !account.lastRefreshedAt ? "account-stats-failed" : ""}`}>
+                          {accountMailStats(account)}
+                        </span>
                       </div>
                     </div>
                     <div className="account-badges">
@@ -229,7 +285,11 @@ export const AccountSidebar = memo(function AccountSidebar({
                       <button
                         type="button"
                         className={`${meta.className} account-refresh-status`}
-                        title={`${meta.label}，点击刷新账号`}
+                        title={
+                          account.lastError
+                            ? `${meta.label}：${splitErrorMessage(account.lastError).title}（点击重新刷新）`
+                            : `${meta.label}，点击刷新账号`
+                        }
                         onClick={(event) => {
                           event.stopPropagation();
                           onRefreshAccount(account.id);

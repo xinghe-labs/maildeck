@@ -73,7 +73,8 @@
 
 /* ══════════════════════════════════════════════════════════════════════
    响应式：收窄窗口时按比例让出空间给阅读区
-   项目窗口 minWidth = 1120，body min-width = 1280，故最低按 1280 设计。
+   项目窗口 minWidth = 1120；body 的 min-width 必须小于它，否则窗口拖到最窄时
+   会因为竖向滚动条再吃掉 15px 而出现横向滚动条（13px 溢出）。
    ══════════════════════════════════════════════════════════════════════ */
 @media (max-width: 1400px) {
   :root {
@@ -97,7 +98,7 @@
 
 body {
   margin: 0;
-  min-width: 1120px;
+  min-width: 1080px;
   min-height: 100vh;
   background: var(--bg-app);
 }
@@ -115,6 +116,16 @@ button {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.56;
+}
+
+/* 禁用控件不能只靠透明度区分：输入框再给一个灰底，否则看起来仍可输入。 */
+input:disabled,
+textarea:disabled,
+select:disabled {
+  background: var(--bg-input);
+  color: var(--text-3);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -546,9 +557,11 @@ button:disabled {
 
 .workspace-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
   gap: 14px;
+  row-gap: 10px;
   margin-bottom: 12px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
@@ -589,9 +602,9 @@ button:disabled {
   gap: 4px;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   white-space: nowrap;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
 }
 
 .toolbar-button {
@@ -601,6 +614,20 @@ button:disabled {
   padding: 0 10px;
   background: var(--bg-panel);
   font-size: 11.5px;
+}
+
+/* “测试”拆成主按钮 + 小箭头菜单：点主体直接测，箭头才展开高级选项。 */
+.toolbar-menu .toolbar-button-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.toolbar-menu .toolbar-button-caret {
+  width: 24px;
+  margin-left: -1px;
+  padding: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .toolbar-button:hover:not(:disabled) {
@@ -662,7 +689,7 @@ button:disabled {
 /* ── 错误 / 进度 ── */
 .error-banner {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 9px;
   margin-bottom: 10px;
   padding: 10px 12px;
@@ -672,6 +699,60 @@ button:disabled {
   color: var(--danger);
   font-size: 12px;
   font-weight: 700;
+}
+
+.error-banner-body {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+}
+
+.error-banner-title {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-banner-details summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.error-banner-details pre,
+.panel-error-details pre {
+  margin: 6px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-2);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error-banner-close {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--danger);
+  opacity: 0.7;
+}
+
+.error-banner-close:hover {
+  opacity: 1;
+  background: rgba(220, 38, 38, 0.1);
 }
 
 .progress-line {
@@ -1132,10 +1213,23 @@ button:disabled {
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  padding: 24px 16px;
   color: var(--text-3);
   font-size: 12px;
   text-align: center;
+}
+
+/* UA 默认的 p 上下外边距会和外层 gap 叠加，把空态/失败态撑成一大块留白 */
+.panel-empty p {
+  margin: 0;
+  max-width: 280px;
+}
+
+/* 阅读区空态：铺满面板并居中，避免提示悬在顶部、下面一大片空白 */
+.reader-panel > .panel-empty {
+  flex: 1;
+  min-height: 0;
 }
 
 /* 列表加载失败态：区别于真空态，给出原因与重试入口 */
@@ -1365,6 +1459,171 @@ textarea {
   padding: 10px 14px;
   font-size: 12px;
   font-weight: 800;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   交互细节：搜索清除、筛选计数、空态说明、设置分区、危险确认
+   ══════════════════════════════════════════════════════════════════════ */
+.search-clear {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--bg-hover);
+  color: var(--text-2);
+  padding: 0;
+}
+
+.search-clear:hover {
+  background: var(--line);
+  color: var(--text-1);
+}
+
+/* 筛选标签上的数量：小一号、不抢标签本身 */
+.segment-count {
+  margin-left: 3px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.segmented button.active .segment-count {
+  color: var(--text-2);
+}
+
+.panel-empty-hint {
+  max-width: 240px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 列表失败态：主文案与原始报错分层，详情默认折叠 */
+.panel-error-title {
+  max-width: 320px;
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.panel-error-details {
+  max-width: 320px;
+  text-align: left;
+}
+
+.panel-error-details summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* 账号行：备注为空时不占位，失败状态用红色数字 */
+.account-remark:empty {
+  display: none;
+}
+
+.account-stats-failed {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+/* 设置弹窗：分区标题 + 说明 + 版本号 */
+.settings-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.settings-section:first-of-type {
+  margin-top: 6px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.settings-section h3 {
+  margin: 0 0 8px;
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-section-hint {
+  margin: -2px 0 9px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.field-hint {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.settings-version {
+  margin: 14px 0 0;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+/* 危险操作确认弹窗：比普通弹窗窄，且确认按钮是实心红 */
+.confirm-dialog {
+  width: min(440px, 100%);
+}
+
+.confirm-body {
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.confirm-body p {
+  margin: 0 0 6px;
+}
+
+.confirm-body ul {
+  margin: 0 0 6px;
+  padding-left: 18px;
+}
+
+.danger-solid {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--danger);
+  border-radius: var(--r-md);
+  background: var(--danger);
+  color: #ffffff;
+  padding: 0 13px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  transition: filter 140ms ease;
+}
+
+.danger-solid:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+/* 键盘用户的焦点环要统一可见（鼠标点击不显示） */
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
