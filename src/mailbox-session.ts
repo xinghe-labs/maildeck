@@ -28,6 +28,9 @@ export interface MailboxSessionState {
   readonly loadingMessages: boolean;
   readonly loadingMore: boolean;
   readonly loadingDetail: boolean;
+  /** 上一次列表加载的失败原因。与 `error` 分开：`error` 是可被关闭的横幅，
+   *  `listError` 必须一直留到下一次加载成功，否则失败态会退化成“没有邮件可显示”。 */
+  readonly listError: string;
   readonly error: string;
 }
 
@@ -71,6 +74,7 @@ export const EMPTY_MAILBOX_SESSION_STATE: MailboxSessionState = Object.freeze({
   loadingMessages: false,
   loadingMore: false,
   loadingDetail: false,
+  listError: "",
   error: ""
 });
 
@@ -168,7 +172,8 @@ class DefaultMailboxSession implements MailboxSession {
       totalCount: null,
       loadingMessages: false,
       loadingMore: false,
-      loadingDetail: false
+      loadingDetail: false,
+      listError: ""
     });
 
     if (!this.state.accountId || this.disposed) {
@@ -377,8 +382,8 @@ class DefaultMailboxSession implements MailboxSession {
     await this.loadDetail(accountId, messageId);
   };
   readonly clearError = () => {
-    this.listError = "";
-    this.detailError = "";
+    // 只关闭横幅：列表/正文的失败原因必须留到下一次成功加载，
+    // 否则批测、刷新等动作会把“加载失败”擦成“没有邮件可显示”。
     if (this.state.error) {
       this.updateState({ error: "" });
     }
@@ -454,7 +459,7 @@ class DefaultMailboxSession implements MailboxSession {
     } else if (source === "detail") {
       this.detailError = error;
     }
-    return { error: this.listError || this.detailError };
+    return { listError: this.listError, error: this.listError || this.detailError };
   }
 
   private replaceState(state: MailboxSessionState) {

@@ -101,13 +101,14 @@ function progressText(progress: RefreshJobProgressProjection | null) {
   }
   if (progress.kind === "test") {
     if (progress.phase === "completed") {
-      return `测试完成 ${progress.ok}/${progress.total}`;
+      // 全部成功时不再留常驻结果行（toast 已经报过）；有失败时保留，作为重试入口。
+      return progress.failed > 0 ? `测试完成：可用 ${progress.ok}、失效 ${progress.failed}` : "";
     }
     const prefix = progress.phase === "canceling" ? "正在取消测试" : "测试中";
     return `${prefix} ${progress.completed}/${progress.total} · 可用 ${progress.ok} · 失效 ${progress.failed}`;
   }
   if (progress.phase === "completed") {
-    return `刷新完成 ${progress.ok}/${progress.total}`;
+    return progress.failed > 0 ? `刷新完成：成功 ${progress.ok}、失败 ${progress.failed}` : "";
   }
   const prefix = progress.phase === "canceling" ? "正在取消刷新" : "刷新中";
   return `${prefix} ${progress.completed}/${progress.total} · 成功 ${progress.ok} · 失败 ${progress.failed}`;
@@ -118,7 +119,7 @@ function backgroundProgressText(progress: RefreshJobProgressProjection | null) {
     return "";
   }
   if (progress.phase === "completed") {
-    return `后台刷新完成 ${progress.ok}/${progress.total}`;
+    return progress.failed > 0 ? `后台刷新完成：成功 ${progress.ok}、失败 ${progress.failed}` : "";
   }
   const prefix = progress.phase === "canceling" ? "正在取消后台刷新" : "后台定时刷新中";
   return `${prefix} ${progress.completed}/${progress.total} · 成功 ${progress.ok} · 失败 ${progress.failed}`;

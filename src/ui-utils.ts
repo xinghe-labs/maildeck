@@ -84,7 +84,26 @@ export function statusMeta(account: AccountView) {
 
 export function accountMailStats(account: AccountView, fallbackCount = 0) {
   const count = account.lastInboxCount ?? fallbackCount;
+  // 从未成功刷新且已判定失效：写“刷新失败”而不是“0 封 · 未刷新”，否则看起来像空邮箱。
+  if (account.status === "invalid" && !account.lastRefreshedAt && count === 0) {
+    return "刷新失败";
+  }
+
   const refreshedAt = formatRelativeTime(account.lastRefreshedAt);
 
   return `${count} 封 · ${refreshedAt}`;
+}
+
+/**
+ * 工作区头部那一行“收件箱 N 封 · 最新邮件 X”。
+ * 刷新失败且从未成功过时不能写“0 封”，那会让用户以为邮箱是空的。
+ */
+export function accountInboxSummary(account: AccountView, fallbackCount = 0) {
+  // 状态已判定失效且从未成功刷新过：说清楚“读不到”，不能写 0 封。
+  if (account.status === "invalid" && (!account.lastRefreshedAt || account.lastInboxCount == null)) {
+    return "收件箱读取失败 · 点上方「刷新」重试";
+  }
+
+  const count = account.lastInboxCount ?? fallbackCount;
+  return `收件箱 ${count} 封 · 最新邮件 ${formatRelativeTime(account.lastMailAt)}`;
 }
