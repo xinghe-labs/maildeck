@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, ShieldAlert } from "lucide-react";
+import { CheckCircle2, CircleX, Clock } from "lucide-react";
 import type { AccountView, MailMessageSummary } from "./types";
 
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
@@ -76,10 +76,12 @@ export function statusMeta(account: AccountView) {
   }
 
   if (account.status === "invalid") {
-    return { label: "失效", icon: AlertCircle, className: "status-chip status-invalid" };
+    // 用 ✕ 而不是圆圈感叹号：17px 里带“!”的圆圈会被看成数字“1”，像未读数。
+    return { label: "失效", icon: CircleX, className: "status-chip status-invalid" };
   }
 
-  return { label: "未测", icon: ShieldAlert, className: "status-chip status-untested" };
+  // 未测用钟表（从未测过），与可用的 ✓、失效的 ✕ 形状互相区分。
+  return { label: "未测", icon: Clock, className: "status-chip status-untested" };
 }
 
 export function accountMailStats(account: AccountView, fallbackCount = 0) {

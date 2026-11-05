@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, ShieldAlert } from "lucide-react";
+import { CheckCircle2, CircleX, Clock } from "lucide-react";
 import { describe, expect, it } from "vitest";
 import {
   accountMailStats,
@@ -110,12 +110,12 @@ describe("account status presentation", () => {
     });
     expect(statusMeta(account({ status: "invalid" }))).toEqual({
       label: "失效",
-      icon: AlertCircle,
+      icon: CircleX,
       className: "status-chip status-invalid"
     });
     expect(statusMeta(account({ status: "untested" }))).toEqual({
       label: "未测",
-      icon: ShieldAlert,
+      icon: Clock,
       className: "status-chip status-untested"
     });
   });
