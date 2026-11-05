@@ -128,7 +128,38 @@ if ($releaseJson) {
 $releaseExists = @($releaseRows | Where-Object { $_.tagName -eq $Tag }).Count -gt 0
 
 if (-not $releaseExists) {
-  $args = @(
+  # gh 的 `release create --target` 在本仓库会直接失败：
+  #   tag_name is not a valid tag / Published releases must have a valid tag
+  #   Release.target_commitish is invalid
+  # 所以改成先本地打附注标签并推送，再用 `--verify-tag` 建 release（不带 --target）。
+  Invoke-Checked "git.exe" @("fetch", "--tags", "--prune", "origin")
+
+  $remoteHasCommit = (& git.exe branch -r --contains $Target 2>$null)
+  if (-not $remoteHasCommit) {
+    throw "Commit $Target is not on any remote-tracking branch. Push the branch first: git push origin HEAD"
+  }
+
+  $localSha = (& git.exe rev-list -n 1 $Tag 2>$null)
+  if ($localSha) {
+    $localSha = $localSha.Trim()
+    if ($localSha -ne $Target) {
+      throw "Tag $Tag already exists at $localSha, but HEAD is $Target. Delete or retag it before publishing."
+    }
+    Write-Output "Local tag $Tag already points at $Target"
+  } else {
+    Invoke-Checked "git.exe" @("tag", "-a", $Tag, "-m", "Outlook Manager $Version", $Target)
+    Write-Output "Created annotated tag $Tag at $Target"
+  }
+
+  $remoteTag = (& git.exe ls-remote --tags origin "refs/tags/$Tag")
+  if (-not $remoteTag) {
+    Invoke-Checked "git.exe" @("push", "origin", $Tag)
+    Write-Output "Pushed tag $Tag to origin"
+  } else {
+    Write-Output "Remote tag $Tag already exists"
+  }
+
+  $createArgs = @(
     "release",
     "create",
     $Tag,
@@ -138,18 +169,17 @@ if (-not $releaseExists) {
     "Outlook Manager $Version",
     "--notes-file",
     $NotesFile,
-    "--target",
-    $Target
+    "--verify-tag"
   )
 
   if ($Draft) {
-    $args += "--draft"
+    $createArgs += "--draft"
   }
   if ($Prerelease) {
-    $args += "--prerelease"
+    $createArgs += "--prerelease"
   }
 
-  Invoke-Checked "gh.exe" $args
+  Invoke-Checked "gh.exe" $createArgs
 } else {
   Invoke-Checked "gh.exe" @(
     "release",
