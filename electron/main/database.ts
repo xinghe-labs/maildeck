@@ -73,6 +73,12 @@ export function getDatabase() {
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
     `);
+    // WAL 下把 synchronous 从默认的 FULL 降到 NORMAL。
+    // 实测（真实库副本，逐条提交，与刷新时写账号状态的路径一致）：
+    // FULL 1308µs/次提交，NORMAL 75µs/次，461 个账号批量刷新省掉约 0.6s 的 fsync 等待。
+    // 代价：操作系统崩溃/断电时可能丢掉最后几个已提交事务（库本身不会损坏，应用崩溃不丢）；
+    // 对"缓存 + 刷新状态"这类可重建数据，这个取舍是合适的。
+    candidate.exec("PRAGMA synchronous = NORMAL;");
     database = candidate;
     return database;
   } catch (error) {

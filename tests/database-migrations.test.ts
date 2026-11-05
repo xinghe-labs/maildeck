@@ -159,6 +159,8 @@ describe("ordered database migrations", () => {
 
     const { getDatabase } = await import("../electron/main/database.js");
     const database = getDatabase();
+    const journalMode = database.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
+    const synchronous = database.prepare("PRAGMA synchronous").get() as { synchronous: number };
     const accountColumns = database.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>;
     const migration = database.prepare("SELECT version FROM schema_migrations WHERE id = 1").get() as { version: number };
     const account = database.prepare("SELECT email, credential_generation FROM accounts").get() as {
@@ -173,6 +175,9 @@ describe("ordered database migrations", () => {
       .get();
 
     expect(migration.version).toBe(6);
+    // WAL + synchronous=NORMAL：逐条提交不 fsync（实测 1308µs → 75µs/次），刷新与编辑路径直接受益。
+    expect(journalMode.journal_mode).toBe("wal");
+    expect(synchronous.synchronous).toBe(1);
     expect(accountColumns.map((column) => column.name)).toEqual(
       expect.arrayContaining(["inbox_folder_id", "graph_delta_link", "refresh_cooldown_until", "credential_generation"])
     );
