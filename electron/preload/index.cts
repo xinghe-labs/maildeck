@@ -14,6 +14,7 @@ import type {
   ImportPreviewResult,
   JobKind,
   ListMessagesOptions,
+  MailCacheStats,
   MailFolder,
   MailListResult,
   MailMessageDetail,
@@ -32,6 +33,7 @@ const APP_ERROR_CODES = new Set([
   "STALE_CREDENTIALS",
   "THROTTLED",
   "TOKEN_EXPIRED",
+  "INVALID_CLIENT",
   "IMAP_AUTH_FAILED",
   "SCOPE_MISSING",
   "NETWORK_ERROR",
@@ -119,6 +121,7 @@ const api = {
     listFolders: (accountId: string) => invoke<MailFolder[]>("mail:listFolders", accountId),
     listMessages: (options: ListMessagesOptions) => invoke<MailListResult>("mail:listMessages", options),
     getMessage: (options: GetMessageOptions) => invoke<MailMessageDetail>("mail:getMessage", options),
+    cacheStats: () => invoke<MailCacheStats>("mail:cacheStats"),
     clearCache: (accountId?: string) =>
       accountId
         ? invoke<{ cleared: number | "all" }>("mail:clearCache", accountId)

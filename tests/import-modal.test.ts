@@ -97,7 +97,8 @@ describe("ImportModal", () => {
   it("does not display a preview produced for older form input", async () => {
     const preview = deferred<ImportPreviewResult>();
     renderImportModal(vi.fn(() => preview.promise));
-    const emailInput = container.querySelector<HTMLInputElement>('input[required]')!;
+    // P4 之后单个账号表单不再挂原生 required（缺项由应用层校验兜底），所以不能靠 input[required] 定位。
+    const emailInput = container.querySelector<HTMLInputElement>(".form-grid input")!;
     const previewButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.trim() === "预检")!;
 

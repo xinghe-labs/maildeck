@@ -700,3 +700,41 @@ export async function clearAllMailCache() {
     });
   });
 }
+
+/**
+ * 缓存占用概览。设置里要回答“关掉缓存开关后到底还占多少”。
+ *
+ * approximateBytes 是缓存文本字段的实际字节数之和，不含 SQLite 页开销与索引：
+ * 它能回答“是几十 KB 还是几百 MB”，不假装是磁盘精确值。
+ */
+export async function getMailCacheStats(): Promise<{
+  accountCount: number;
+  messageCount: number;
+  bodyCount: number;
+  approximateBytes: number;
+}> {
+  await migrateLegacyCacheOnce();
+  return withCacheLock(async () => {
+    const db = getDatabase();
+    const messages = db
+      .prepare(
+        `SELECT COUNT(*) AS count,
+                COALESCE(SUM(LENGTH(subject)), 0) + COALESCE(SUM(LENGTH(body_preview)), 0) AS bytes
+           FROM mail_messages`
+      )
+      .get() as { count: number; bytes: number };
+    const details = db
+      .prepare("SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(detail_json)), 0) AS bytes FROM mail_details")
+      .get() as { count: number; bytes: number };
+    const accounts = db
+      .prepare("SELECT COUNT(DISTINCT account_id) AS count FROM mail_cache_meta")
+      .get() as { count: number };
+
+    return {
+      accountCount: accounts.count,
+      messageCount: messages.count,
+      bodyCount: details.count,
+      approximateBytes: messages.bytes + details.bytes
+    };
+  });
+}

@@ -1,7 +1,10 @@
 import { Loader2, Plus } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { errorMessage } from "../app-error";
+import { firstErrorField, validateAccountFields } from "../form-validation";
+import type { AccountField, FieldErrors } from "../form-validation";
 import type { AccountInput, ImportPreviewResult, ImportResult } from "../types";
+import { TokenGuidePanel } from "./TokenGuidePanel";
 import { ModalShell } from "./ModalShell";
 
 const emptyAccountForm: AccountInput = {
@@ -32,6 +35,10 @@ export function ImportModal({
   const [loading, setLoading] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors<AccountField>>({});
+  const emailInputRef = useRef<HTMLInputElement>(null);
+  const clientIdInputRef = useRef<HTMLInputElement>(null);
+  const refreshTokenInputRef = useRef<HTMLTextAreaElement>(null);
   const previewText = mode === "single"
     ? `${single.email},${single.clientId},${single.refreshToken}`
     : batchText;
@@ -72,8 +79,30 @@ export function ImportModal({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setLoading(true);
     setError("");
+
+    // ModalShell 已关掉原生校验气泡，所以提交前在这里把缺项说清楚（P4）。
+    if (mode === "single") {
+      const errors = validateAccountFields(single, { requireRefreshToken: true });
+      if (Object.keys(errors).length > 0) {
+        setFieldErrors(errors);
+        const firstField = firstErrorField(errors, ["email", "clientId", "refreshToken"]);
+        const target =
+          firstField === "email"
+            ? emailInputRef.current
+            : firstField === "clientId"
+              ? clientIdInputRef.current
+              : refreshTokenInputRef.current;
+        target?.focus();
+        return;
+      }
+    } else if (!batchText.trim()) {
+      setError("请先粘贴要导入的账号文本。");
+      return;
+    }
+
+    setFieldErrors({});
+    setLoading(true);
 
     try {
       const result = mode === "single" ? await onUpsert(single) : await onImportText(batchText);
@@ -135,19 +164,59 @@ export function ImportModal({
         <div className="form-grid">
           <label>
             邮箱
-            <input value={single.email} onChange={(event) => setSingle({ ...single, email: event.target.value })} required />
+            <input
+              ref={emailInputRef}
+              value={single.email}
+              aria-invalid={fieldErrors.email ? true : undefined}
+              aria-describedby={fieldErrors.email ? "import-email-error" : undefined}
+              onChange={(event) => {
+                setSingle({ ...single, email: event.target.value });
+                setFieldErrors((previous) => ({ ...previous, email: undefined }));
+              }}
+            />
+            {fieldErrors.email ? (
+              <span className="field-error" id="import-email-error" role="alert">
+                {fieldErrors.email}
+              </span>
+            ) : null}
           </label>
           <label>
             Client ID
-            <input value={single.clientId} onChange={(event) => setSingle({ ...single, clientId: event.target.value })} required />
+            <input
+              ref={clientIdInputRef}
+              value={single.clientId}
+              aria-invalid={fieldErrors.clientId ? true : undefined}
+              aria-describedby={fieldErrors.clientId ? "import-client-id-error" : undefined}
+              onChange={(event) => {
+                setSingle({ ...single, clientId: event.target.value });
+                setFieldErrors((previous) => ({ ...previous, clientId: undefined }));
+              }}
+            />
+            {fieldErrors.clientId ? (
+              <span className="field-error" id="import-client-id-error" role="alert">
+                {fieldErrors.clientId}
+              </span>
+            ) : null}
           </label>
           <label className="span-2">
             Refresh Token
             <textarea
+              ref={refreshTokenInputRef}
               value={single.refreshToken}
-              onChange={(event) => setSingle({ ...single, refreshToken: event.target.value })}
-              required
+              aria-invalid={fieldErrors.refreshToken ? true : undefined}
+              aria-describedby={fieldErrors.refreshToken ? "import-refresh-token-error" : undefined}
+              onChange={(event) => {
+                setSingle({ ...single, refreshToken: event.target.value });
+                setFieldErrors((previous) => ({ ...previous, refreshToken: undefined }));
+              }}
             />
+            {fieldErrors.refreshToken ? (
+              <span className="field-error" id="import-refresh-token-error" role="alert">
+                {fieldErrors.refreshToken}
+              </span>
+            ) : (
+              <span className="field-hint">不内置微软登录，需要你手上已有的 refresh_token。</span>
+            )}
           </label>
           <label>
             备注
@@ -157,20 +226,25 @@ export function ImportModal({
             分组
             <input value={single.group} onChange={(event) => setSingle({ ...single, group: event.target.value })} />
           </label>
+          <TokenGuidePanel className="span-2" />
         </div>
       ) : (
-        <label className="stacked-label">
-          导入文本
-          <textarea
-            className="batch-textarea"
-            value={batchText}
-            onChange={(event) => setBatchText(event.target.value)}
-            placeholder={
-              "email,client_id,refresh_token,remark,group\nuser@hotmail.com,9e5f94bc-e8a4-4e73-b8be-63364c29d753,M.Cxxx,主号,A组\nuser@hotmail.com----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组\nuser@hotmail.com----password----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组"
-            }
-            required
-          />
-        </label>
+        <>
+          <label className="stacked-label">
+            导入文本
+            <textarea
+              className="batch-textarea"
+              value={batchText}
+              onChange={(event) => setBatchText(event.target.value)}
+              placeholder={
+                "email,client_id,refresh_token,remark,group\nuser@hotmail.com,9e5f94bc-e8a4-4e73-b8be-63364c29d753,M.Cxxx,主号,A组\nuser@hotmail.com----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组\nuser@hotmail.com----password----9e5f94bc-e8a4-4e73-b8be-63364c29d753----M.Cxxx----主号----A组"
+              }
+              required={false}
+            />
+          </label>
+          {/* 批量模式同样需要“token 去哪拿”的说明：新手不会先去切回单个账号页（P1） */}
+          <TokenGuidePanel className="span-2" />
+        </>
       )}
 
       {preview ? (

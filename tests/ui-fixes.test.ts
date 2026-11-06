@@ -177,8 +177,9 @@ describe("账号侧栏的状态与引导", () => {
   });
 
   it("reports the failure instead of a 0-mail count for accounts that never synced", () => {
+    // 带上“失效”前缀，和侧栏筛选标签用同一个词（P14）。
     expect(accountMailStats({ status: "invalid", lastRefreshedAt: null, lastInboxCount: null } as never)).toBe(
-      "刷新失败"
+      "失效 · 刷新失败"
     );
     expect(accountMailStats({ status: "valid", lastRefreshedAt: null, lastInboxCount: 7 } as never)).toBe(
       "7 封 · 未刷新"

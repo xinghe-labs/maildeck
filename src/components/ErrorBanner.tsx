@@ -1,5 +1,6 @@
 import { AlertCircle, X } from "lucide-react";
 import { splitErrorMessage } from "../error-display";
+import { ErrorDetailCopy } from "./ErrorDetailCopy";
 
 /**
  * 全局错误横幅：主文案一行，原始报错（Trace ID、多 provider 尝试）收进「查看详情」，
@@ -26,6 +27,7 @@ export function ErrorBanner({
           <details className="error-banner-details">
             <summary>查看详情</summary>
             <pre>{detail}</pre>
+            <ErrorDetailCopy detail={detail} />
           </details>
         ) : null}
       </div>

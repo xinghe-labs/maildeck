@@ -7,7 +7,7 @@ import {
   IMPORT_TEXT_MAX_BYTES,
   parseIpcRequest
 } from "../shared/ipc-contracts.js";
-import { clearAccountCache, clearAllMailCache } from "./mail-cache.js";
+import { clearAccountCache, clearAllMailCache, getMailCacheStats } from "./mail-cache.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import {
   deleteAccount,
@@ -258,6 +258,10 @@ export function registerIpcHandlers() {
 
   handleValidated(IPC_CHANNELS.mailGetMessage, IPC_REQUEST_SCHEMAS.getMessage, async (_event, options) => {
     return runConfiguredNetworkAccount(options.accountId, (mailbox, signal) => mailbox.getMessage(options, signal));
+  });
+
+  handleValidated(IPC_CHANNELS.mailCacheStats, IPC_REQUEST_SCHEMAS.cacheStats, async () => {
+    return getMailCacheStats();
   });
 
   handleValidated(IPC_CHANNELS.mailClearCache, IPC_REQUEST_SCHEMAS.clearCache, async (_event, accountId) => {

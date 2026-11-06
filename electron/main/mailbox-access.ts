@@ -126,7 +126,7 @@ function isCooldownActive(value?: string | null) {
 }
 
 function isCooldownError(code: AppErrorCode) {
-  return ["TOKEN_EXPIRED", "IMAP_AUTH_FAILED", "SCOPE_MISSING", "MAILBOX_NOT_FOUND"].includes(code);
+  return ["TOKEN_EXPIRED", "INVALID_CLIENT", "IMAP_AUTH_FAILED", "SCOPE_MISSING", "MAILBOX_NOT_FOUND"].includes(code);
 }
 
 function cooldownUntilFor(code: AppErrorCode) {

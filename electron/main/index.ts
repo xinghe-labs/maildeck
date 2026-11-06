@@ -8,6 +8,7 @@ import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import { SECURE_WEB_PREFERENCES } from "./window-security.js";
 import { configureSessionPermissions } from "./session-security.js";
+import { TOKEN_GUIDE_TEXT, TOKEN_GUIDE_TITLE } from "../shared/token-guide.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -75,10 +76,13 @@ if (process.env.OUTLOOK_MANAGER_USER_DATA_DIR) {
 
 function createWindow() {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 1120,
-    minHeight: 720,
+    // 125% 缩放的 1440×900 笔记本，可用高度只有约 652 个 CSS 像素。
+    // 原来的 1440×920 / minHeight 720 会超出屏幕：窗口底部的 toast 被裁掉，
+    // 用户也看不到完整界面。初始尺寸和下限都按这个场景放小一档。
+    width: 1280,
+    height: 800,
+    minWidth: 960,
+    minHeight: 600,
     title: "Outlook Manager",
     icon: path.join(__dirname, "../../build/icon.ico"),
     backgroundColor: "#fafafa", // 与 --bg-app 一致：窗口映射到首帧之间不留异色
@@ -136,6 +140,27 @@ function buildApplicationMenu() {
     {
       label: "帮助",
       submenu: [
+        {
+          // 应用不内置微软登录流程，所以“去哪拿 refresh_token”必须有个入口可查，
+          // 否则新手只能在导入弹窗里对着两个空字段猜。
+          label: TOKEN_GUIDE_TITLE,
+          click: () => {
+            const [window] = BrowserWindow.getAllWindows();
+            const options = {
+              type: "info" as const,
+              title: TOKEN_GUIDE_TITLE,
+              message: TOKEN_GUIDE_TITLE,
+              detail: TOKEN_GUIDE_TEXT,
+              buttons: ["知道了"]
+            };
+            if (window) {
+              void dialog.showMessageBox(window, options);
+            } else {
+              void dialog.showMessageBox(options);
+            }
+          }
+        },
+        { type: "separator" },
         {
           label: "关于 Outlook Manager",
           click: () => {

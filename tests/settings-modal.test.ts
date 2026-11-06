@@ -4,12 +4,20 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { SettingsModal } from "../src/components/SettingsModal";
-import type { AppSettings, AppSettingsUpdate } from "../src/types";
+import type { AppSettings, AppSettingsUpdate, MailCacheStats } from "../src/types";
 
 type SettingsUpdate = (settings: AppSettingsUpdate) => Promise<AppSettings>;
 
 interface DesktopApiStub {
   settings: { update: SettingsUpdate };
+  mail: {
+    cacheStats: () => Promise<MailCacheStats>;
+    clearCache: (accountId?: string) => Promise<void>;
+  };
+}
+
+function cacheStats(overrides: Partial<MailCacheStats> = {}): MailCacheStats {
+  return { accountCount: 1, messageCount: 12, bodyCount: 3, approximateBytes: 1536, ...overrides };
 }
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
@@ -28,11 +36,15 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   };
 }
 
-function setDesktopApi(update: SettingsUpdate | undefined) {
+function setDesktopApi(update: SettingsUpdate | undefined, mail?: DesktopApiStub["mail"]) {
   // `window.outlookManager` is declared non-optional for the packaged app; tests
   // install or remove it to cover both the Electron and browser-only paths.
   (window as unknown as { outlookManager?: DesktopApiStub }).outlookManager = update
-    ? { settings: { update } }
+    ? {
+        settings: { update },
+        // 默认给一份可用桩：缓存行会主动读统计，缺方法会让整个弹窗报错。
+        mail: mail ?? { cacheStats: async () => cacheStats(), clearCache: async () => undefined }
+      }
     : undefined;
 }
 
@@ -217,10 +229,43 @@ describe("SettingsModal", () => {
     setDesktopApi(update);
     const handlers = renderModal();
 
-    const cancel = container.querySelector<HTMLButtonElement>('button[type="button"].secondary-button');
+    // 按文案找“取消”：footer 里还有哪个 secondary 按钮不该成为这个断言的偶发依赖。
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "取消"
+    );
     act(() => cancel?.click());
 
     expect(handlers.onClose).toHaveBeenCalledTimes(1);
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("shows how much cache is on disk and clears it on demand", async () => {
+    let stats = cacheStats({ messageCount: 40, bodyCount: 9, approximateBytes: 2 * 1024 * 1024 });
+    const clearCache = vi.fn(async () => {
+      stats = cacheStats({ messageCount: 0, bodyCount: 0, approximateBytes: 0 });
+    });
+    setDesktopApi(vi.fn<SettingsUpdate>(async () => settings()), {
+      cacheStats: async () => stats,
+      clearCache
+    });
+    renderModal();
+    await flushSubmit();
+
+    // 关掉缓存开关之前，用户得先能看到到底占了多少（P6）。
+    expect(container.textContent).toContain("缓存占用：2.0 MB（邮件 40 条 · 正文 9 封 · 1 个账号）");
+
+    const clearButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "清空邮件缓存"
+    );
+    expect(clearButton).toBeTruthy();
+    await act(async () => {
+      clearButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(clearCache).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("缓存占用：0 B（邮件 0 条 · 正文 0 封 · 1 个账号）");
+    expect(container.textContent).toContain("邮件缓存已清空");
   });
 });

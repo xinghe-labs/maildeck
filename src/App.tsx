@@ -18,13 +18,16 @@ import { ModalShell } from "./components/ModalShell";
 import { SettingsModal } from "./components/SettingsModal";
 import { getDesktopApi } from "./desktop-api";
 import { splitErrorMessage } from "./error-display";
+import { firstErrorField, validateAccountFields } from "./form-validation";
+import type { AccountField, FieldErrors } from "./form-validation";
 import type {
   AccountUpdateInput,
   AccountView,
   AppSettings,
+  ImportResult,
   RefreshManyResult
 } from "./types";
-import { accountInboxSummary } from "./ui-utils";
+import { accountInboxSummary, formatRelativeTime, statusMeta } from "./ui-utils";
 import { errorMessage } from "./app-error";
 import { useAccountCatalogSession } from "./use-account-catalog-session";
 import { useMailboxSession } from "./use-mailbox-session";
@@ -42,6 +45,15 @@ const defaultSettings: AppSettings = {
   autoRefreshEnabled: false,
   autoRefreshIntervalMinutes: 10
 };
+
+/** 导入结果的 toast 文案：带跳过原因，否则用户只知道「跳过 1 个」却不知道为什么（P16）。 */
+function importResultMessage(result: ImportResult): string {
+  const head = `导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`;
+  if (result.skipped <= 0 || result.errors.length === 0) {
+    return head;
+  }
+  return `${head}。跳过原因：${result.errors.slice(0, 2).join("；")}`;
+}
 
 function EditAccountModal({
   account,
@@ -64,11 +76,27 @@ function EditAccountModal({
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors<AccountField>>({});
+  const emailInputRef = useRef<HTMLInputElement>(null);
+  const clientIdInputRef = useRef<HTMLInputElement>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setLoading(true);
     setError("");
+
+    // 编辑时 refresh_token 允许留空（保持不变），但邮箱/Client ID 仍要说清楚（P4）。
+    const errors = validateAccountFields(
+      { email: form.email, clientId: form.clientId, refreshToken: form.refreshToken ?? "" },
+      { requireRefreshToken: false }
+    );
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      const firstField = firstErrorField(errors, ["email", "clientId"]);
+      (firstField === "clientId" ? clientIdInputRef : emailInputRef).current?.focus();
+      return;
+    }
+    setFieldErrors({});
+    setLoading(true);
 
     try {
       const updated = await onSubmit(form);
@@ -105,15 +133,44 @@ function EditAccountModal({
       <div className="form-grid">
         <label>
           邮箱
-          <input value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
+          <input
+            ref={emailInputRef}
+            value={form.email}
+            aria-invalid={fieldErrors.email ? true : undefined}
+            aria-describedby={fieldErrors.email ? "edit-email-error" : undefined}
+            onChange={(event) => {
+              setForm({ ...form, email: event.target.value });
+              setFieldErrors((previous) => ({ ...previous, email: undefined }));
+            }}
+          />
+          {fieldErrors.email ? (
+            <span className="field-error" id="edit-email-error" role="alert">
+              {fieldErrors.email}
+            </span>
+          ) : null}
         </label>
         <label>
           Client ID
-          <input value={form.clientId} onChange={(event) => setForm({ ...form, clientId: event.target.value })} required />
+          <input
+            ref={clientIdInputRef}
+            value={form.clientId}
+            aria-invalid={fieldErrors.clientId ? true : undefined}
+            aria-describedby={fieldErrors.clientId ? "edit-client-id-error" : undefined}
+            onChange={(event) => {
+              setForm({ ...form, clientId: event.target.value });
+              setFieldErrors((previous) => ({ ...previous, clientId: undefined }));
+            }}
+          />
+          {fieldErrors.clientId ? (
+            <span className="field-error" id="edit-client-id-error" role="alert">
+              {fieldErrors.clientId}
+            </span>
+          ) : null}
         </label>
         <label className="span-2">
           Refresh Token
           <textarea value={form.refreshToken} onChange={(event) => setForm({ ...form, refreshToken: event.target.value })} />
+          <span className="field-hint">留空则保持不变；更换新的 refresh_token 会把账号重新标记为未测。</span>
         </label>
         <label>
           备注
@@ -140,6 +197,11 @@ export default function App() {
   const testMenuRef = useRef<HTMLDivElement | null>(null);
   const [newMailCounts, setNewMailCounts] = useState<Record<string, number>>({});
   const [toast, setToast] = useState("");
+  // toast 默认 6 秒；长文案（带跳过原因）给 10 秒。鼠标悬停时暂停，
+  // 移开后用剩余时间续上，避免用户刚要读就消失（P15）。
+  const toastTimerRef = useRef<number | null>(null);
+  const toastDeadlineRef = useRef(0);
+  const toastRemainingRef = useRef(0);
   const [error, setError] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<AccountView | null>(null);
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -192,7 +254,19 @@ export default function App() {
       (bulkTestAccountIds?.has(selectedAccountId) ?? false)
     )
   );
-  const displayedError = error || mailboxError;
+  // 顶部横幅与邮件列表区都渲染错误。如果两边是同一句话（同一账号的同一个失败），
+  // 只保留列表区那份（它带重试按钮和完整诊断），否则看起来像出了两个问题（P12）。
+  const displayedError = useMemo(() => {
+    const candidate = error || mailboxError;
+    if (!candidate) {
+      return "";
+    }
+    const listError = mailbox.state.listError;
+    if (listError && splitErrorMessage(listError).title === splitErrorMessage(candidate).title) {
+      return "";
+    }
+    return candidate;
+  }, [error, mailboxError, mailbox.state.listError]);
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
@@ -271,7 +345,7 @@ export default function App() {
         return;
       }
 
-      setToast(`导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`);
+      setToast(importResultMessage(result));
     } catch (importError) {
       setError(errorMessage(importError));
     }
@@ -298,7 +372,10 @@ export default function App() {
         if (result.ok) {
           setToast(result.message);
         } else {
+          // 失败也要留一条记录：只 setError 时，如果横幅上已经是同一句话，
+          // 屏幕上就一个字都不会变（P9）。
           setError(result.error.message);
+          setToast(`测试失败：${splitErrorMessage(result.error.message).title}`);
         }
       } catch (testError) {
         setError(errorMessage(testError));
@@ -329,6 +406,7 @@ export default function App() {
           setToast(result.message);
         } else {
           setError(result.error.message);
+          setToast(`兜底测试失败：${splitErrorMessage(result.error.message).title}`);
         }
       } catch (fallbackError) {
         setError(errorMessage(fallbackError));
@@ -571,7 +649,14 @@ export default function App() {
 
   const openImportModal = useCallback(() => setShowImportModal(true), []);
   const openSettingsModal = useCallback(() => setShowSettingsModal(true), []);
-  const reloadAccounts = useCallback(() => void loadAccounts(), [loadAccounts]);
+  const reloadAccounts = useCallback(
+    () => {
+      // 这个按钮只是从本地库重新读列表，不是重新测试账号；不给反馈时
+      // 用户会以为它坏了（P10）。
+      void loadAccounts().then(() => setToast("账号列表已重新加载"));
+    },
+    [loadAccounts]
+  );
 
   const selectFolder = useCallback(
     (folderId: string | null) => {
@@ -644,11 +729,46 @@ export default function App() {
 
   useEffect(() => {
     if (!toast) {
+      toastRemainingRef.current = 0;
+      toastTimerRef.current = null;
       return;
     }
 
-    const timer = window.setTimeout(() => setToast(""), 3200);
-    return () => window.clearTimeout(timer);
+    const duration = toast.length > 40 ? 10000 : 6000;
+    toastRemainingRef.current = duration;
+    toastDeadlineRef.current = Date.now() + duration;
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast("");
+    }, duration);
+
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, [toast]);
+
+  const pauseToast = useCallback(() => {
+    if (toastTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = null;
+    toastRemainingRef.current = Math.max(0, toastDeadlineRef.current - Date.now());
+  }, []);
+
+  const resumeToast = useCallback(() => {
+    if (!toast || toastTimerRef.current !== null) {
+      return;
+    }
+    const remaining = toastRemainingRef.current > 0 ? toastRemainingRef.current : 1500;
+    toastDeadlineRef.current = Date.now() + remaining;
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast("");
+    }, remaining);
   }, [toast]);
 
   useEffect(() => {
@@ -738,6 +858,12 @@ export default function App() {
                   ? accountInboxSummary(selectedAccount, messages.length)
                   : "选择账号后可读取文件夹和邮件"}
               </p>
+              {/* 失败也要留痕：否则用户点完「测试」看不出到底测没测（P9）。 */}
+              {selectedAccount?.lastCheckedAt ? (
+                <p className="last-tested-at">
+                  上次测试 {formatRelativeTime(selectedAccount.lastCheckedAt)} · 结果 {statusMeta(selectedAccount).label}
+                </p>
+              ) : null}
             </div>
             <div className="toolbar-group">
               <div className="toolbar-menu" ref={testMenuRef}>
@@ -886,7 +1012,7 @@ export default function App() {
           onImportText={accountCatalog.importText}
           onUpsert={accountCatalog.upsert}
           onImported={(result) => {
-            setToast(`导入 ${result.imported} 个，更新 ${result.updated} 个，跳过 ${result.skipped} 个`);
+            setToast(importResultMessage(result));
           }}
         />
       ) : null}
@@ -931,7 +1057,22 @@ export default function App() {
         </ConfirmDialog>
       ) : null}
 
-      {toast ? <div className="toast">{toast}</div> : null}
+      {toast ? (
+        <div
+          className="toast"
+          role="status"
+          aria-live="polite"
+          onMouseEnter={pauseToast}
+          onMouseLeave={resumeToast}
+          onFocus={pauseToast}
+          onBlur={resumeToast}
+        >
+          <span className="toast-text">{toast}</span>
+          <button type="button" className="toast-close" onClick={() => setToast("")} aria-label="关闭提示" title="关闭提示">
+            <X size={13} />
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

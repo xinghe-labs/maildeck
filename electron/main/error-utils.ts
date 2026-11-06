@@ -85,6 +85,70 @@ export function abortReasonOf(signal: AbortSignal): Error {
   return reason instanceof Error ? reason : new Error("Operation aborted");
 }
 
+// AADSTS 码与用户可执行的修复动作一一对应。表里没有的码继续走通用分支。
+const AADSTS_RULES: Array<{ test: (message: string, lower: string) => boolean; code: AppErrorCode; message: string }> = [
+  {
+    // 应用不存在 / 未在目录中注册。用户需要换 client_id，而不是重抓 token。
+    test: (message, lower) =>
+      /AADSTS700016|AADSTS700011|AADSTS700022|AADSTS700024/u.test(message) ||
+      lower.includes("application with identifier") ||
+      lower.includes("client does not exist") ||
+      lower.includes("not enabled for consumers") ||
+      lower.includes("application was not found"),
+    code: "INVALID_CLIENT",
+    message:
+      "Client ID 无效：微软找不到这个应用，或者它没有对个人（outlook.com / hotmail.com）账号启用。请核对 Client ID 是否填错，并换一个支持个人账号的公共客户端 ID。"
+  },
+  {
+    test: (message, lower) =>
+      /AADSTS7000215|AADSTS7000216|AADSTS7000218|AADSTS700027/u.test(message) || lower.includes("invalid_client"),
+    code: "INVALID_CLIENT",
+    message:
+      "Client ID 或客户端密钥配置有问题：本工具只需要 Client ID + refresh_token，不需要 client secret。如果这个应用强制要求 secret，请换一个公共客户端 ID。"
+  },
+  {
+    // SPA 类型的应用不能用于桌面/后端授权码流程。
+    test: (message, lower) => /AADSTS9002326|AADSTS9002325/u.test(message) || lower.includes("cross-origin"),
+    code: "INVALID_CLIENT",
+    message:
+      "该 Client ID 被注册成了「单页应用（SPA）」类型，不能用于桌面客户端的授权流程，请换一个公共客户端（Mobile and desktop application）ID。"
+  },
+  {
+    test: (message, lower) => message.includes("AADSTS65001") || lower.includes("consent"),
+    code: "SCOPE_MISSING",
+    message:
+      "该应用还没有获得此账号的授权（consent）：请重新走一次授权流程获取 refresh_token，并在授权页点「接受」。"
+  },
+  {
+    test: (message) => /AADSTS50076|AADSTS50079|AADSTS50074|AADSTS50072/u.test(message),
+    code: "TOKEN_EXPIRED",
+    message: "该账号要求多重身份验证（MFA），已有 refresh_token 无法直接使用，请重新授权一次。"
+  },
+  {
+    test: (message, lower) =>
+      /AADSTS50173|AADSTS700082|AADSTS700084|AADSTS70008/u.test(message) || lower.includes("expired due to inactivity"),
+    code: "TOKEN_EXPIRED",
+    message:
+      "refresh_token 已失效：可能因为密码变更、授权被撤销，或长时间（通常 90 天）未使用。请重新获取该账号的 refresh_token。"
+  },
+  {
+    test: (message, lower) => message.includes("AADSTS500011") || lower.includes("resource principal"),
+    code: "SCOPE_MISSING",
+    message:
+      "授权请求里的资源地址在该租户下不存在：请改用 outlook.office.com（IMAP）或 graph.microsoft.com（Graph）的 scope 重新授权。"
+  }
+];
+
+function matchAadstsRule(message: string, lower: string): { code: AppErrorCode; message: string } | null {
+  for (const rule of AADSTS_RULES) {
+    if (rule.test(message, lower)) {
+      return { code: rule.code, message: rule.message };
+    }
+  }
+
+  return null;
+}
+
 export function normalizeError(error: unknown): NormalizedAppError {
   const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
   if (isIpcRequestValidationError(error)) {
@@ -135,8 +199,18 @@ export function normalizeError(error: unknown): NormalizedAppError {
     };
   }
 
+  // 微软的 AADSTS 码含义各不相同，一律当成“Token 过期”会把用户引向错误的修复动作
+  // （例如 700016 是 Client ID 不存在，重抓一百次 refresh_token 也没用）。
+  const aadsts = matchAadstsRule(message, lower);
+  if (aadsts) {
+    return { code: aadsts.code, message: `${aadsts.message}原始错误：${message}` };
+  }
+
   if (message.includes("AADSTS") || lower.includes("invalid_grant") || lower.includes("refresh token")) {
-    return { code: "TOKEN_EXPIRED", message: `Token 无效或已过期，请重新获取 refresh_token。原始错误：${message}` };
+    return {
+      code: "TOKEN_EXPIRED",
+      message: `授权失败：refresh_token 可能无效、已过期或已被撤销。如果详情里的 AADSTS 编号是 7xxxx 系列，也可能是 Client ID 配置问题，请先核对 Client ID。原始错误：${message}`
+    };
   }
 
   if (

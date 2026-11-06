@@ -1,6 +1,7 @@
 import { AlertCircle, ClipboardList, Inbox, Loader2, Paperclip, Plus, RefreshCw, Search, X } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { splitErrorMessage } from "../error-display";
+import { ErrorDetailCopy } from "./ErrorDetailCopy";
 import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
 import type { MailFolder, MailMessageSummary } from "../types";
 import { formatDateShort, senderLabel } from "../ui-utils";
@@ -198,7 +199,13 @@ export const MessageList = memo(function MessageList({
               </button>
             ) : null}
           </div>
-          <button className="toolbar-icon" onClick={onRefresh} disabled={!canRefresh || loadingMessages} title="强制刷新">
+          <button
+            className="toolbar-icon"
+            onClick={onRefresh}
+            disabled={!canRefresh || loadingMessages}
+            title="强制刷新"
+            aria-label="强制刷新邮件列表"
+          >
             {loadingMessages ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
           </button>
         </div>
@@ -225,6 +232,7 @@ export const MessageList = memo(function MessageList({
               <details className="panel-error-details">
                 <summary>查看详情</summary>
                 <pre>{listErrorDisplay.detail}</pre>
+                <ErrorDetailCopy detail={listErrorDisplay.detail} />
               </details>
             ) : null}
             <button type="button" className="panel-error-retry" onClick={onRefresh} disabled={!canRefresh}>

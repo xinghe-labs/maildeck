@@ -142,6 +142,9 @@ export function ModalShell({
         aria-modal="true"
         aria-labelledby={titleId}
         {...(subtitle ? { "aria-describedby": subtitleId } : {})}
+        // 关掉浏览器原生校验：它的气泡会飘到别的字段上方、几秒后消失，
+        // 而且指不出“为什么不能提交”。各弹窗自己用内联文案校验（P4/P5）。
+        noValidate
         onSubmit={onSubmit}
         onKeyDown={handleKeyDown}
       >

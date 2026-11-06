@@ -27,6 +27,7 @@ export const IPC_CHANNELS = {
   mailListFolders: "mail:listFolders",
   mailListMessages: "mail:listMessages",
   mailGetMessage: "mail:getMessage",
+  mailCacheStats: "mail:cacheStats",
   mailClearCache: "mail:clearCache",
   mailRefreshMany: "mail:refreshMany"
 } as const;
@@ -46,6 +47,7 @@ export type AppErrorCode =
   | "STALE_CREDENTIALS"
   | "THROTTLED"
   | "TOKEN_EXPIRED"
+  | "INVALID_CLIENT"
   | "IMAP_AUTH_FAILED"
   | "SCOPE_MISSING"
   | "NETWORK_ERROR"
@@ -260,6 +262,14 @@ export interface MailListResult {
   totalCount?: number;
 }
 
+/** 设置弹窗里“缓存占用”那一行：计数 + 缓存文本的实际字节数（不含 SQLite 页开销）。 */
+export interface MailCacheStats {
+  accountCount: number;
+  messageCount: number;
+  bodyCount: number;
+  approximateBytes: number;
+}
+
 export interface AppSettings {
   cacheMessages: boolean;
   cacheBodies: boolean;
@@ -287,6 +297,7 @@ const appErrorPayloadSchema = z.strictObject({
     "STALE_CREDENTIALS",
     "THROTTLED",
     "TOKEN_EXPIRED",
+    "INVALID_CLIENT",
     "IMAP_AUTH_FAILED",
     "SCOPE_MISSING",
     "NETWORK_ERROR",
@@ -459,6 +470,7 @@ export const IPC_REQUEST_SCHEMAS = {
   clearCache: z
     .union([z.tuple([]), z.tuple([accountIdSchema])])
     .transform((args) => args[0]),
+  cacheStats: z.tuple([]),
   refreshMany: z
     .union([z.tuple([accountBatchSchema]), z.tuple([accountBatchSchema, refreshJobKindSchema])])
     .transform(([accountIds, jobKind]) => ({ accountIds, jobKind: jobKind ?? "refresh" }))

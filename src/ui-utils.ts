@@ -70,6 +70,20 @@ export function addressList(addresses: { name: string; address: string }[]) {
   return addresses.map((item) => item.name || item.address).join(", ");
 }
 
+/** 把字节数写成“12.3 MB”：设置里的缓存占用只需要量级，不需要精确到字节。 */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function statusMeta(account: AccountView) {
   if (account.status === "valid") {
     return { label: "可用", icon: CheckCircle2, className: "status-chip status-valid" };
@@ -86,9 +100,10 @@ export function statusMeta(account: AccountView) {
 
 export function accountMailStats(account: AccountView, fallbackCount = 0) {
   const count = account.lastInboxCount ?? fallbackCount;
-  // 从未成功刷新且已判定失效：写“刷新失败”而不是“0 封 · 未刷新”，否则看起来像空邮箱。
+  // 从未成功刷新且已判定失效：写“失效 · 刷新失败”而不是“0 封 · 未刷新”，
+  // 否则看起来像空邮箱；前缀“失效”与筛选标签用同一个词（P14）。
   if (account.status === "invalid" && !account.lastRefreshedAt && count === 0) {
-    return "刷新失败";
+    return "失效 · 刷新失败";
   }
 
   const refreshedAt = formatRelativeTime(account.lastRefreshedAt);

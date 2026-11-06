@@ -280,7 +280,7 @@ describe("credential storage migration", () => {
     });
   });
 
-  it("invalidates account generations on edit and delete", async () => {
+  it("keeps credentials and status when only remark or group changes", async () => {
     await createTemporaryUserData();
     const accountStore = await import("../electron/main/account-store.js");
     const { credentialGenerations } = await import("../electron/main/credential-generations.js");
@@ -292,6 +292,8 @@ describe("credential storage migration", () => {
       }
     ]);
     const accountId = created.affectedAccountIds[0];
+    // 先把它标成失效，才能看出“只改备注”会不会把状态洗回未测（P11）。
+    await accountStore.updateAccountStatus(accountId, "invalid", "AADSTS70000: bad token");
     const beforeUpdate = await accountStore.getAccountRecord(accountId);
     const updateSnapshot = credentialGenerations.capture(accountId);
 
@@ -304,8 +306,29 @@ describe("credential storage migration", () => {
     });
     const afterUpdate = await accountStore.getAccountRecord(accountId);
 
-    expect(afterUpdate.credentialGeneration).toBe(beforeUpdate.credentialGeneration + 1);
-    expect(credentialGenerations.isCurrent(updateSnapshot)).toBe(false);
+    // 备注/分组不是凭据：不该重算令牌、也不该把“失效”洗成“未测”。
+    expect(afterUpdate.credentialGeneration).toBe(beforeUpdate.credentialGeneration);
+    expect(credentialGenerations.isCurrent(updateSnapshot)).toBe(true);
+    expect(afterUpdate.status).toBe("invalid");
+    expect(afterUpdate.lastError).toBe("AADSTS70000: bad token");
+    expect(afterUpdate.remark).toBe("updated");
+    expect(afterUpdate.group).toBe("security");
+
+    // 真改 Client ID 才算换凭据：版本递增、旧快照作废、状态回到未测。
+    const clientSnapshot = credentialGenerations.capture(accountId);
+    await accountStore.updateAccount({
+      id: accountId,
+      email: "person@example.com",
+      clientId: "00000000-0000-4000-8000-000000000002",
+      remark: "updated",
+      group: "security"
+    });
+    const afterClientChange = await accountStore.getAccountRecord(accountId);
+
+    expect(afterClientChange.credentialGeneration).toBe(beforeUpdate.credentialGeneration + 1);
+    expect(credentialGenerations.isCurrent(clientSnapshot)).toBe(false);
+    expect(afterClientChange.status).toBe("untested");
+    expect(afterClientChange.lastError).toBeNull();
 
     const deleteSnapshot = credentialGenerations.capture(accountId);
     await accountStore.deleteAccount(accountId);

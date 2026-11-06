@@ -720,18 +720,27 @@ export async function updateAccount(input: AccountUpdateInput): Promise<AccountV
       throw new Error("邮箱已存在");
     }
 
-    credentialGenerations.invalidateAccounts([account.id]);
+    // 只有凭据/身份真的变了才算“一次新尝试”。只改备注/分组时把状态打回未测
+    // 会污染“失效”筛选（用户看到账号从失效变成未测，以为凭据修好了）。
+    // email 也算身份：IMAP 登录名就是它，改了邮箱可能改变认证结果。
+    const credentialsChanged = email !== account.email || clientId !== account.clientId || Boolean(refreshToken);
+
+    if (credentialsChanged) {
+      credentialGenerations.invalidateAccounts([account.id]);
+    }
+
     const next: AccountRecord = {
       ...account,
       email,
       clientId,
       remark: input.remark?.trim() || "",
       group: input.group?.trim() || "",
-      status: "untested",
-      lastError: null,
+      // 凭据未变：保留原有状态、上次错误和上次成功刷新时间。
+      status: credentialsChanged ? "untested" : account.status,
+      lastError: credentialsChanged ? null : account.lastError,
       // 新凭据等于一次新尝试，旧失败留下的冷却不再适用。
-      refreshCooldownUntil: null,
-      credentialGeneration: account.credentialGeneration + 1,
+      refreshCooldownUntil: credentialsChanged ? null : account.refreshCooldownUntil,
+      credentialGeneration: credentialsChanged ? account.credentialGeneration + 1 : account.credentialGeneration,
       updatedAt: nowIso()
     };
 

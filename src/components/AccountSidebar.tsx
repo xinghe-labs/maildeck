@@ -4,6 +4,7 @@ import { splitErrorMessage } from "../error-display";
 import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
 import type { AccountView } from "../types";
 import { accountMailStats, statusMeta } from "../ui-utils";
+import { TokenGuidePanel } from "./TokenGuidePanel";
 
 const ACCOUNT_ROW_HEIGHT = 88;
 const DEFAULT_VIEWPORT_HEIGHT = 660;
@@ -142,13 +143,19 @@ export const AccountSidebar = memo(function AccountSidebar({
           <Plus size={16} />
           导入
         </button>
-        <button className="square-button" onClick={onImportFromFile} title="导入文件">
+        <button className="square-button" onClick={onImportFromFile} title="从文件导入（.txt / .csv）" aria-label="从文件导入账号（.txt / .csv）">
           <FileUp size={16} />
         </button>
-        <button className="square-button" onClick={onReloadAccounts} title="刷新账号">
+        {/* 这个按钮只是从本地库重读列表，不是重新测试账号；名字和反馈都得说清楚（P10） */}
+        <button
+          className="square-button"
+          onClick={onReloadAccounts}
+          title="重新加载账号列表（不重新测试）"
+          aria-label="重新加载账号列表"
+        >
           <RefreshCw size={16} />
         </button>
-        <button className="square-button" onClick={onOpenSettings} title="设置">
+        <button className="square-button" onClick={onOpenSettings} title="设置" aria-label="打开设置">
           <Settings size={16} />
         </button>
       </div>
@@ -181,7 +188,7 @@ export const AccountSidebar = memo(function AccountSidebar({
         ) : null}
       </div>
 
-      <div className="sidebar-stats">
+      <div className="sidebar-stats" role="status" aria-live="polite">
         <span>
           {filteredAccounts.length} / {accounts.length} 个邮箱
         </span>
@@ -223,10 +230,13 @@ export const AccountSidebar = memo(function AccountSidebar({
             {accounts.length === 0 ? (
               <>
                 <p>还没有导入任何邮箱</p>
-                <p className="panel-empty-hint">粘贴 refresh_token 或导入 CSV，就能开始读取邮件。</p>
+                <p className="panel-empty-hint">
+                  粘贴 refresh_token，或用左上角的「从文件导入」按钮上传 .txt / .csv，就能开始读取邮件。
+                </p>
                 <button type="button" className="panel-error-retry" onClick={onOpenImport}>
                   导入第一个账号
                 </button>
+                <TokenGuidePanel className="empty-state-guide" />
               </>
             ) : (
               <>
@@ -294,6 +304,11 @@ export const AccountSidebar = memo(function AccountSidebar({
                           event.stopPropagation();
                           onRefreshAccount(account.id);
                         }}
+                        aria-label={
+                          account.lastError
+                            ? `${meta.label}：${splitErrorMessage(account.lastError).title}（点击重新刷新）`
+                            : `${meta.label}，点击刷新账号`
+                        }
                         disabled={refreshDisabled || isRefreshing}
                       >
                         {isRefreshing ? <Loader2 size={12} className="spin" /> : <StatusIcon size={12} />}

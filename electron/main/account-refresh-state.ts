@@ -2,6 +2,7 @@ import type { AccountStatus, AppErrorCode } from "./types.js";
 
 const INVALID_ACCOUNT_CODES = new Set<AppErrorCode>([
   "TOKEN_EXPIRED",
+  "INVALID_CLIENT",
   "IMAP_AUTH_FAILED",
   "SCOPE_MISSING",
   "MAILBOX_NOT_FOUND"
