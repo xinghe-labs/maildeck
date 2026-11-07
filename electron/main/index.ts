@@ -37,6 +37,11 @@ if (userDataOverride) {
   }
 }
 
+// 开启 RendererCodeIntegrity：阻止第三方 DLL（搜狗输入法 SogouPY.ime、Mactype 等）注入渲染进程。
+// 真机踩坑：搜狗的 IME DLL 注入渲染进程后自身触发 0xC0000005，整个渲染进程启动即崩，
+// 且用户装了搜狗就必崩、无从排查。Chrome 默认开启此特性，Electron 历史上默认关闭。
+app.commandLine.appendSwitch("enable-features", "RendererCodeIntegrity");
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
