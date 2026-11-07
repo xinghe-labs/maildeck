@@ -71,7 +71,7 @@
     "dompurify": "3.4.17",
     "electron-updater": "^6.6.4",
     "imapflow": "2.10.0",
-    "lucide-react": "^0.511.0",
+    "lucide-react": "^1.68.0",
     "mailparser": "3.14.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
