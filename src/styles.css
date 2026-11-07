@@ -105,6 +105,30 @@
   box-sizing: border-box;
 }
 
+/* 滚动条样式：替代 Windows 默认的宽条+箭头。
+   平时几乎隐形（透明轨道 + 浅灰细指爪），悬停变深；功能不变，
+   只是视觉上去掉那种「一直在」的老式滚动条（正文/列表/弹窗内都生效）。 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 5px;
+  background-color: #d9d9d9;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-3);
+}
+
 body {
   margin: 0;
   /* 应用是 100vh 固定布局（.mail-shell 自身 overflow:hidden，列表/弹窗都有内部滚动），
