@@ -58,6 +58,8 @@
       "artifactName": "MailDeck-${version}-portable.exe"
     },
     "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "artifactName": "MailDeck-Setup-${version}.exe"
     },
     "publish": {
