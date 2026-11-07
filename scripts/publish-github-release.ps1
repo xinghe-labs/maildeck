@@ -226,15 +226,17 @@ if (-not $releaseExists) {
   )
 }
 
+# electron-updater 的 feed：没有 latest.yml 客户端会 404，自动更新直接失效；
+# blockmap 供增量下载。两者都必须与同一构建的 exe 配套上传。
+# 注意：-replace 不能写在数组字面量里（PowerShell 会把后续元素并进 replace 参数），先算好再进数组。
+$Blockmap = $Installer -replace '\.exe$', '.exe.blockmap'
 $uploadArgs = @(
   "release",
   "upload",
   $Tag,
   $Portable,
   $Installer,
-  # electron-updater 的 feed：没有 latest.yml 客户端会 404，自动更新直接失效；
-  # blockmap 供增量下载。两者都必须与同一构建的 exe 配套上传。
-  $Installer -replace "\.exe$", ".exe.blockmap",
+  $Blockmap,
   (Join-Path $Root "release\latest.yml"),
   $Checksums,
   "--repo",
