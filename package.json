@@ -69,7 +69,7 @@
   "dependencies": {
     "@zone-eu/mailsplit": "5.4.20",
     "dompurify": "3.4.17",
-    "electron-updater": "^6.6.4",
+    "electron-updater": "^6.8.11",
     "imapflow": "2.10.0",
     "lucide-react": "^0.511.0",
     "mailparser": "3.14.1",
