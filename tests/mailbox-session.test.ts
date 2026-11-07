@@ -548,3 +548,46 @@ describe("mailbox session architecture", () => {
     }
   });
 });
+
+describe("mailbox session account switch feedback", () => {
+  // 报告 P1-9：点开一个账号后 8.3 秒内界面上没有任何进度，只能干等。
+  // 防抖窗口里也不能出现「这个文件夹没有邮件」，否则先闪空态再转圈。
+  it("switching accounts enters the loading state immediately", async () => {
+    vi.useFakeTimers();
+    try {
+      const adapter: MailboxSessionAdapter = {
+        listFolders: vi.fn(async () => []),
+        listMessages: vi.fn(async () => listResult([summary("message-a")])),
+        getMessage: vi.fn(async () => detail("message-a"))
+      };
+      const session = createMailboxSession(adapter, { selectionDelayMs: 180 });
+
+      session.selectAccount("account-a");
+
+      expect(session.getSnapshot()).toMatchObject({ accountId: "account-a", loadingMessages: true });
+
+      await vi.advanceTimersByTimeAsync(180);
+      await flushAsyncWork();
+
+      expect(session.getSnapshot()).toMatchObject({ loadingMessages: false });
+      session.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clearing the account does not leave a spinner behind", () => {
+    const adapter: MailboxSessionAdapter = {
+      listFolders: vi.fn(async () => []),
+      listMessages: vi.fn(async () => listResult([])),
+      getMessage: vi.fn(async () => detail("message-a"))
+    };
+    const session = createMailboxSession(adapter);
+
+    session.selectAccount("account-a");
+    session.selectAccount(null);
+
+    expect(session.getSnapshot()).toMatchObject({ accountId: null, loadingMessages: false });
+    session.dispose();
+  });
+});

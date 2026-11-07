@@ -26,7 +26,8 @@ export const AccountSidebar = memo(function AccountSidebar({
   newMailCounts,
   busyAccountIds,
   refreshDisabled = false,
-  onRefreshAccount
+  onRefreshAccount,
+  selectedAccountError
 }: {
   accounts: readonly AccountView[];
   filteredAccounts: readonly AccountView[];
@@ -45,6 +46,8 @@ export const AccountSidebar = memo(function AccountSidebar({
   busyAccountIds?: ReadonlySet<string>;
   refreshDisabled?: boolean;
   onRefreshAccount: (accountId: string) => void;
+  /** 当前选中账号读邮件失败时的原因：侧栏不能一边显示 ✓ 可用一边读不出邮件。 */
+  selectedAccountError?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -273,6 +276,7 @@ export const AccountSidebar = memo(function AccountSidebar({
                     data-account-index={accountIndex}
                     role="button"
                     tabIndex={0}
+                    title={`${account.email}${account.remark ? ` · ${account.remark}` : ""}`}
                     onClick={() => onSelectAccount(account.id)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
@@ -288,6 +292,11 @@ export const AccountSidebar = memo(function AccountSidebar({
                         <span className={`account-stats ${account.status === "invalid" && !account.lastRefreshedAt ? "account-stats-failed" : ""}`}>
                           {accountMailStats(account)}
                         </span>
+                        {account.id === selectedAccountId && selectedAccountError ? (
+                          <span className="account-load-error" title={selectedAccountError}>
+                            读取失败
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="account-badges">

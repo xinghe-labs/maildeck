@@ -12,6 +12,8 @@ const mailPolicy = vi.hoisted(() => ({
 
 vi.mock("../src/mail-content-security", () => ({
   sanitizeMailHtml: mailPolicy.sanitize,
+  // MailReader 现在用 detailed 版本（需要知道被拦了几张外部图）
+  sanitizeMailHtmlDetailed: (value: string) => ({ html: mailPolicy.sanitize(value), blockedImages: 0 }),
   buildMailHtmlDocument: mailPolicy.buildDocument,
   isMailHtmlBody: (contentType: string) => contentType.toLowerCase() === "html"
 }));

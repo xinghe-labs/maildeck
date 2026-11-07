@@ -11,6 +11,7 @@ export const APP_ERROR_MESSAGE_MAX_CHARS = 4_096;
 export const DIAGNOSTIC_REQUEST_ID_MAX_CHARS = 1_024;
 
 export const IPC_CHANNELS = {
+  appOpenExternal: "app:openExternal",
   accountsList: "accounts:list",
   settingsGet: "settings:get",
   settingsUpdate: "settings:update",
@@ -27,6 +28,8 @@ export const IPC_CHANNELS = {
   mailListFolders: "mail:listFolders",
   mailListMessages: "mail:listMessages",
   mailGetMessage: "mail:getMessage",
+  mailListAttachments: "mail:listAttachments",
+  mailSaveAttachment: "mail:saveAttachment",
   mailCacheStats: "mail:cacheStats",
   mailClearCache: "mail:clearCache",
   mailRefreshMany: "mail:refreshMany"
@@ -45,6 +48,7 @@ export type AppErrorCode =
   | "INVALID_REQUEST"
   | "CANCELED"
   | "STALE_CREDENTIALS"
+  | "CREDENTIAL_UNREADABLE"
   | "THROTTLED"
   | "TOKEN_EXPIRED"
   | "INVALID_CLIENT"
@@ -54,6 +58,7 @@ export type AppErrorCode =
   | "MAIL_PARSE_FAILED"
   | "MAIL_TOO_LARGE"
   | "MAILBOX_NOT_FOUND"
+  | "GRAPH_NOT_FOUND"
   | "ACCOUNT_NOT_FOUND"
   | "UNKNOWN";
 
@@ -148,6 +153,39 @@ export interface MailMessageDetail extends MailMessageSummary {
     contentType: string;
     content: string;
   };
+}
+
+export interface MailAttachmentMeta {
+  id: string;
+  name: string;
+  contentType: string;
+  size: number;
+  isInline: boolean;
+}
+
+/**
+ * IMAP / Hotmail 兜底账号的正文不经 Graph，拿不到附件列表；
+ * 用 supported=false 让界面直接提示去网页版，而不是报一个看不懂的错误。
+ */
+export interface MailAttachmentListResult {
+  supported: boolean;
+  attachments: MailAttachmentMeta[];
+}
+
+export interface SaveAttachmentResult {
+  saved: boolean;
+  canceled: boolean;
+  path: string | null;
+}
+
+export interface ListAttachmentsOptions {
+  accountId: string;
+  messageId: string;
+  folderId?: string;
+}
+
+export interface SaveAttachmentOptions extends ListAttachmentsOptions {
+  attachmentId: string;
 }
 
 export interface ImportResult {
@@ -437,6 +475,7 @@ const noArgsSchema = z.tuple([]).transform(() => undefined);
 const singleAccountIdSchema = z.tuple([accountIdSchema]).transform(([accountId]) => accountId);
 
 export const IPC_REQUEST_SCHEMAS = {
+  openExternal: z.tuple([z.string().trim().min(1).max(2_048)]).transform(([url]) => url),
   accountsList: noArgsSchema,
   getSettings: noArgsSchema,
   updateSettings: z.tuple([appSettingsUpdateSchema]).transform(([settings]) => settings),
@@ -466,6 +505,19 @@ export const IPC_REQUEST_SCHEMAS = {
     .transform(([options]) => options),
   getMessage: z
     .tuple([z.strictObject({ accountId: accountIdSchema, messageId: messageIdSchema, folderId: z.string().trim().min(1).max(FOLDER_ID_MAX_CHARS).optional() })])
+    .transform(([options]) => options),
+  listAttachments: z
+    .tuple([z.strictObject({ accountId: accountIdSchema, messageId: messageIdSchema, folderId: z.string().trim().min(1).max(FOLDER_ID_MAX_CHARS).optional() })])
+    .transform(([options]) => options),
+  saveAttachment: z
+    .tuple([
+      z.strictObject({
+        accountId: accountIdSchema,
+        messageId: messageIdSchema,
+        attachmentId: z.string().trim().min(1).max(2_048),
+        folderId: z.string().trim().min(1).max(FOLDER_ID_MAX_CHARS).optional()
+      })
+    ])
     .transform(([options]) => options),
   clearCache: z
     .union([z.tuple([]), z.tuple([accountIdSchema])])

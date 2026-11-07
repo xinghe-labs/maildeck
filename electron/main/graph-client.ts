@@ -1,6 +1,7 @@
 import type {
   AccessTokenResult,
   MailAddress,
+  MailAttachmentMeta,
   MailFolder,
   MailMessageDetail,
   MailMessageSummary
@@ -13,7 +14,7 @@ import { NETWORK_REQUEST_TIMEOUT_MS, withRequestTimeout } from "./request-timeou
 import { normalizeMailDate } from "./mail-date-normalizer.js";
 import { normalizeMailContentType, normalizeMailText } from "./mail-text-normalizer.js";
 import { readOAuthResponseText } from "./oauth-response-reader.js";
-import { readResponseTextBounded } from "./bounded-response-reader.js";
+import { readResponseBytesBounded, readResponseTextBounded } from "./bounded-response-reader.js";
 import { abortReasonOf } from "./error-utils.js";
 import { isNetworkError } from "./error-utils.js";
 
@@ -21,6 +22,9 @@ const GRAPH_ENDPOINT = "https://graph.microsoft.com/v1.0";
 export const GRAPH_ERROR_RESPONSE_MAX_BYTES = 1024 * 1024;
 export const GRAPH_COLLECTION_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 export const GRAPH_MESSAGE_DETAIL_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+// 单个附件下载上限：Graph 对单封邮件的附件总额有上限，32MB 足够覆盖常见文档/图片，
+// 超出时直接报 MAIL_TOO_LARGE，而不是把内存读爆。
+export const GRAPH_ATTACHMENT_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
 const TOKEN_ENDPOINTS = [
   "https://login.microsoftonline.com/common/oauth2/v2.0/token",
   "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
@@ -78,6 +82,15 @@ type GraphEmailAddress = z.infer<typeof graphEmailAddressSchema>;
 type GraphMessage = z.infer<typeof graphMessageSchema>;
 
 const graphFolderListSchema = z.object({ value: z.array(graphFolderSchema) });
+
+const graphAttachmentSchema = z.object({
+  id: z.string().min(1).max(2_048),
+  name: z.string().max(1_024).nullable().optional(),
+  contentType: z.string().max(256).nullable().optional(),
+  size: z.number().finite().nonnegative().optional(),
+  isInline: z.boolean().optional()
+});
+const graphAttachmentListSchema = z.object({ value: z.array(graphAttachmentSchema).max(200) });
 const graphMessageListSchema = z.object({ value: z.array(graphMessageSchema) });
 const graphDeltaSchema = z.object({
   value: z.array(
@@ -548,4 +561,128 @@ export async function getMessage(
       content
     }
   };
+}
+
+async function graphFetchBinary(
+  accessToken: string,
+  path: string,
+  proxyUrl = "",
+  signal?: AbortSignal,
+  maxResponseBytes = GRAPH_ATTACHMENT_RESPONSE_MAX_BYTES
+): Promise<Uint8Array> {
+  const url = `${GRAPH_ENDPOINT}${path}`;
+  let lastNetworkError: unknown = null;
+
+  for (let attempt = 0; attempt < GRAPH_MAX_ATTEMPTS; attempt += 1) {
+    signal?.throwIfAborted();
+    const timeout = withRequestTimeout(signal, NETWORK_REQUEST_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await proxiedFetch(
+        url,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "*/*"
+          },
+          signal: timeout.signal
+        },
+        proxyUrl
+      );
+    } catch (error) {
+      timeout.cleanup();
+      if (signal?.aborted) {
+        throw abortReasonOf(signal);
+      }
+      if (isNetworkError(error)) {
+        lastNetworkError = error;
+        if (attempt + 1 < GRAPH_MAX_ATTEMPTS) {
+          await waitForGraphRetry(calculateNetworkRetryDelay(attempt, 0.5), signal);
+          continue;
+        }
+        throw lastNetworkError;
+      }
+      throw error;
+    }
+
+    if (response.ok) {
+      try {
+        return await readResponseBytesBounded(
+          response,
+          maxResponseBytes,
+          () => new GraphResponseTooLargeError(maxResponseBytes)
+        );
+      } finally {
+        timeout.cleanup();
+      }
+    }
+
+    const payload = await parseResponse(response, GRAPH_ERROR_RESPONSE_MAX_BYTES);
+    timeout.cleanup();
+    const retryDelay = calculateGraphRetryDelay({
+      status: response.status,
+      retryAfter: response.headers.get("Retry-After"),
+      retryIndex: attempt,
+      nowMs: Date.now(),
+      randomValue: Math.random()
+    });
+    if (retryDelay !== null && attempt + 1 < GRAPH_MAX_ATTEMPTS) {
+      await waitForGraphRetry(retryDelay, signal);
+      continue;
+    }
+
+    throw createGraphError(response.status, payload, retryDelay);
+  }
+
+  throw new Error("Graph 请求重试状态异常");
+}
+
+/**
+ * 列出邮件的附件元数据。只有 fileAttachment 能通过 /$value 直接取到原始字节，
+ * itemAttachment（内嵌邮件）与 referenceAttachment（云端链接）在这里只暴露名字，
+ * 由界面提示用户去网页版处理。
+ */
+export async function listAttachments(
+  accessToken: string,
+  messageId: string,
+  proxyUrl = "",
+  signal?: AbortSignal
+): Promise<MailAttachmentMeta[]> {
+  const params = new URLSearchParams();
+  params.set("$select", "id,name,contentType,size,isInline");
+  params.set("$top", "100");
+
+  const payload = parseGraphResponse(
+    graphAttachmentListSchema,
+    await graphFetch(
+      accessToken,
+      `/me/messages/${encodeURIComponent(messageId)}/attachments?${params}`,
+      proxyUrl,
+      signal
+    ),
+    "邮件附件列表"
+  );
+
+  return payload.value.map((attachment) => ({
+    id: attachment.id,
+    name: normalizeMailText(attachment.name) || "未命名附件",
+    contentType: attachment.contentType || "application/octet-stream",
+    size: Math.round(attachment.size || 0),
+    isInline: Boolean(attachment.isInline)
+  }));
+}
+
+export async function downloadAttachment(
+  accessToken: string,
+  messageId: string,
+  attachmentId: string,
+  proxyUrl = "",
+  signal?: AbortSignal
+): Promise<Uint8Array> {
+  return graphFetchBinary(
+    accessToken,
+    `/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/$value`,
+    proxyUrl,
+    signal
+  );
 }

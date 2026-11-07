@@ -7,9 +7,19 @@ import {
 } from "./mailbox-session";
 import { createStrictModeSessionHolder } from "./strict-mode-session-holder";
 
+/**
+ * 连点邮件时只发最后一次正文请求：主进程对同一账号的请求是串行的，
+ * 每点一下都发一次会让最后一封排在队尾（实测 20.9s 才出来）。
+ * 120ms 对人手点击无感，但能把「连点 5 下」压成 1 个请求。
+ */
+const DETAIL_SELECTION_DELAY_MS = 120;
+
 export function useMailboxSession(adapter: MailboxSessionAdapter | null) {
   const holder = useMemo(
-    () => (adapter ? createStrictModeSessionHolder(createMailboxSession(adapter)) : null),
+    () =>
+      adapter
+        ? createStrictModeSessionHolder(createMailboxSession(adapter, { detailDelayMs: DETAIL_SELECTION_DELAY_MS }))
+        : null,
     [adapter]
   );
   const session: MailboxSession | null = holder?.session ?? null;

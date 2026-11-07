@@ -1,4 +1,5 @@
-import { dialog } from "electron";
+import { dialog, shell } from "electron";
+import { writeFile } from "node:fs/promises";
 import {
   IPC_CHANNELS,
   IPC_EVENT_CHANNELS,
@@ -23,6 +24,8 @@ import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { createMailboxAccess, type MailboxAccess } from "./mailbox-access.js";
 import { handleValidated, sendValidatedEvent } from "./validated-ipc.js";
 import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
+import { safeAttachmentFileName } from "./attachment-file-name.js";
+import { safeWebMailUrl } from "../shared/web-mail-url.js";
 import type {
   JobKind,
   RefreshManyResult,
@@ -118,6 +121,16 @@ async function upsertAccountsCoordinated(inputs: Parameters<typeof upsertAccount
 }
 
 export function registerIpcHandlers() {
+  // 外部链接统一从主进程打开：渲染进程只能递进来一个字符串，域名白名单在这里把关。
+  handleValidated(IPC_CHANNELS.appOpenExternal, IPC_REQUEST_SCHEMAS.openExternal, async (_event, url) => {
+    const target = safeWebMailUrl(url);
+    if (!target) {
+      throw new IpcRequestValidationError("只允许打开 Outlook 网页版地址");
+    }
+    await shell.openExternal(target);
+    return { opened: true };
+  });
+
   handleValidated(IPC_CHANNELS.accountsList, IPC_REQUEST_SCHEMAS.accountsList, async () => listAccounts());
 
   handleValidated(IPC_CHANNELS.settingsGet, IPC_REQUEST_SCHEMAS.getSettings, async () => getPublicSettings());
@@ -258,6 +271,32 @@ export function registerIpcHandlers() {
 
   handleValidated(IPC_CHANNELS.mailGetMessage, IPC_REQUEST_SCHEMAS.getMessage, async (_event, options) => {
     return runConfiguredNetworkAccount(options.accountId, (mailbox, signal) => mailbox.getMessage(options, signal));
+  });
+
+  handleValidated(IPC_CHANNELS.mailListAttachments, IPC_REQUEST_SCHEMAS.listAttachments, async (_event, options) => {
+    return runConfiguredNetworkAccount(options.accountId, (mailbox, signal) =>
+      mailbox.listAttachments(options, signal)
+    );
+  });
+
+  handleValidated(IPC_CHANNELS.mailSaveAttachment, IPC_REQUEST_SCHEMAS.saveAttachment, async (_event, options) => {
+    // 先把字节拿到手再弹保存对话框：下载失败时用户不会先选一个空目录。
+    const downloaded = await runConfiguredNetworkAccount(options.accountId, (mailbox, signal) =>
+      mailbox.downloadAttachment(options, signal)
+    );
+
+    const target = await dialog.showSaveDialog({
+      title: "保存附件",
+      defaultPath: safeAttachmentFileName(downloaded.name),
+      filters: [{ name: "All files", extensions: ["*"] }]
+    });
+
+    if (target.canceled || !target.filePath) {
+      return { saved: false, canceled: true, path: null };
+    }
+
+    await writeFile(target.filePath, downloaded.bytes);
+    return { saved: true, canceled: false, path: target.filePath };
   });
 
   handleValidated(IPC_CHANNELS.mailCacheStats, IPC_REQUEST_SCHEMAS.cacheStats, async () => {

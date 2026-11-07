@@ -127,3 +127,54 @@ describe("ImportModal", () => {
     expect(emailInput.value).toBe("new@example.com");
   });
 });
+
+describe("ImportModal duplicate overwrite guard", () => {
+  it("blocks submit until the user acknowledges that duplicates get overwritten", async () => {
+    // 报告 P1-10：重复行会静默覆盖已有账号的 refresh_token，用户不知情。
+    renderImportModal(vi.fn(async () => ({
+      total: 3,
+      valid: 2,
+      duplicates: 2,
+      invalid: 1,
+      errors: [],
+      warnings: []
+    })));
+    const previewButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "预检")!;
+    const submitButton = () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+
+    await act(async () => {
+      previewButton.click();
+    });
+
+    expect(container.querySelector(".preview-confirm")?.textContent).toContain("覆盖");
+    expect(submitButton().disabled).toBe(true);
+
+    const checkbox = container.querySelector<HTMLInputElement>(".preview-confirm input")!;
+    act(() => {
+      checkbox.click();
+    });
+
+    expect(submitButton().disabled).toBe(false);
+  });
+
+  it("does not ask for confirmation when nothing is duplicated", async () => {
+    renderImportModal(vi.fn(async () => ({
+      total: 1,
+      valid: 1,
+      duplicates: 0,
+      invalid: 0,
+      errors: [],
+      warnings: []
+    })));
+    const previewButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "预检")!;
+
+    await act(async () => {
+      previewButton.click();
+    });
+
+    expect(container.querySelector(".preview-confirm")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  });
+});

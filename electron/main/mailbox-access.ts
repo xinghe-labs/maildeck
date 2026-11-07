@@ -14,7 +14,16 @@ import {
   updateAccountRefreshState,
   updateAccountStatus
 } from "./account-store.js";
-import { deltaMessages, getWellKnownInboxFolder, getMessage, listMailFolders, listMessages, refreshAccessToken } from "./graph-client.js";
+import {
+  deltaMessages,
+  downloadAttachment as downloadGraphAttachment,
+  getWellKnownInboxFolder,
+  getMessage,
+  listAttachments as listGraphAttachments,
+  listMailFolders,
+  listMessages,
+  refreshAccessToken
+} from "./graph-client.js";
 import { isGraphRequestError } from "./graph-errors.js";
 import { getImapMessage, listImapFolders, listImapMessages, refreshImapInbox } from "./imap-client.js";
 import {
@@ -38,13 +47,16 @@ import type { RuntimeSettingsSnapshot } from "./settings-store.js";
 import type {
   AppErrorCode,
   GetMessageOptions,
+  ListAttachmentsOptions,
   ListMessagesOptions,
+  MailAttachmentListResult,
   MailFolder,
   MailListResult,
   MailMessageDetail,
   MailMessageSummary,
   RefreshManyResult,
   RefreshMetrics,
+  SaveAttachmentOptions,
   TestFallbackResult,
   TestManyResult
 } from "./types.js";
@@ -53,12 +65,20 @@ import type {
 // 与账号级增量刷新共用同一批行；其他文件夹用真实服务器 folder id 作键。
 const PRIMARY_FOLDER_KEY = "INBOX";
 
+export interface DownloadedAttachment {
+  name: string;
+  contentType: string;
+  bytes: Uint8Array;
+}
+
 export interface MailboxAccess {
   readonly listFolders: (accountId: string, signal?: AbortSignal) => Promise<MailFolder[]>;
   readonly testConnection: (accountId: string, forceRefresh: boolean, signal?: AbortSignal) => Promise<TestManyResult>;
   readonly testFallback: (accountId: string, signal?: AbortSignal) => Promise<TestFallbackResult>;
   readonly listMessages: (options: ListMessagesOptions, signal: AbortSignal) => Promise<MailListResult>;
   readonly getMessage: (options: GetMessageOptions, signal: AbortSignal) => Promise<MailMessageDetail>;
+  readonly listAttachments: (options: ListAttachmentsOptions, signal: AbortSignal) => Promise<MailAttachmentListResult>;
+  readonly downloadAttachment: (options: SaveAttachmentOptions, signal: AbortSignal) => Promise<DownloadedAttachment>;
   readonly refreshAccount: (accountId: string, signal: AbortSignal) => Promise<RefreshManyResult>;
 }
 
@@ -149,6 +169,7 @@ const NON_FALLBACK_ERROR_CODES = new Set<AppErrorCode>([
   "INVALID_REQUEST",
   "CANCELED",
   "STALE_CREDENTIALS",
+  "CREDENTIAL_UNREADABLE",
   "THROTTLED",
   "ACCOUNT_NOT_FOUND",
   "MAIL_PARSE_FAILED",
@@ -364,7 +385,11 @@ class DefaultMailboxAccess implements MailboxAccess {
         const totalCount = isFolderBrowse ? cached.length : account.lastInboxCount || cached.length;
         const cachedCursor = cached.length < totalCount ? await getCachedCursor(options.accountId, folderKey) : null;
         guard.assertCurrent();
-        return { messages: cached, nextCursor: cachedCursor, totalCount };
+        // 缓存条数不够又没游标时不要直接返回：那会让用户看到「摘要 22 封 / 列表 13 封」
+        // 且没有任何入口。这种情况交给下面的网络路径重新拉一次。
+        if (cached.length >= totalCount || cachedCursor) {
+          return { messages: cached, nextCursor: cachedCursor, totalCount };
+        }
       }
     }
 
@@ -546,7 +571,10 @@ class DefaultMailboxAccess implements MailboxAccess {
 
     const totalCount = isFolderBrowse ? messages.length : inbox.totalItemCount || messages.length;
     const loadedCount = skip + messages.length;
-    const nextCursor = messages.length >= top && loadedCount < totalCount ? String(loadedCount) : null;
+    // Graph 用 $skip 分页，游标就是已加载条数。这里只要求「确实还有没显示的邮件」，
+    // 不再要求「本页必须满 top」——否则总数 22、本页 13 时游标为空，按钮会凭空消失。
+    // messages.length === 0 时也不给游标，避免服务器一直返回空页导致按钮点了没反应。
+    const nextCursor = messages.length > 0 && loadedCount < totalCount ? String(loadedCount) : null;
     if (shouldCommitMailboxRefreshState({ search, cursor: options.cursor, skip: options.skip })) {
       guard.assertCurrent();
       await saveCachedMessages(options.accountId, messages, this.settings.cacheMessages, nextCursor, {
@@ -677,6 +705,74 @@ class DefaultMailboxAccess implements MailboxAccess {
       folderId: folderKey
     });
     return detail;
+  };
+
+  readonly listAttachments = async (
+    options: ListAttachmentsOptions,
+    signal: AbortSignal
+  ): Promise<MailAttachmentListResult> => {
+    // 兜底邮件的正文来自 Hotmail 网页接口，没有附件元数据可读。
+    if (options.messageId.startsWith("helper:")) {
+      return { supported: false, attachments: [] };
+    }
+    const guard = this.beginOperation(options.accountId, signal);
+    const token = await accessTokenManager.getAccessToken(
+      options.accountId,
+      false,
+      signal,
+      guard.tokenContext()
+    );
+    guard.assertCurrent();
+    if (token.authMode !== "graph") {
+      return { supported: false, attachments: [] };
+    }
+    const attachments = await listGraphAttachments(
+      token.accessToken,
+      options.messageId,
+      this.settings.proxyUrl,
+      signal
+    );
+    guard.assertCurrent();
+    return { supported: true, attachments };
+  };
+
+  readonly downloadAttachment = async (
+    options: SaveAttachmentOptions,
+    signal: AbortSignal
+  ): Promise<DownloadedAttachment> => {
+    const guard = this.beginOperation(options.accountId, signal);
+    const token = await accessTokenManager.getAccessToken(
+      options.accountId,
+      false,
+      signal,
+      guard.tokenContext()
+    );
+    guard.assertCurrent();
+    if (token.authMode !== "graph") {
+      throw new Error("当前账号不支持在应用内下载附件，请在浏览器中打开邮件");
+    }
+
+    const attachments = await listGraphAttachments(
+      token.accessToken,
+      options.messageId,
+      this.settings.proxyUrl,
+      signal
+    );
+    guard.assertCurrent();
+    const meta = attachments.find((attachment) => attachment.id === options.attachmentId) || null;
+    const bytes = await downloadGraphAttachment(
+      token.accessToken,
+      options.messageId,
+      options.attachmentId,
+      this.settings.proxyUrl,
+      signal
+    );
+    guard.assertCurrent();
+    return {
+      name: meta?.name || "attachment",
+      contentType: meta?.contentType || "application/octet-stream",
+      bytes
+    };
   };
 
   readonly refreshAccount = async (accountId: string, signal: AbortSignal): Promise<RefreshManyResult> => {

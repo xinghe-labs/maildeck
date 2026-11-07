@@ -9,6 +9,13 @@ import type {
   MailMessageSummary
 } from "./types";
 
+/** 正文缓存上限（条）：正文最占内存，只留最近读过的几十封。 */
+const DETAIL_CACHE_LIMIT = 80;
+
+function detailCacheKey(accountId: string, messageId: string): string {
+  return `${accountId}:${messageId}`;
+}
+
 export interface MailboxSessionAdapter {
   listMessages(options: ListMessagesOptions): Promise<MailListResult>;
   getMessage(options: GetMessageOptions): Promise<MailMessageDetail>;
@@ -59,6 +66,11 @@ export interface MailboxSession {
 interface MailboxSessionOptions {
   readonly pageSize?: number;
   readonly selectionDelayMs?: number;
+  /**
+   * 选中邮件后等多久再发正文请求（毫秒）。
+   * 0 = 立即发（测试与默认行为），真实界面传 120 把连点合并成一次请求。
+   */
+  readonly detailDelayMs?: number;
 }
 
 export const EMPTY_MAILBOX_SESSION_STATE: MailboxSessionState = Object.freeze({
@@ -94,6 +106,9 @@ class DefaultMailboxSession implements MailboxSession {
   private readonly listeners = new Set<() => void>();
   private readonly pageSize: number;
   private readonly selectionDelayMs: number;
+  private readonly detailDelayMs: number;
+  private readonly detailCache = new Map<string, MailMessageDetail>();
+  private detailTimer: ReturnType<typeof setTimeout> | null = null;
   private listGeneration = 0;
   private detailGeneration = 0;
   private foldersGeneration = 0;
@@ -108,6 +123,7 @@ class DefaultMailboxSession implements MailboxSession {
   ) {
     this.pageSize = options.pageSize ?? 50;
     this.selectionDelayMs = options.selectionDelayMs ?? 180;
+    this.detailDelayMs = options.detailDelayMs ?? 0;
   }
 
   readonly getSnapshot = () => this.state;
@@ -130,12 +146,17 @@ class DefaultMailboxSession implements MailboxSession {
     this.listGeneration += 1;
     this.detailGeneration += 1;
     this.foldersGeneration += 1;
+    this.cancelDetailTimer();
+    this.detailCache.clear();
     this.listError = "";
     this.detailError = "";
     this.replaceState({
       ...EMPTY_MAILBOX_SESSION_STATE,
       accountId,
       query: this.state.query,
+      // 立刻进入「加载中」：否则在防抖窗口（几百毫秒）里列表是空的、又没在加载，
+      // 会先闪一下「这个文件夹没有邮件」，然后再变成正在刷新（报告 P1-9）。
+      loadingMessages: Boolean(accountId),
       totalCount: totalCount ?? null
     });
 
@@ -157,6 +178,8 @@ class DefaultMailboxSession implements MailboxSession {
     }
 
     this.cancelSelectionTimer();
+    this.cancelDetailTimer();
+    this.detailCache.clear();
     this.listGeneration += 1;
     this.detailGeneration += 1;
     this.listError = "";
@@ -361,6 +384,8 @@ class DefaultMailboxSession implements MailboxSession {
 
   readonly selectMessage = async (messageId: string | null) => {
     const accountId = this.state.accountId;
+    // 新的选择作废上一次还没发出的正文请求（连点只发最后一次）。
+    this.cancelDetailTimer();
     if (!accountId || !messageId || this.disposed) {
       this.detailGeneration += 1;
       this.updateState({
@@ -378,8 +403,23 @@ class DefaultMailboxSession implements MailboxSession {
       return;
     }
 
-    this.updateState({ selectedMessageId: messageId, messageDetail: null });
-    await this.loadDetail(accountId, messageId);
+    const cached = this.detailCache.get(detailCacheKey(accountId, messageId)) ?? null;
+    // 读过的邮件先用缓存把正文铺上，再在后台刷新一次，避免「点回去又要等」。
+    this.updateState({ selectedMessageId: messageId, messageDetail: cached });
+
+    if (this.detailDelayMs > 0) {
+      this.updateState({ loadingDetail: cached === null });
+      this.detailTimer = setTimeout(() => {
+        this.detailTimer = null;
+        if (this.disposed || this.state.selectedMessageId !== messageId) {
+          return;
+        }
+        void this.loadDetail(accountId, messageId, { keepVisible: cached !== null });
+      }, this.detailDelayMs);
+      return;
+    }
+
+    await this.loadDetail(accountId, messageId, { keepVisible: cached !== null });
   };
   readonly clearError = () => {
     // 只关闭横幅：列表/正文的失败原因必须留到下一次成功加载，
@@ -395,19 +435,26 @@ class DefaultMailboxSession implements MailboxSession {
     }
     this.disposed = true;
     this.cancelSelectionTimer();
+    this.cancelDetailTimer();
     this.listGeneration += 1;
     this.detailGeneration += 1;
     this.foldersGeneration += 1;
     this.listeners.clear();
   };
 
-  private async loadDetail(accountId: string, messageId: string) {
+  private async loadDetail(
+    accountId: string,
+    messageId: string,
+    options: { keepVisible?: boolean } = {}
+  ) {
     const generation = this.detailGeneration + 1;
     this.detailGeneration = generation;
     const folderId = this.state.selectedFolderId;
+    // 后台刷新已缓存的正文时不要把已有内容清空，否则会闪一下白屏。
+    const keepVisible = options.keepVisible === true && this.state.messageDetail !== null;
     this.updateState({
       loadingDetail: true,
-      messageDetail: null,
+      messageDetail: keepVisible ? this.state.messageDetail : null,
       ...this.errorPatch("detail", "")
     });
     try {
@@ -417,6 +464,7 @@ class DefaultMailboxSession implements MailboxSession {
         ...(folderId ? { folderId } : {})
       });
       if (this.isCurrentDetail(generation, accountId, messageId, folderId)) {
+        this.rememberDetail(accountId, messageId, detail);
         this.updateState({
           messageDetail: detail,
           loadingDetail: false,
@@ -447,6 +495,25 @@ class DefaultMailboxSession implements MailboxSession {
       this.state.accountId === accountId &&
       this.state.selectedMessageId === messageId &&
       this.state.selectedFolderId === folderId;
+  }
+
+  private rememberDetail(accountId: string, messageId: string, detail: MailMessageDetail) {
+    this.detailCache.set(detailCacheKey(accountId, messageId), detail);
+    // Map 保持插入顺序，超限时丢最早的几条（正文体积最大，缓存不能无限长）。
+    while (this.detailCache.size > DETAIL_CACHE_LIMIT) {
+      const oldest = this.detailCache.keys().next();
+      if (oldest.done) {
+        return;
+      }
+      this.detailCache.delete(oldest.value);
+    }
+  }
+
+  private cancelDetailTimer() {
+    if (this.detailTimer !== null) {
+      clearTimeout(this.detailTimer);
+      this.detailTimer = null;
+    }
   }
 
   private updateState(patch: Partial<MailboxSessionState>) {

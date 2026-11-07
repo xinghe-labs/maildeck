@@ -283,3 +283,84 @@ describe("MessageList", () => {
     expect(labels).toEqual(["收件箱", "垃圾邮件", "存档"]);
   });
 });
+
+describe("MessageList visited rows", () => {
+  const unread = message(1, { id: "unread-1", isRead: false });
+
+  it("marks an unread message that was already opened locally", () => {
+    // 报告 P0-3：读过的邮件永远保持未读，圆点成了装饰品。
+    // 服务器还不支持标记已读时，至少要让用户看出「这封我点开过」。
+    renderList({ messages: [unread], visitedMessageIds: new Set(["unread-1"]) });
+
+    const row = container.querySelector(".message-row")!;
+    expect(row.classList.contains("is-unread")).toBe(true);
+    expect(row.classList.contains("is-visited")).toBe(true);
+  });
+
+  it("keeps a never-opened unread message at full strength", () => {
+    renderList({ messages: [unread], visitedMessageIds: new Set() });
+
+    const row = container.querySelector(".message-row")!;
+    expect(row.classList.contains("is-unread")).toBe(true);
+    expect(row.classList.contains("is-visited")).toBe(false);
+  });
+
+  it("never marks a read message as visited-unread", () => {
+    renderList({ messages: [message(1, { id: "read-1", isRead: true })], visitedMessageIds: new Set(["read-1"]) });
+
+    const row = container.querySelector(".message-row")!;
+    expect(row.classList.contains("is-unread")).toBe(false);
+    expect(row.classList.contains("is-visited")).toBe(false);
+  });
+});
+
+describe("MessageList loading feedback", () => {
+  // 报告 P2-16：切到草稿箱后只有一行「正在刷新邮件」，用户不知道是在加载还是卡死。
+  it("等待超过 3 秒后显示已等待秒数", () => {
+    vi.useFakeTimers();
+    try {
+      renderList({ messages: [], loadingMessages: true });
+      expect(container.querySelector(".panel-empty")?.textContent).toContain("正在刷新邮件");
+
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(container.querySelector(".panel-empty")?.textContent).toContain("已等待 4 秒");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("等待超过 8 秒后补一句说明", () => {
+    vi.useFakeTimers();
+    try {
+      renderList({ messages: [], loadingMessages: true });
+
+      act(() => {
+        vi.advanceTimersByTime(9000);
+      });
+
+      expect(container.querySelector(".panel-empty-hint")?.textContent).toContain("30 秒会超时");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("加载结束后计时归零，不会把秒数带到下一次", () => {
+    vi.useFakeTimers();
+    try {
+      renderList({ messages: [], loadingMessages: true });
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(container.querySelector(".panel-empty")?.textContent).toContain("已等待 5 秒");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    renderList({ messages: [], loadingMessages: true });
+    expect(container.querySelector(".panel-empty")?.textContent).toContain("正在刷新邮件");
+    expect(container.querySelector(".panel-empty")?.textContent).not.toContain("已等待");
+  });
+});

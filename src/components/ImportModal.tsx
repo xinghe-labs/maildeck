@@ -32,6 +32,8 @@ export function ImportModal({
   const [single, setSingle] = useState<AccountInput>(emptyAccountForm);
   const [batchText, setBatchText] = useState("");
   const [preview, setPreview] = useState<ImportPreviewResult | null>(null);
+  // 重复行会直接覆盖已有账号的登录凭据，必须让用户点头确认，不能默默换掉 token。
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [loading, setLoading] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState("");
@@ -43,6 +45,8 @@ export function ImportModal({
     ? `${single.email},${single.clientId},${single.refreshToken}`
     : batchText;
   const currentPreviewTextRef = useRef(previewText);
+  // 预检发现重复行、用户还没勾选确认时，禁止提交。
+  const overwriteBlocked = preview !== null && preview.duplicates > 0 && !confirmOverwrite;
   const mountedRef = useRef(true);
   currentPreviewTextRef.current = previewText;
 
@@ -65,6 +69,8 @@ export function ImportModal({
       const result = await onPreviewImportText(requestedText);
       if (result && mountedRef.current && currentPreviewTextRef.current === requestedText) {
         setPreview(result);
+        // 每次重新预检都重新要一次确认：行数变了就可能是另一批账号。
+        setConfirmOverwrite(false);
       }
     } catch (previewError) {
       if (mountedRef.current && currentPreviewTextRef.current === requestedText) {
@@ -137,7 +143,12 @@ export function ImportModal({
           <button type="button" className="secondary-button dark-button" onClick={onClose}>
             取消
           </button>
-          <button className="primary-button dark-primary" type="submit" disabled={loading || previewing}>
+          <button
+            className="primary-button dark-primary"
+            type="submit"
+            disabled={loading || previewing || overwriteBlocked}
+            title={overwriteBlocked ? "预检发现重复账号，请先勾选确认覆盖" : undefined}
+          >
             {loading ? <Loader2 size={16} className="spin" /> : <Plus size={16} />}
             保存导入
           </button>
@@ -252,6 +263,18 @@ export function ImportModal({
           共 {preview.total} 行 · 有效 {preview.valid} · 重复 {preview.duplicates} · 错误 {preview.invalid}
           {preview.errors.length > 0 ? <p>{preview.errors.slice(0, 5).join("；")}</p> : null}
           {preview.warnings.length > 0 ? <p className="preview-warning">{preview.warnings.slice(0, 5).join("；")}</p> : null}
+          {preview.duplicates > 0 ? (
+            <label className="preview-confirm">
+              <input
+                type="checkbox"
+                checked={confirmOverwrite}
+                onChange={(event) => setConfirmOverwrite(event.target.checked)}
+              />
+              <span>
+                这 {preview.duplicates} 个账号已存在，导入会<b>覆盖</b>它们现在保存的 refresh_token（不可撤销）
+              </span>
+            </label>
+          ) : null}
         </div>
       ) : null}
 

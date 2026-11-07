@@ -8,6 +8,7 @@ import {
   X
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { AccountSidebar } from "./components/AccountSidebar";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ErrorBanner } from "./components/ErrorBanner";
@@ -17,12 +18,14 @@ import { MessageList } from "./components/MessageList";
 import { ModalShell } from "./components/ModalShell";
 import { SettingsModal } from "./components/SettingsModal";
 import { getDesktopApi } from "./desktop-api";
+import { isAppError } from "./app-error";
 import { splitErrorMessage } from "./error-display";
 import { firstErrorField, validateAccountFields } from "./form-validation";
 import type { AccountField, FieldErrors } from "./form-validation";
 import type {
   AccountUpdateInput,
   AccountView,
+  AppErrorCode,
   AppSettings,
   ImportResult,
   RefreshManyResult
@@ -32,6 +35,8 @@ import { errorMessage } from "./app-error";
 import { useAccountCatalogSession } from "./use-account-catalog-session";
 import { useMailboxSession } from "./use-mailbox-session";
 import { useRefreshJobSession } from "./use-refresh-job-session";
+import { loadVisitedMessages, messageVisitKey, saveVisitedMessages } from "./visited-messages";
+import { useColumnWidths } from "./use-column-widths";
 
 const defaultSettings: AppSettings = {
   cacheMessages: true,
@@ -59,12 +64,14 @@ function EditAccountModal({
   account,
   onClose,
   onSubmit,
-  onSaved
+  onSaved,
+  onDelete
 }: {
   account: AccountView;
   onClose: () => void;
   onSubmit: (input: AccountUpdateInput) => Promise<AccountView | null>;
   onSaved: () => void;
+  onDelete: () => void;
 }) {
   const [form, setForm] = useState<AccountUpdateInput>({
     id: account.id,
@@ -120,6 +127,12 @@ function EditAccountModal({
       onSubmit={submit}
       footer={
         <>
+          {/* 删除放在编辑弹窗里、和「保存」隔开：报告 P1-13 指出它原来紧挨着工具栏的「编辑」，
+              手滑点错就会弹删除确认。 */}
+          <button type="button" className="modal-actions-danger danger-ghost toolbar-button" onClick={onDelete}>
+            <Trash2 size={15} />
+            删除这个账号
+          </button>
           <button type="button" className="secondary-button dark-button" onClick={onClose}>
             取消
           </button>
@@ -169,8 +182,22 @@ function EditAccountModal({
         </label>
         <label className="span-2">
           Refresh Token
-          <textarea value={form.refreshToken} onChange={(event) => setForm({ ...form, refreshToken: event.target.value })} />
-          <span className="field-hint">留空则保持不变；更换新的 refresh_token 会把账号重新标记为未测。</span>
+          <textarea
+            value={form.refreshToken}
+            aria-invalid={fieldErrors.refreshToken ? true : undefined}
+            aria-describedby={fieldErrors.refreshToken ? "edit-refresh-token-error" : undefined}
+            onChange={(event) => {
+              setForm({ ...form, refreshToken: event.target.value });
+              setFieldErrors((previous) => ({ ...previous, refreshToken: undefined }));
+            }}
+          />
+          {fieldErrors.refreshToken ? (
+            <span className="field-error" id="edit-refresh-token-error" role="alert">
+              {fieldErrors.refreshToken}
+            </span>
+          ) : (
+            <span className="field-hint">留空则保持不变；更换新的 refresh_token 会把账号重新标记为未测。</span>
+          )}
         </label>
         <label>
           备注
@@ -188,6 +215,19 @@ function EditAccountModal({
 export default function App() {
   const [accountQuery, setAccountQuery] = useState("");
   const [mailQuery, setMailQuery] = useState("");
+  // 本机打开过的邮件：用来把「未读但已看过」的行做弱化样式，避免未读圆点变成装饰品。
+  const [visitedMessages, setVisitedMessages] = useState<Set<string>>(() => loadVisitedMessages());
+  // 三栏宽度可拖拽（记在本机），解决窄窗口下阅读区只剩 394px 的问题。
+  const { widths: columnWidths, resizing: columnsResizing, beginResize, resetWidths, nudgeColumn } =
+    useColumnWidths();
+  const shellStyle = useMemo(
+    () => ({ "--w-sidebar": `${columnWidths.sidebar}px` }) as CSSProperties,
+    [columnWidths.sidebar]
+  );
+  const workspaceStyle = useMemo(
+    () => ({ "--w-list": `${columnWidths.list}px` }) as CSSProperties,
+    [columnWidths.list]
+  );
   const [statusFilter, setStatusFilter] = useState<"all" | "valid" | "invalid" | "untested">("all");
   const [showImportModal, setShowImportModal] = useState(false);
   const [editingAccount, setEditingAccount] = useState<AccountView | null>(null);
@@ -202,7 +242,11 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null);
   const toastDeadlineRef = useRef(0);
   const toastRemainingRef = useRef(0);
-  const [error, setError] = useState("");
+  // 错误横幅同时带错误码：用户报障时能直接说「NETWORK_ERROR」而不是复述一大段中文。
+  const [errorState, setErrorState] = useState<{ message: string; code: AppErrorCode | null }>({
+    message: "",
+    code: null
+  });
   const [deleteTarget, setDeleteTarget] = useState<AccountView | null>(null);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const desktopApi = getDesktopApi();
@@ -220,7 +264,8 @@ export default function App() {
     messageDetail,
     messages,
     selectedFolderId,
-    selectedMessageId
+    selectedMessageId,
+    totalCount: mailTotalCount
   } = mailbox.state;
   const {
     accounts,
@@ -228,6 +273,38 @@ export default function App() {
     loadingAccounts,
     testingAccountIds
   } = accountCatalog.state;
+
+  // 打开一封邮件就记一笔（只记本机，不回写服务器）。
+  useEffect(() => {
+    if (!selectedAccountId || !selectedMessageId) {
+      return;
+    }
+    setVisitedMessages((previous) => {
+      const key = messageVisitKey(selectedAccountId, selectedMessageId);
+      if (previous.has(key)) {
+        return previous;
+      }
+      const next = new Set(previous);
+      next.add(key);
+      saveVisitedMessages(next);
+      return next;
+    });
+  }, [selectedAccountId, selectedMessageId]);
+
+  // 列表只关心当前账号下的邮件 id。
+  const visitedMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!selectedAccountId) {
+      return ids;
+    }
+    const prefix = `${selectedAccountId}:`;
+    for (const key of visitedMessages) {
+      if (key.startsWith(prefix)) {
+        ids.add(key.slice(prefix.length));
+      }
+    }
+    return ids;
+  }, [selectedAccountId, visitedMessages]);
   const {
     anyJobRunning,
     canRetryFailedRefresh,
@@ -257,7 +334,7 @@ export default function App() {
   // 顶部横幅与邮件列表区都渲染错误。如果两边是同一句话（同一账号的同一个失败），
   // 只保留列表区那份（它带重试按钮和完整诊断），否则看起来像出了两个问题（P12）。
   const displayedError = useMemo(() => {
-    const candidate = error || mailboxError;
+    const candidate = errorState.message || mailboxError;
     if (!candidate) {
       return "";
     }
@@ -266,7 +343,7 @@ export default function App() {
       return "";
     }
     return candidate;
-  }, [error, mailboxError, mailbox.state.listError]);
+  }, [errorState, mailboxError, mailbox.state.listError]);
 
   const selectedAccount = useMemo(
     () => accounts.find((account) => account.id === selectedAccountId) || null,
@@ -297,14 +374,14 @@ export default function App() {
   }, [accounts, accountQuery, statusFilter]);
 
   const clearErrors = useCallback(() => {
-    setError("");
+    setErrorState({ message: "", code: null });
     mailbox.clearError();
   }, [mailbox]);
 
   const loadAccounts = useCallback(
     async (forceReload = true) => {
       if (!desktopApi) {
-        setError("当前页面未运行在 Electron 桌面环境中，请使用 npm run dev 启动桌面应用。");
+        setErrorState({ message: "当前页面未运行在 Electron 桌面环境中，请使用 npm run dev 启动桌面应用。", code: null });
         return;
       }
       clearErrors();
@@ -312,7 +389,7 @@ export default function App() {
       try {
         await (forceReload ? accountCatalog.reload() : accountCatalog.load());
       } catch (loadError) {
-        setError(errorMessage(loadError));
+        setErrorState({ message: errorMessage(loadError), code: isAppError(loadError) ? loadError.code : null });
       }
     },
     [accountCatalog, clearErrors, desktopApi]
@@ -326,13 +403,13 @@ export default function App() {
     try {
       setSettings(await desktopApi.settings.get());
     } catch (settingsError) {
-      setError(errorMessage(settingsError));
+      setErrorState({ message: errorMessage(settingsError), code: isAppError(settingsError) ? settingsError.code : null });
     }
   }, [desktopApi]);
 
   const importFromFile = useCallback(async () => {
     if (!desktopApi) {
-      setError("文件导入需要在 Electron 桌面应用中使用。");
+      setErrorState({ message: "文件导入需要在 Electron 桌面应用中使用。", code: null });
       return;
     }
 
@@ -347,7 +424,7 @@ export default function App() {
 
       setToast(importResultMessage(result));
     } catch (importError) {
-      setError(errorMessage(importError));
+      setErrorState({ message: errorMessage(importError), code: isAppError(importError) ? importError.code : null });
     }
   }, [accountCatalog, clearErrors, desktopApi]);
 
@@ -355,7 +432,7 @@ export default function App() {
     async (accountId: string) => {
       setTestMenuOpen(false);
       if (!desktopApi) {
-        setError("连接测试需要在 Electron 桌面应用中使用。");
+        setErrorState({ message: "连接测试需要在 Electron 桌面应用中使用。", code: null });
         return;
       }
       const execution = accountCatalog.testConnection(accountId);
@@ -374,11 +451,14 @@ export default function App() {
         } else {
           // 失败也要留一条记录：只 setError 时，如果横幅上已经是同一句话，
           // 屏幕上就一个字都不会变（P9）。
-          setError(result.error.message);
+          setErrorState({
+            message: result.error.message,
+            code: isAppError(result.error) ? result.error.code : null
+          });
           setToast(`测试失败：${splitErrorMessage(result.error.message).title}`);
         }
       } catch (testError) {
-        setError(errorMessage(testError));
+        setErrorState({ message: errorMessage(testError), code: isAppError(testError) ? testError.code : null });
       }
     },
     [accountCatalog, clearErrors, desktopApi]
@@ -388,7 +468,7 @@ export default function App() {
     async (accountId: string) => {
       setTestMenuOpen(false);
       if (!desktopApi) {
-        setError("兜底测试需要在 Electron 桌面应用中使用。");
+        setErrorState({ message: "兜底测试需要在 Electron 桌面应用中使用。", code: null });
         return;
       }
       const execution = accountCatalog.testFallback(accountId);
@@ -405,11 +485,14 @@ export default function App() {
         if (result.ok) {
           setToast(result.message);
         } else {
-          setError(result.error.message);
+          setErrorState({
+            message: result.error.message,
+            code: isAppError(result.error) ? result.error.code : null
+          });
           setToast(`兜底测试失败：${splitErrorMessage(result.error.message).title}`);
         }
       } catch (fallbackError) {
-        setError(errorMessage(fallbackError));
+        setErrorState({ message: errorMessage(fallbackError), code: isAppError(fallbackError) ? fallbackError.code : null });
       }
     },
     [accountCatalog, clearErrors, desktopApi]
@@ -443,7 +526,7 @@ export default function App() {
       setToast(`已测试 ${results.length} 个账号：可用 ${validCount}、失效 ${results.length - validCount}`);
     } catch (testError) {
       setBulkTestAccountIds(new Set());
-      setError(errorMessage(testError));
+      setErrorState({ message: errorMessage(testError), code: isAppError(testError) ? testError.code : null });
     }
   }, [accountCatalog, clearErrors, desktopApi, filteredAccounts, refreshJobs]);
 
@@ -459,7 +542,7 @@ export default function App() {
         setToast("正在取消批量测试");
       }
     } catch (cancelError) {
-      setError(errorMessage(cancelError));
+      setErrorState({ message: errorMessage(cancelError), code: isAppError(cancelError) ? cancelError.code : null });
     }
   }, [refreshJobs]);
 
@@ -494,7 +577,7 @@ export default function App() {
       }
 
       if (!desktopApi) {
-        setError("桌面接口不可用");
+        setErrorState({ message: "桌面接口不可用", code: null });
         return;
       }
 
@@ -532,7 +615,7 @@ export default function App() {
         if (options.silent) {
           setToast(`定时刷新失败：${message}`);
         } else {
-          setError(message);
+          setErrorState({ message, code: isAppError(refreshError) ? refreshError.code : null });
         }
       }
     },
@@ -542,7 +625,7 @@ export default function App() {
   const refreshSingleAccount = useCallback(
     async (accountId: string) => {
       if (!desktopApi) {
-        setError("桌面接口不可用");
+        setErrorState({ message: "桌面接口不可用", code: null });
         return;
       }
 
@@ -569,14 +652,20 @@ export default function App() {
 
         const refreshMessage = result?.error.message || "刷新账号失败";
         if (mailbox.isCurrentAccount(accountId)) {
-          setError(refreshMessage);
+          setErrorState({
+            message: refreshMessage,
+            code: result?.error && isAppError(result.error) ? result.error.code : null
+          });
         } else {
           setToast(`${email} 刷新失败：${splitErrorMessage(refreshMessage).title}`);
         }
       } catch (refreshError) {
         const refreshMessage = errorMessage(refreshError);
         if (mailbox.isCurrentAccount(accountId)) {
-          setError(refreshMessage);
+          setErrorState({
+            message: refreshMessage,
+            code: isAppError(refreshError) ? refreshError.code : null
+          });
         } else {
           const email = accounts.find((account) => account.id === accountId)?.email || "账号";
           setToast(`${email} 刷新失败：${splitErrorMessage(refreshMessage).title}`);
@@ -598,7 +687,7 @@ export default function App() {
         setToast("正在取消批量刷新");
       }
     } catch (cancelError) {
-      setError(errorMessage(cancelError));
+      setErrorState({ message: errorMessage(cancelError), code: isAppError(cancelError) ? cancelError.code : null });
     }
   }, [refreshJobs]);
 
@@ -691,7 +780,7 @@ export default function App() {
       return;
     }
     if (!desktopApi) {
-      setError("账号管理需要在 Electron 桌面应用中使用。");
+      setErrorState({ message: "账号管理需要在 Electron 桌面应用中使用。", code: null });
       setDeleteTarget(null);
       return;
     }
@@ -705,7 +794,7 @@ export default function App() {
       setToast(`已删除 ${target.email}`);
       setDeleteTarget(null);
     } catch (deleteError) {
-      setError(errorMessage(deleteError));
+      setErrorState({ message: errorMessage(deleteError), code: isAppError(deleteError) ? deleteError.code : null });
       setDeleteTarget(null);
     } finally {
       setDeletingAccount(false);
@@ -826,8 +915,23 @@ export default function App() {
   }, [testMenuOpen]);
 
   return (
-    <div className="mail-app">
-      <div className="mail-shell">
+    <div className={`mail-app${columnsResizing ? " is-resizing-columns" : ""}`}>
+      <div className="mail-shell" style={shellStyle}>
+        <div
+          className="column-resizer column-resizer-sidebar"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整账号栏宽度（双击恢复默认）"
+          tabIndex={0}
+          onPointerDown={(event) => beginResize("sidebar", event)}
+          onDoubleClick={resetWidths}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              event.preventDefault();
+              nudgeColumn("sidebar", event.key === "ArrowLeft" ? -16 : 16);
+            }
+          }}
+        />
         <AccountSidebar
           accounts={accounts}
           filteredAccounts={filteredAccounts}
@@ -846,6 +950,7 @@ export default function App() {
           busyAccountIds={busyAccountIdSet}
           refreshDisabled={singleRefreshBlocked}
           onRefreshAccount={refreshSingleAccount}
+          selectedAccountError={mailboxError || undefined}
         />
 
         <main className="workspace">
@@ -946,14 +1051,10 @@ export default function App() {
                 <Pencil size={15} />
                 编辑
               </button>
-              <button className="toolbar-button danger-outline" onClick={requestDeleteAccount} disabled={!selectedAccount} title="删除账号">
-                <Trash2 size={15} />
-                删除
-              </button>
             </div>
           </header>
 
-          {displayedError ? <ErrorBanner message={displayedError} onDismiss={clearErrors} /> : null}
+          {displayedError ? <ErrorBanner message={displayedError} code={errorState.code} onDismiss={clearErrors} /> : null}
           {progressText ? (
             <div className="progress-line">
               <span>{progressText}</span>
@@ -978,13 +1079,30 @@ export default function App() {
             </div>
           ) : null}
 
-          <div className="workspace-content">
+          <div className="workspace-content" style={workspaceStyle}>
+            <div
+              className="column-resizer column-resizer-list"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整邮件列表宽度（双击恢复默认）"
+              tabIndex={0}
+              onPointerDown={(event) => beginResize("list", event)}
+              onDoubleClick={resetWidths}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                  event.preventDefault();
+                  nudgeColumn("list", event.key === "ArrowLeft" ? -16 : 16);
+                }
+              }}
+            />
             <MessageList
               messages={messages}
               selectedMessageId={selectedMessageId}
               loadingMessages={loadingMessages}
               loadingMore={loadingMore}
               mailCursor={mailCursor}
+              totalCount={mailTotalCount}
+              visitedMessageIds={visitedMessageIds}
               mailQuery={mailQuery}
               folders={folders}
               selectedFolderId={selectedFolderId}
@@ -1000,7 +1118,14 @@ export default function App() {
               onLoadMore={loadMoreMessages}
             />
 
-            <MailReader selectedMessage={selectedMessage} messageDetail={messageDetail} loadingDetail={loadingDetail} />
+            <MailReader
+              accountId={selectedAccountId}
+              folderId={selectedFolderId}
+              accountEmail={selectedAccount?.email}
+              selectedMessage={selectedMessage}
+              messageDetail={messageDetail}
+              loadingDetail={loadingDetail}
+            />
           </div>
         </main>
       </div>
@@ -1024,6 +1149,10 @@ export default function App() {
           onSubmit={accountCatalog.update}
           onSaved={() => {
             setToast("账号已更新");
+          }}
+          onDelete={() => {
+            setEditingAccount(null);
+            requestDeleteAccount();
           }}
         />
       ) : null}

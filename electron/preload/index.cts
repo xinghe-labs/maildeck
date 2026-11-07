@@ -14,6 +14,8 @@ import type {
   ImportPreviewResult,
   JobKind,
   ListMessagesOptions,
+  ListAttachmentsOptions,
+  MailAttachmentListResult,
   MailCacheStats,
   MailFolder,
   MailListResult,
@@ -21,6 +23,8 @@ import type {
   RefreshManyResult,
   RefreshProgressEvent,
   RefreshJobKind,
+  SaveAttachmentOptions,
+  SaveAttachmentResult,
   TestConnectionResult,
   TestFallbackResult,
   TestManyResult,
@@ -31,6 +35,7 @@ const APP_ERROR_CODES = new Set([
   "INVALID_REQUEST",
   "CANCELED",
   "STALE_CREDENTIALS",
+  "CREDENTIAL_UNREADABLE",
   "THROTTLED",
   "TOKEN_EXPIRED",
   "INVALID_CLIENT",
@@ -41,6 +46,7 @@ const APP_ERROR_CODES = new Set([
   "MAIL_TOO_LARGE",
   "MAILBOX_NOT_FOUND",
   "ACCOUNT_NOT_FOUND",
+  "GRAPH_NOT_FOUND",
   "UNKNOWN"
 ]);
 
@@ -95,6 +101,9 @@ function onEvent<Payload>(channel: IpcEventChannel, callback: (payload: Payload)
 }
 
 const api = {
+  app: {
+    openExternal: (url: string) => invoke<{ opened: boolean }>("app:openExternal", url)
+  },
   accounts: {
     list: () => invoke<AccountView[]>("accounts:list"),
     previewImportText: (text: string) => invoke<ImportPreviewResult>("accounts:previewImportText", text),
@@ -121,6 +130,10 @@ const api = {
     listFolders: (accountId: string) => invoke<MailFolder[]>("mail:listFolders", accountId),
     listMessages: (options: ListMessagesOptions) => invoke<MailListResult>("mail:listMessages", options),
     getMessage: (options: GetMessageOptions) => invoke<MailMessageDetail>("mail:getMessage", options),
+    listAttachments: (options: ListAttachmentsOptions) =>
+      invoke<MailAttachmentListResult>("mail:listAttachments", options),
+    saveAttachment: (options: SaveAttachmentOptions) =>
+      invoke<SaveAttachmentResult>("mail:saveAttachment", options),
     cacheStats: () => invoke<MailCacheStats>("mail:cacheStats"),
     clearCache: (accountId?: string) =>
       accountId

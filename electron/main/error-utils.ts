@@ -178,12 +178,36 @@ export function normalizeError(error: unknown): NormalizedAppError {
   if (isGraphRequestError(error) && error.status >= 500) {
     return { code: "NETWORK_ERROR", message: `Microsoft Graph 服务暂时不可用，请稍后重试。原始错误：${message}` };
   }
+  // 404：邮件/附件已经不在了（被删、被移到别的文件夹、附件被清理）。
+  // 不归类的话会落到 UNKNOWN，用户只看到「操作失败，请重试」，重试也不会好。
+  if (isGraphRequestError(error) && error.status === 404) {
+    return {
+      code: "GRAPH_NOT_FOUND",
+      message: `Microsoft Graph 找不到这个内容（可能已被删除或移动）。原始错误：${message}`
+    };
+  }
 
   if (hasNetworkErrorCode(error)) {
     return { code: "NETWORK_ERROR", message: `网络连接失败：请检查代理、DNS 或 Microsoft 服务连接。原始错误：${message}` };
   }
 
   const lower = message.toLowerCase();
+
+  // 凭据在本机解不开（数据目录被迁移/备份恢复、系统凭据服务变化、换 Windows 账户）。
+  // 这种情况重试和换网络都没用，必须引导用户重新填 refresh_token；
+  // 否则会被归到 UNKNOWN，用户只看到一句「操作失败，请重试」。
+  if (
+    lower.includes("decrypt") ||
+    lower.includes("safestorage") ||
+    lower.includes("dpapi") ||
+    lower.includes("ciphertext")
+  ) {
+    return {
+      code: "CREDENTIAL_UNREADABLE",
+      message:
+        "本机解不开这个账号保存的登录凭据：常见原因是数据目录被拷贝/恢复过，或换了 Windows 用户。请选中该账号点「编辑」，重新填入 refresh_token 后保存。"
+    };
+  }
 
   if (message.includes("AADSTS7000012") || lower.includes("different tenant")) {
     return {

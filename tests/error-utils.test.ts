@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatErrorForLog, normalizeError, toIpcErrorPayload } from "../electron/main/error-utils.js";
 import { MailContentTooLargeError, MailParseFailedError } from "../electron/main/mail-errors.js";
 import { APP_ERROR_MESSAGE_MAX_CHARS } from "../electron/shared/ipc-contracts.js";
-import { GraphResponseInvalidError, GraphResponseTooLargeError } from "../electron/main/graph-errors.js";
+import { GraphResponseInvalidError, GraphRequestError, GraphResponseTooLargeError } from "../electron/main/graph-errors.js";
 
 describe("proxy credential redaction", () => {
   it("redacts HTTP proxy passwords from renderer-visible errors", () => {
@@ -104,6 +104,15 @@ describe("proxy credential redaction", () => {
     });
   });
 
+  it("classifies a 404 from Graph as gone-instead-of-generic", () => {
+    // 实测：附件下载返回 404 时，阅读器只给「操作失败，请重试」，重试也不会好。
+    const payload = toIpcErrorPayload(new GraphRequestError(404, "Not Found", null, null));
+
+    expect(payload.code).toBe("GRAPH_NOT_FOUND");
+    expect(payload.message).toContain("找不到这个内容");
+    expect(payload.retryable).toBe(false);
+  });
+
   it("classifies invalid Graph schemas as non-retryable parser failures", () => {
     expect(toIpcErrorPayload(new GraphResponseInvalidError("Graph 邮件列表响应格式无效"))).toMatchObject({
       code: "MAIL_PARSE_FAILED",
@@ -119,5 +128,27 @@ describe("proxy credential redaction", () => {
     expect(payload.code).toBe("NETWORK_ERROR");
     expect(payload.message).toHaveLength(APP_ERROR_MESSAGE_MAX_CHARS);
     expect(payload.message.endsWith("...")).toBe(true);
+  });
+});
+
+describe("credential decryption failures", () => {
+  it("classifies an undecryptable refresh token as actionable instead of UNKNOWN", () => {
+    // 报告 P0-1：主进程真因被压成 UNKNOWN，用户只看到「操作失败，请重试」。
+    const result = normalizeError(new Error("Error while decrypting the ciphertext provided to safeStorage.decryptString."));
+
+    expect(result.code).toBe("CREDENTIAL_UNREADABLE");
+    expect(result.message).toContain("refresh_token");
+    expect(result.message).not.toContain("操作失败，请重试");
+  });
+
+  it("keeps the actionable message when building the IPC payload", () => {
+    const payload = toIpcErrorPayload(new Error("safeStorage is unavailable in this session"));
+
+    expect(payload.code).toBe("CREDENTIAL_UNREADABLE");
+    expect(payload.message).toContain("编辑");
+  });
+
+  it("does not swallow unrelated errors into the credential bucket", () => {
+    expect(normalizeError(new Error("fetch failed")).code).not.toBe("CREDENTIAL_UNREADABLE");
   });
 });

@@ -1,13 +1,16 @@
 import { AlertCircle, ClipboardList, Inbox, Loader2, Paperclip, Plus, RefreshCw, Search, X } from "lucide-react";
-import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { splitErrorMessage } from "../error-display";
 import { ErrorDetailCopy } from "./ErrorDetailCopy";
 import { resolveFixedVirtualWindow } from "../fixed-virtual-window";
+import { resolveMailListFooter } from "../mail-pagination";
 import type { MailFolder, MailMessageSummary } from "../types";
 import { formatDateShort, senderLabel } from "../ui-utils";
 
 const MESSAGE_ROW_HEIGHT = 64;
 const DEFAULT_VIEWPORT_HEIGHT = 660;
+// 未传 visitedMessageIds 时（测试/其他调用方）用的空集合，避免每次 render 新建。
+const EMPTY_VISITED: ReadonlySet<string> = new Set<string>();
 
 // Graph/IMAP 返回的常用文件夹英文名映射为中文；未知名保留原文。
 const FOLDER_DISPLAY_NAMES: Record<string, string> = {
@@ -25,6 +28,27 @@ const FOLDER_DISPLAY_NAMES: Record<string, string> = {
   conversationhistory: "对话历史记录"
 };
 
+/**
+ * 列表加载的已等待秒数。报告 P2-16：切到草稿箱后长时间只有「正在刷新邮件」，
+ * 用户不知道是在加载还是卡死了。把等待时间显示出来，超过阈值再补一句说明。
+ */
+function useLoadingElapsed(active: boolean): number {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setSeconds(0);
+    const timer = window.setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return seconds;
+}
+
 export function folderDisplayLabel(displayName: string) {
   return FOLDER_DISPLAY_NAMES[displayName.trim().toLowerCase()] ?? displayName;
 }
@@ -35,6 +59,8 @@ export const MessageList = memo(function MessageList({
   loadingMessages,
   loadingMore,
   mailCursor,
+  totalCount = null,
+  visitedMessageIds = EMPTY_VISITED,
   mailQuery,
   folders,
   selectedFolderId,
@@ -54,6 +80,9 @@ export const MessageList = memo(function MessageList({
   loadingMessages: boolean;
   loadingMore: boolean;
   mailCursor: string | null;
+  totalCount?: number | null;
+  /** 当前账号下本机已打开过的邮件 id（用来把「未读但已看过」的行弱化）。 */
+  visitedMessageIds?: ReadonlySet<string>;
   mailQuery: string;
   folders: readonly MailFolder[];
   selectedFolderId: string | null;
@@ -72,6 +101,7 @@ export const MessageList = memo(function MessageList({
   const showFolderPicker = folders.length > 1;
   const trimmedQuery = mailQuery.trim();
   const listErrorDisplay = splitErrorMessage(listError);
+  const loadingSeconds = useLoadingElapsed(loadingMessages);
   // 空列表必须说清楚“为什么空”：没选账号 / 搜索无结果 / 文件夹本身空，不能笼统写“没有邮件”。
   const emptyHint = !canRefresh
     ? "先在左侧选择一个邮箱"
@@ -87,6 +117,13 @@ export const MessageList = memo(function MessageList({
   }, [folders, inboxFolderId]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 底部计数与「还有更多」入口统一由 resolveMailListFooter 判定：
+  // 总数比已显示多但没有游标时，至少还能给一个「重新加载剩余」。
+  const listFooter = resolveMailListFooter({
+    cursor: mailCursor,
+    displayedCount: messages.length,
+    totalCount
+  });
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(DEFAULT_VIEWPORT_HEIGHT);
   const previousListKeyRef = useRef<string | null>(null);
@@ -217,9 +254,14 @@ export const MessageList = memo(function MessageList({
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       >
         {loadingMessages && messages.length === 0 ? (
-          <div className="panel-empty">
+          <div className="panel-empty" role="status" aria-live="polite">
             <Loader2 size={22} className="spin" />
-            <p>正在刷新邮件</p>
+            <p>{loadingSeconds >= 3 ? `正在刷新邮件（已等待 ${loadingSeconds} 秒）` : "正在刷新邮件"}</p>
+            {loadingSeconds >= 8 ? (
+              <p className="panel-empty-hint">
+                这个文件夹比平时慢，还在等微软返回；超过 30 秒会超时并给出失败原因。
+              </p>
+            ) : null}
           </div>
         ) : null}
 
@@ -262,7 +304,9 @@ export const MessageList = memo(function MessageList({
               {visibleMessages.map((message, index) => (
                 <button
                   key={message.id}
-                  className={`message-row ${message.id === selectedMessageId ? "selected" : ""} ${message.isRead ? "" : "is-unread"}`}
+                  className={`message-row ${message.id === selectedMessageId ? "selected" : ""} ${
+                    message.isRead ? "" : visitedMessageIds.has(message.id) ? "is-unread is-visited" : "is-unread"
+                  }`}
                   data-message-index={virtualWindow.startIndex + index}
                   disabled={loadingMessages}
                   onClick={() => onSelectMessage(message.id)}
@@ -281,11 +325,27 @@ export const MessageList = memo(function MessageList({
             </div>
           </div>
         ) : null}
-        {mailCursor && !loadingMessages ? (
-          <button className="load-more-button" onClick={onLoadMore} disabled={loadingMore}>
-            {loadingMore ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
-            加载更多
-          </button>
+        {listFooter.action !== "none" && !loadingMessages ? (
+          <div className="message-list-footer">
+            {listFooter.countText ? <span className="message-list-count">{listFooter.countText}</span> : null}
+            <button
+              className="load-more-button"
+              onClick={listFooter.action === "reload" ? onRefresh : onLoadMore}
+              disabled={loadingMore}
+              title={
+                listFooter.action === "reload"
+                  ? "服务器没有返回分页游标，重新拉取一次把剩下的邮件补齐"
+                  : undefined
+              }
+            >
+              {loadingMore ? <Loader2 size={15} className="spin" /> : <Plus size={15} />}
+              {listFooter.action === "reload" ? "重新加载剩余邮件" : "加载更多"}
+            </button>
+          </div>
+        ) : null}
+
+        {listFooter.action === "none" && listFooter.countText && !loadingMessages ? (
+          <p className="message-list-count is-footer">{listFooter.countText}</p>
         ) : null}
       </div>
     </section>

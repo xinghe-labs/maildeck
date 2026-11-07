@@ -5,6 +5,7 @@ import {
   buildMailHtmlDocument,
   isMailHtmlBody,
   sanitizeMailHtml,
+  sanitizeMailHtmlDetailed,
   sanitizeMailStyle
 } from "../src/mail-content-security";
 
@@ -20,7 +21,7 @@ describe("sanitizeMailHtml", () => {
     template.innerHTML = sanitized;
 
     expect(template.content.querySelector("script, form, input")).toBeNull();
-    expect(template.content.querySelector('[data-kind="remote"]')?.getAttribute("src")).toBeNull();
+    expect(template.content.querySelector('[data-kind="remote"]')?.getAttribute("src")).toMatch(/^data:image\/svg/);
     expect(template.content.querySelector('[data-kind="styled"]')?.getAttribute("style")).toBe("color: red");
     expect(sanitized).not.toContain("tracker.example");
   });
@@ -58,5 +59,46 @@ describe("mail document policy", () => {
     expect(isMailHtmlBody("text")).toBe(false);
     expect(isMailHtmlBody("HTML")).toBe(true);
     expect(isMailHtmlBody("text/html; charset=utf-8")).toBe(true);
+  });
+});
+
+describe("remote images in message bodies", () => {
+  it("blocks remote images without leaving the URL in the document", () => {
+    const result = sanitizeMailHtmlDetailed(
+      '<img data-kind="remote" src="https://tracker.example/pixel.gif"><p>hi</p>'
+    );
+
+    expect(result.blockedImages).toBe(1);
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    const image = template.content.querySelector('[data-kind="remote"]');
+    // src 换成本地透明占位图：既不发请求，也不会渲染成 Chromium 的「破图」图标。
+    expect(image?.getAttribute("src")).toMatch(/^data:image\/svg/);
+    expect(image?.getAttribute("data-blocked-image")).toBe("1");
+    // 正文 DOM 里不能出现任何远程地址，否则「点击显示图片」之外仍有泄漏面。
+    expect(result.html).not.toContain("tracker.example");
+  });
+
+  it("loads remote images only when the user explicitly allows them", () => {
+    const result = sanitizeMailHtmlDetailed(
+      '<img data-kind="remote" src="https://cdn.example/logo.png">',
+      { allowRemoteImages: true }
+    );
+
+    expect(result.blockedImages).toBe(0);
+    expect(result.html).toContain("https://cdn.example/logo.png");
+  });
+
+  it("keeps the document CSP in sync with the allow-remote decision", () => {
+    expect(buildMailHtmlDocument("<p>x</p>")).toContain("img-src data: cid:;");
+    expect(buildMailHtmlDocument("<p>x</p>", { allowRemoteImages: true })).toContain("img-src data: cid: https: http:");
+  });
+
+  it("counts every blocked image so the reader can say how many it hid", () => {
+    const result = sanitizeMailHtmlDetailed(
+      '<img src="https://a.example/1.png"><img src="https://a.example/2.png"><img src="data:image/png;base64,AA==">'
+    );
+
+    expect(result.blockedImages).toBe(2);
   });
 });
