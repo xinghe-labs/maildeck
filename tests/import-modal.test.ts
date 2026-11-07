@@ -11,6 +11,23 @@ let root: Root;
 
 beforeAll(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  // 导入弹窗里的「用微软账号登录」面板挂载时会订阅设备代码事件，测试里给个空实现。
+  Object.defineProperty(window, "maildeck", {
+    configurable: true,
+    value: {
+      auth: {
+        startDeviceCode: async () => ({
+          userCode: "ABCD-1234",
+          verificationUri: "https://microsoft.com/devicelogin",
+          expiresInSec: 900,
+          clientId: "client-1"
+        }),
+        cancelDeviceCode: async () => ({ canceled: true }),
+        onDeviceCodeState: () => () => {}
+      },
+      app: { openExternal: async () => ({ opened: true }) }
+    }
+  });
 });
 
 afterEach(() => {

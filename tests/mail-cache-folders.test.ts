@@ -15,7 +15,7 @@ vi.mock("electron", () => ({
 const temporaryDirectories: string[] = [];
 
 async function createTemporaryUserData() {
-  const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-mail-cache-folders-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "maildeck-mail-cache-folders-"));
   temporaryDirectories.push(directory);
   electronState.userDataPath = directory;
   vi.resetModules();
@@ -132,7 +132,7 @@ describe("folder-scoped mail cache", () => {
   it("migrates a legacy v5 database into the INBOX folder key", async () => {
     await createTemporaryUserData();
     const { DatabaseSync } = await import("node:sqlite");
-    const databasePath = path.join(electronState.userDataPath, "outlook-manager.db");
+    const databasePath = path.join(electronState.userDataPath, "maildeck.db");
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
       CREATE TABLE accounts (

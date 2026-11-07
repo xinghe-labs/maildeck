@@ -14,7 +14,7 @@ describe("packaged release verification", () => {
   it("waits for the renderer bridge and critical settings control", () => {
     expect(releaseVerifier).toContain("$RendererDeadline");
     expect(releaseVerifier).toContain("document.readyState === 'complete'");
-    expect(releaseVerifier).toContain("window.outlookManager?.settings?.get");
+    expect(releaseVerifier).toContain("window.maildeck?.settings?.get");
     expect(releaseVerifier).toContain(".sidebar-actions .square-button:last-child");
   });
 

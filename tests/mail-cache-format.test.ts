@@ -16,7 +16,7 @@ vi.mock("electron", () => ({
 const temporaryDirectories: string[] = [];
 
 async function createTemporaryUserData() {
-  const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-mail-cache-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "maildeck-mail-cache-"));
   temporaryDirectories.push(directory);
   electronState.userDataPath = directory;
   vi.resetModules();

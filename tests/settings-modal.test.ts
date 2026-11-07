@@ -37,9 +37,9 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
 }
 
 function setDesktopApi(update: SettingsUpdate | undefined, mail?: DesktopApiStub["mail"]) {
-  // `window.outlookManager` is declared non-optional for the packaged app; tests
+  // `window.maildeck` is declared non-optional for the packaged app; tests
   // install or remove it to cover both the Electron and browser-only paths.
-  (window as unknown as { outlookManager?: DesktopApiStub }).outlookManager = update
+  (window as unknown as { maildeck?: DesktopApiStub }).maildeck = update
     ? {
         settings: { update },
         // 默认给一份可用桩：缓存行会主动读统计，缺方法会让整个弹窗报错。

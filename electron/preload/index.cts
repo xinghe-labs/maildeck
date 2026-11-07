@@ -28,7 +28,9 @@ import type {
   TestConnectionResult,
   TestFallbackResult,
   TestManyResult,
-  TestProgressEvent
+  TestProgressEvent,
+  DeviceCodeSessionView,
+  DeviceCodeStateEvent
 } from "../shared/ipc-contracts.js";
 
 const APP_ERROR_CODES = new Set([
@@ -47,6 +49,8 @@ const APP_ERROR_CODES = new Set([
   "MAILBOX_NOT_FOUND",
   "ACCOUNT_NOT_FOUND",
   "GRAPH_NOT_FOUND",
+  "DEVICE_CODE_EXPIRED",
+  "DEVICE_CODE_DECLINED",
   "UNKNOWN"
 ]);
 
@@ -146,9 +150,20 @@ const api = {
   },
   jobs: {
     cancel: (job: JobKind) => invoke<{ canceled: JobKind; count: number }>("jobs:cancel", job)
+  },
+  auth: {
+    /** 申请设备代码，拿到短码后把登录流程交给用户在浏览器里完成。 */
+    startDeviceCode: (options?: { clientId?: string }) =>
+      options?.clientId
+        ? invoke<DeviceCodeSessionView>("auth:startDeviceCode", options)
+        : invoke<DeviceCodeSessionView>("auth:startDeviceCode"),
+    cancelDeviceCode: () => invoke<{ canceled: boolean }>("auth:cancelDeviceCode"),
+    onDeviceCodeState: (callback: (event: DeviceCodeStateEvent) => void) => {
+      return onEvent("auth:deviceCodeState", callback);
+    }
   }
 };
 
-contextBridge.exposeInMainWorld("outlookManager", api);
+contextBridge.exposeInMainWorld("maildeck", api);
 
-export type OutlookManagerApi = typeof api;
+export type MailDeckApi = typeof api;

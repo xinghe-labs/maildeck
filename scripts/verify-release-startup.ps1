@@ -2,10 +2,10 @@ Add-Type -AssemblyName System.Drawing
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$ReleaseExe = Join-Path $Root "release\win-unpacked\Outlook Manager.exe"
+$ReleaseExe = Join-Path $Root "release\win-unpacked\MailDeck.exe"
 $UserData = Join-Path $Root "tmp-release-verify-user-data"
 $Port = 9340
-$PackageJson = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
+$PackageJson = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $ExpectedElectronVersion = [string]$PackageJson.devDependencies.electron
 if ($ExpectedElectronVersion -notmatch '^\d+\.\d+\.\d+$') {
   throw "Electron must be pinned to an exact release version before packaging."
@@ -31,7 +31,7 @@ if (Test-Path -LiteralPath $UserData) {
 }
 New-Item -ItemType Directory -Force -Path $UserData | Out-Null
 
-$env:OUTLOOK_MANAGER_USER_DATA_DIR = $UserData
+$env:MAILDECK_USER_DATA_DIR = $UserData
 $process = Start-Process `
   -FilePath $ReleaseExe `
   -ArgumentList "--remote-debugging-port=$Port" `
@@ -44,13 +44,13 @@ try {
   $page = $null
   do {
     if ($process.HasExited) {
-      throw "Outlook Manager exited during startup with code $($process.ExitCode)."
+      throw "MailDeck exited during startup with code $($process.ExitCode)."
     }
 
     try {
       $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2
       $page = $targets |
-        Where-Object { $_.type -eq "page" -and $_.title -eq "Outlook Manager" } |
+        Where-Object { $_.type -eq "page" -and $_.title -eq "MailDeck" } |
         Select-Object -First 1
     } catch {
       $page = $null
@@ -75,12 +75,12 @@ try {
   $rendererReady = $false
   $readyExpression = @'
 document.readyState === 'complete' &&
-  typeof window.outlookManager?.settings?.get === 'function' &&
+  typeof window.maildeck?.settings?.get === 'function' &&
   Boolean(document.querySelector('.sidebar-actions .square-button:last-child'))
 '@
   do {
     if ($process.HasExited) {
-      throw "Outlook Manager exited before the renderer became ready with code $($process.ExitCode)."
+      throw "MailDeck exited before the renderer became ready with code $($process.ExitCode)."
     }
 
     $readyJson = & node (Join-Path $Root "scripts\evaluate-cdp.mjs") $page.webSocketDebuggerUrl $readyExpression
@@ -98,7 +98,7 @@ document.readyState === 'complete' &&
 
   $securityExpression = @'
 (async () => {
-  const bridge = window.outlookManager;
+  const bridge = window.maildeck;
   const hasBridge = typeof bridge?.settings?.get === 'function';
   await bridge?.settings?.update({
     proxyUrl: 'http://127.0.0.1:7890',
@@ -198,11 +198,11 @@ document.readyState === 'complete' &&
     throw "Packaged renderer CSP exposes an explicit WebSocket source."
   }
 
-  if ($page.title -ne "Outlook Manager") {
+  if ($page.title -ne "MailDeck") {
     throw "Unexpected page title: $($page.title)"
   }
 
-  $databasePath = Join-Path $UserData "outlook-manager.db"
+  $databasePath = Join-Path $UserData "maildeck.db"
   if (-not (Test-Path -LiteralPath $databasePath)) {
     throw "SQLite database was not created."
   }
@@ -211,7 +211,7 @@ document.readyState === 'complete' &&
   if (-not (Test-Path -LiteralPath $settingsPath)) {
     throw "Settings file was not created."
   }
-  $settingsRaw = Get-Content -LiteralPath $settingsPath -Raw
+  $settingsRaw = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
   if ($settingsRaw.Contains("release-secret")) {
     throw "Proxy password was persisted in plaintext."
   }

@@ -136,8 +136,8 @@ export const AccountSidebar = memo(function AccountSidebar({
           <Mail size={26} />
         </div>
         <div>
-          <h1>Outlook Manager</h1>
-          <p>Microsoft 邮箱工作台</p>
+          <h1>MailDeck</h1>
+          <p>本地优先的邮箱工作台</p>
         </div>
       </div>
 

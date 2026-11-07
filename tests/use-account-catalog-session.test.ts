@@ -3,7 +3,7 @@
 import { StrictMode, act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OutlookManagerApi } from "../electron/preload/index.cjs";
+import type { MailDeckApi } from "../electron/preload/index.cjs";
 import type { AccountView } from "../src/types";
 import { useAccountCatalogSession } from "../src/use-account-catalog-session";
 
@@ -48,7 +48,7 @@ function createApi() {
     })
   };
   return {
-    api: { accounts } as unknown as OutlookManagerApi,
+    api: { accounts } as unknown as MailDeckApi,
     accounts,
     listRuns
   };
@@ -103,7 +103,7 @@ describe("useAccountCatalogSession", () => {
     const fakeA = createApi();
     const fakeB = createApi();
     let facade: AccountCatalogFacade | null = null;
-    function Probe({ api }: { api: OutlookManagerApi }) {
+    function Probe({ api }: { api: MailDeckApi }) {
       facade = useAccountCatalogSession(api);
       return null;
     }

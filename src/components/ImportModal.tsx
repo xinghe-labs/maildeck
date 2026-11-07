@@ -5,6 +5,7 @@ import { firstErrorField, validateAccountFields } from "../form-validation";
 import type { AccountField, FieldErrors } from "../form-validation";
 import type { AccountInput, ImportPreviewResult, ImportResult } from "../types";
 import { TokenGuidePanel } from "./TokenGuidePanel";
+import { DeviceCodePanel } from "./DeviceCodePanel";
 import { ModalShell } from "./ModalShell";
 
 const emptyAccountForm: AccountInput = {
@@ -226,9 +227,22 @@ export function ImportModal({
                 {fieldErrors.refreshToken}
               </span>
             ) : (
-              <span className="field-hint">不内置微软登录，需要你手上已有的 refresh_token。</span>
+              <span className="field-hint">
+                手上有 refresh_token 就直接粘贴；没有就用下面的「用 Microsoft 账号登录」自动获取。
+              </span>
             )}
           </label>
+          <DeviceCodePanel
+            onAuthorized={({ clientId, refreshToken, email }) => {
+              setSingle((previous) => ({
+                ...previous,
+                email: previous.email.trim() ? previous.email : (email ?? previous.email),
+                clientId,
+                refreshToken
+              }));
+              setFieldErrors({});
+            }}
+          />
           <label>
             备注
             <input value={single.remark} onChange={(event) => setSingle({ ...single, remark: event.target.value })} />

@@ -67,7 +67,7 @@ function installApi(overrides: StubOptions = {}) {
     overrides.saveAttachment ?? (async () => ({ saved: true, canceled: false, path: "D:/tmp/a.pdf" }))
   );
   listAttachments = vi.fn<ListFn>(overrides.listAttachments ?? (async () => ({ supported: true, attachments: [] })));
-  (window as unknown as { outlookManager?: unknown }).outlookManager = {
+  (window as unknown as { maildeck?: unknown }).maildeck = {
     mail: { listAttachments, saveAttachment },
     app: { openExternal }
   };
@@ -83,7 +83,7 @@ beforeAll(() => {
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
-  delete (window as unknown as { outlookManager?: unknown }).outlookManager;
+  delete (window as unknown as { maildeck?: unknown }).maildeck;
 });
 
 async function render(props: {

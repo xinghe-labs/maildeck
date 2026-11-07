@@ -1824,6 +1824,63 @@ textarea[aria-invalid="true"] {
   font-weight: 700;
 }
 
+/* 设备代码登录：短码要一眼能看清、能复制，否则用户得来回切换窗口手打 */
+.device-code {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-input);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.device-code-start {
+  justify-self: start;
+}
+
+.device-code-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.device-code-label {
+  color: var(--text-3);
+  font-size: 11.5px;
+  min-width: 60px;
+}
+
+.device-code-url,
+.device-code-value {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+
+.device-code-value {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.device-code-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.device-code-ok {
+  color: var(--ok, #4ade80);
+}
+
+.device-code-error {
+  color: var(--danger, #f87171);
+}
+
 /* 空态里的引导：默认收起，展开后左对齐、撑满侧栏宽度，不把空态挤成一大块 */
 .panel-empty > .empty-state-guide {
   width: 100%;

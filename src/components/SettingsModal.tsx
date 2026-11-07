@@ -365,7 +365,7 @@ export function SettingsModal({
         <div className="error-box">当前代理协议不受支持，请改为 HTTP/HTTPS 或清空代理地址。</div>
       ) : null}
       {error ? <div className="error-box">{error}</div> : null}
-      <p className="settings-version">Outlook Manager v{APP_VERSION}</p>
+      <p className="settings-version">MailDeck v{APP_VERSION}</p>
     </ModalShell>
   );
 }

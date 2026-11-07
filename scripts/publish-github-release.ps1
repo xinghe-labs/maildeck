@@ -1,5 +1,5 @@
-param(
-  [string]$Repo = "xinghe-labs/outlook-manager",
+﻿param(
+  [string]$Repo = "xinghe-labs/maildeck",
   [switch]$SkipBuild,
   [switch]$Draft,
   [switch]$Prerelease,
@@ -26,7 +26,7 @@ function Invoke-Checked {
 }
 
 function Get-PackageVersion {
-  $package = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
+  $package = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
   if (-not $package.version) {
     throw "package.json does not contain a version."
   }
@@ -63,8 +63,8 @@ if (-not $AllowDirty) {
 $Version = Get-PackageVersion
 $Tag = "v$Version"
 $Target = (git rev-parse HEAD).Trim()
-$Portable = Join-Path $Root "release\Outlook Manager $Version.exe"
-$Installer = Join-Path $Root "release\Outlook Manager Setup $Version.exe"
+$Portable = Join-Path $Root "release\MailDeck-$Version-portable.exe"
+$Installer = Join-Path $Root "release\MailDeck-Setup-$Version.exe"
 $Checksums = Join-Path $Root "release\SHA256SUMS-$Version.txt"
 $NotesFile = Join-Path $Root "release\release-notes-$Version.md"
 
@@ -86,12 +86,12 @@ $hashLines = foreach ($asset in @($Portable, $Installer)) {
 $hashLines | Set-Content -LiteralPath $Checksums -Encoding ascii
 
 $notes = @(
-  "# Outlook Manager $Version",
+  "# MailDeck $Version",
   "",
   "## Assets",
   "",
-  "- Outlook Manager $Version.exe: portable build",
-  "- Outlook Manager Setup $Version.exe: Windows installer",
+  "- MailDeck-$Version-portable.exe: portable build",
+  "- MailDeck-Setup-$Version.exe: Windows installer",
   "",
   "## Verification",
   "",
@@ -147,7 +147,7 @@ if (-not $releaseExists) {
     }
     Write-Output "Local tag $Tag already points at $Target"
   } else {
-    Invoke-Checked "git.exe" @("tag", "-a", $Tag, "-m", "Outlook Manager $Version", $Target)
+    Invoke-Checked "git.exe" @("tag", "-a", $Tag, "-m", "MailDeck $Version", $Target)
     Write-Output "Created annotated tag $Tag at $Target"
   }
 
@@ -166,7 +166,7 @@ if (-not $releaseExists) {
     "--repo",
     $Repo,
     "--title",
-    "Outlook Manager $Version",
+    "MailDeck $Version",
     "--notes-file",
     $NotesFile,
     "--verify-tag"
@@ -188,7 +188,7 @@ if (-not $releaseExists) {
     "--repo",
     $Repo,
     "--title",
-    "Outlook Manager $Version",
+    "MailDeck $Version",
     "--notes-file",
     $NotesFile
   )

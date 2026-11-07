@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { OutlookManagerApi } from "../electron/preload/index.cjs";
+import type { MailDeckApi } from "../electron/preload/index.cjs";
 
 declare global {
   // 构建期由 vite.config.ts 的 define 注入，值来自 package.json 的 version。
@@ -8,6 +8,6 @@ declare global {
   const __APP_VERSION__: string;
 
   interface Window {
-    outlookManager: OutlookManagerApi;
+    maildeck: MailDeckApi;
   }
 }

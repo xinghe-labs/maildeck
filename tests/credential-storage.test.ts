@@ -21,7 +21,7 @@ vi.mock("electron", () => ({
 const temporaryDirectories: string[] = [];
 
 async function createTemporaryUserData() {
-  const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-credentials-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "maildeck-credentials-"));
   temporaryDirectories.push(directory);
   electronState.userDataPath = directory;
   vi.resetModules();
@@ -37,7 +37,7 @@ afterEach(async () => {
 describe("credential storage migration", () => {
   it("preserves accounts, adds credential generations, and removes persisted access tokens", async () => {
     const directory = await createTemporaryUserData();
-    const legacy = new DatabaseSync(path.join(directory, "outlook-manager.db"));
+    const legacy = new DatabaseSync(path.join(directory, "maildeck.db"));
     legacy.exec(`
       CREATE TABLE accounts (
         id TEXT PRIMARY KEY,

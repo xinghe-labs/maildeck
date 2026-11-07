@@ -32,12 +32,15 @@ export const IPC_CHANNELS = {
   mailSaveAttachment: "mail:saveAttachment",
   mailCacheStats: "mail:cacheStats",
   mailClearCache: "mail:clearCache",
-  mailRefreshMany: "mail:refreshMany"
+  mailRefreshMany: "mail:refreshMany",
+  authStartDeviceCode: "auth:startDeviceCode",
+  authCancelDeviceCode: "auth:cancelDeviceCode"
 } as const;
 
 export const IPC_EVENT_CHANNELS = {
   accountsTestProgress: "accounts:testProgress",
-  mailRefreshProgress: "mail:refreshProgress"
+  mailRefreshProgress: "mail:refreshProgress",
+  authDeviceCodeState: "auth:deviceCodeState"
 } as const;
 
 export type IpcInvokeChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -59,6 +62,8 @@ export type AppErrorCode =
   | "MAIL_TOO_LARGE"
   | "MAILBOX_NOT_FOUND"
   | "GRAPH_NOT_FOUND"
+  | "DEVICE_CODE_EXPIRED"
+  | "DEVICE_CODE_DECLINED"
   | "ACCOUNT_NOT_FOUND"
   | "UNKNOWN";
 
@@ -397,14 +402,56 @@ const refreshProgressEventSchema = z.strictObject({
   metrics: refreshMetricsSchema.optional()
 }).superRefine(validateProgressCounters);
 
+/** 设备代码登录：`waiting` 展示短码，`authorized` 带回 refresh_token，其余是终态。 */
+export interface DeviceCodeSessionView {
+  userCode: string;
+  verificationUri: string;
+  expiresInSec: number;
+  clientId: string;
+}
+
+export type DeviceCodeFailureCode = "DEVICE_CODE_EXPIRED" | "DEVICE_CODE_DECLINED" | "NETWORK_ERROR" | "UNKNOWN";
+
+export type DeviceCodeStateEvent =
+  | ({ phase: "waiting" } & DeviceCodeSessionView)
+  | { phase: "authorized"; clientId: string; refreshToken: string; email: string | null; scope: string }
+  | { phase: "failed"; code: DeviceCodeFailureCode; message: string }
+  | { phase: "canceled" };
+
+const deviceCodeSessionFields = {
+  userCode: z.string().trim().min(1).max(64),
+  verificationUri: z.string().trim().min(1).max(2_048),
+  expiresInSec: z.number().int().min(1).max(3_600),
+  clientId: z.string().trim().min(1).max(256)
+} as const;
+
+const deviceCodeStateEventSchema = z.discriminatedUnion("phase", [
+  z.strictObject({ phase: z.literal("waiting"), ...deviceCodeSessionFields }),
+  z.strictObject({
+    phase: z.literal("authorized"),
+    clientId: z.string().trim().min(1).max(256),
+    refreshToken: z.string().trim().min(1).max(32_768),
+    email: z.string().trim().max(320).nullable(),
+    scope: z.string().trim().max(2_048)
+  }),
+  z.strictObject({
+    phase: z.literal("failed"),
+    code: z.enum(["DEVICE_CODE_EXPIRED", "DEVICE_CODE_DECLINED", "NETWORK_ERROR", "UNKNOWN"]),
+    message: z.string().min(1).max(APP_ERROR_MESSAGE_MAX_CHARS)
+  }),
+  z.strictObject({ phase: z.literal("canceled") })
+]);
+
 export interface IpcEventPayloadMap {
   [IPC_EVENT_CHANNELS.accountsTestProgress]: TestProgressEvent;
   [IPC_EVENT_CHANNELS.mailRefreshProgress]: RefreshProgressEvent;
+  [IPC_EVENT_CHANNELS.authDeviceCodeState]: DeviceCodeStateEvent;
 }
 
 export const IPC_EVENT_SCHEMAS = {
   [IPC_EVENT_CHANNELS.accountsTestProgress]: testProgressEventSchema,
-  [IPC_EVENT_CHANNELS.mailRefreshProgress]: refreshProgressEventSchema
+  [IPC_EVENT_CHANNELS.mailRefreshProgress]: refreshProgressEventSchema,
+  [IPC_EVENT_CHANNELS.authDeviceCodeState]: deviceCodeStateEventSchema
 } as const;
 
 const accountInputSchema = z.strictObject({
@@ -523,6 +570,10 @@ export const IPC_REQUEST_SCHEMAS = {
     .union([z.tuple([]), z.tuple([accountIdSchema])])
     .transform((args) => args[0]),
   cacheStats: z.tuple([]),
+  authStartDeviceCode: z
+    .union([z.tuple([]), z.tuple([z.strictObject({ clientId: z.string().trim().max(256).optional() })])])
+    .transform(([options]) => options ?? {}),
+  authCancelDeviceCode: z.tuple([]),
   refreshMany: z
     .union([z.tuple([accountBatchSchema]), z.tuple([accountBatchSchema, refreshJobKindSchema])])
     .transform(([accountIds, jobKind]) => ({ accountIds, jobKind: jobKind ?? "refresh" }))

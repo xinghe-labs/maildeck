@@ -12,7 +12,7 @@ afterEach(async () => {
 
 describe("bounded UTF-8 file reader", () => {
   it("preserves UTF-8 text when the file is within the limit", async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-bounded-file-"));
+    const directory = await mkdtemp(path.join(tmpdir(), "maildeck-bounded-file-"));
     temporaryDirectories.push(directory);
     const filePath = path.join(directory, "accounts.txt");
     await writeFile(filePath, "你好，Café", "utf8");
@@ -21,7 +21,7 @@ describe("bounded UTF-8 file reader", () => {
   });
 
   it("rejects a file larger than the limit before loading its contents", async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-bounded-file-"));
+    const directory = await mkdtemp(path.join(tmpdir(), "maildeck-bounded-file-"));
     temporaryDirectories.push(directory);
     const filePath = path.join(directory, "too-large.txt");
     await writeFile(filePath, "12345", "utf8");

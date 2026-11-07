@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -16,9 +16,26 @@ function Invoke-Checked {
   }
 }
 
+# 用 .NET 直接算：有的机器 PSModulePath 是坏的，Get-FileHash 会找不到。
+function Get-Sha256Hex {
+  param([Parameter(Mandatory = $true)][string]$Path)
+
+  $Sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $Stream = [System.IO.File]::OpenRead($Path)
+    try {
+      return ([System.BitConverter]::ToString($Sha.ComputeHash($Stream)) -replace '-', '').ToLowerInvariant()
+    } finally {
+      $Stream.Dispose()
+    }
+  } finally {
+    $Sha.Dispose()
+  }
+}
+
 Push-Location -LiteralPath $Root
 try {
-  $PackageJson = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
+  $PackageJson = Get-Content -LiteralPath (Join-Path $Root "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
   $ExpectedElectronVersion = [string]$PackageJson.devDependencies.electron
   if ($ExpectedElectronVersion -notmatch '^\d+\.\d+\.\d+$') {
     throw "Electron must be pinned to an exact release version before packaging."
@@ -60,6 +77,24 @@ try {
       "--config.electronDist=$ElectronDist"
     )
     Invoke-Checked "npm.cmd" @("run", "verify:release")
+
+    # 生成校验和文件：README 和发布页都让用户核对它，缺了用户就没法自查完整性。
+    $ArtifactNames = @(
+      ([string]$PackageJson.build.portable.artifactName -replace '\$\{version\}', [string]$PackageJson.version),
+      ([string]$PackageJson.build.nsis.artifactName -replace '\$\{version\}', [string]$PackageJson.version)
+    )
+    $Artifacts = @($ArtifactNames | ForEach-Object { Join-Path $Root ("release\" + $_) } | Where-Object { Test-Path -LiteralPath $_ })
+    if ($Artifacts.Count -eq 0) {
+      throw "No packaged artifacts found in release\; cannot write checksums."
+    }
+    $SumLines = @($Artifacts | ForEach-Object {
+      $Hash = (Get-Sha256Hex -Path $_)
+      "$Hash  $(Split-Path -Leaf $_)"
+    })
+    $SumPath = Join-Path $Root ("release\SHA256SUMS-" + $PackageJson.version + ".txt")
+    Set-Content -LiteralPath $SumPath -Value $SumLines -Encoding ASCII
+    Write-Output ("checksums written: " + $SumPath)
+    $SumLines | ForEach-Object { Write-Output ("  " + $_) }
   } finally {
     if ($null -eq $PreviousCscDiscovery) {
       Remove-Item Env:CSC_IDENTITY_AUTO_DISCOVERY -ErrorAction SilentlyContinue

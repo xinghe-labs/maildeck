@@ -15,7 +15,7 @@ vi.mock("electron", () => ({
 const temporaryDirectories: string[] = [];
 
 async function createTemporaryUserData() {
-  const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-migrations-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "maildeck-migrations-"));
   temporaryDirectories.push(directory);
   electronState.userDataPath = directory;
   vi.resetModules();
@@ -154,7 +154,7 @@ afterEach(async () => {
 describe("ordered database migrations", () => {
   it.each([1, 2, 3, 4])("upgrades a v%i database transactionally while preserving user data", async (version) => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, version);
 
     const { getDatabase } = await import("../electron/main/database.js");
@@ -187,7 +187,7 @@ describe("ordered database migrations", () => {
     expect(cacheMeta).toEqual({ next_cursor: `cursor-${version}` });
     expect(accessTokenTable).toBeUndefined();
 
-    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
+    const backupNames = (await readdir(directory)).filter((name) => /^maildeck\.db\..+\.db\.bak$/u.test(name));
     expect(backupNames).toHaveLength(1);
     const backup = new DatabaseSync(path.join(directory, backupNames[0]));
     expect(backup.prepare("SELECT version FROM schema_migrations WHERE id = 1").get()).toEqual({ version });
@@ -239,7 +239,7 @@ describe("ordered database migrations", () => {
 
   it("preserves both the original database and its backup when a file migration fails", async () => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, 4);
     const damaged = new DatabaseSync(databasePath);
     damaged.exec(`
@@ -260,7 +260,7 @@ describe("ordered database migrations", () => {
     expect(original.prepare("SELECT type FROM sqlite_master WHERE name = 'access_token_cache'").get()).toEqual({ type: "view" });
     original.close();
 
-    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
+    const backupNames = (await readdir(directory)).filter((name) => /^maildeck\.db\..+\.db\.bak$/u.test(name));
     expect(backupNames).toHaveLength(1);
     const backup = new DatabaseSync(path.join(directory, backupNames[0]));
     expect(backup.prepare("SELECT version FROM schema_migrations WHERE id = 1").get()).toEqual({ version: 4 });
@@ -270,7 +270,7 @@ describe("ordered database migrations", () => {
 
   it("rejects a malformed database that already claims to be current", async () => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, 5);
     const malformed = new DatabaseSync(databasePath);
     malformed.exec(`
@@ -285,7 +285,7 @@ describe("ordered database migrations", () => {
 
   it("recovers a legacy v5 migration that dropped access tokens before recording version 5", async () => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, 5);
     const partiallyMigrated = new DatabaseSync(databasePath);
     partiallyMigrated.prepare("UPDATE schema_migrations SET version = 4 WHERE id = 1").run();
@@ -306,7 +306,7 @@ describe("ordered database migrations", () => {
 
   it("backs up a readable database before reporting damaged version metadata", async () => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, 4);
     const damaged = new DatabaseSync(databasePath);
     damaged.exec("ALTER TABLE schema_migrations RENAME COLUMN version TO broken_version");
@@ -315,7 +315,7 @@ describe("ordered database migrations", () => {
 
     expect(() => getDatabase()).toThrow(/backup preserved/u);
 
-    const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
+    const backupNames = (await readdir(directory)).filter((name) => /^maildeck\.db\..+\.db\.bak$/u.test(name));
     expect(backupNames).toHaveLength(1);
     const backup = new DatabaseSync(path.join(directory, backupNames[0]));
     expect((backup.prepare("PRAGMA table_info(schema_migrations)").all() as Array<{ name: string }>).map(({ name }) => name)).toContain(
@@ -327,7 +327,7 @@ describe("ordered database migrations", () => {
 
   it("includes committed uncheckpointed WAL data in both the upgrade and backup", async () => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, 4);
     const writer = new DatabaseSync(databasePath);
 
@@ -346,7 +346,7 @@ describe("ordered database migrations", () => {
         subject: "Committed in WAL"
       });
 
-      const backupNames = (await readdir(directory)).filter((name) => /^outlook-manager\..+\.db\.bak$/u.test(name));
+      const backupNames = (await readdir(directory)).filter((name) => /^maildeck\.db\..+\.db\.bak$/u.test(name));
       expect(backupNames).toHaveLength(1);
       const backup = new DatabaseSync(path.join(directory, backupNames[0]));
       expect(backup.prepare("SELECT subject FROM mail_messages WHERE message_id = 'message-4'").get()).toEqual({
@@ -364,7 +364,7 @@ describe("ordered database migrations", () => {
 
   it("refuses to open a database created by a newer application version", async () => {
     const directory = await createTemporaryUserData();
-    const databasePath = path.join(directory, "outlook-manager.db");
+    const databasePath = path.join(directory, "maildeck.db");
     createVersionFixture(databasePath, 4);
     const newer = new DatabaseSync(databasePath);
     newer.prepare("UPDATE schema_migrations SET version = 7 WHERE id = 1").run();

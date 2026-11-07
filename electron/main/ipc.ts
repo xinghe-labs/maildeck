@@ -23,6 +23,8 @@ import { getPublicSettings, getSettingsSnapshot, updateSettings } from "./settin
 import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { createMailboxAccess, type MailboxAccess } from "./mailbox-access.js";
 import { handleValidated, sendValidatedEvent } from "./validated-ipc.js";
+import { DeviceCodeAuthError, pollDeviceCode, readAccountEmail, startDeviceCode } from "./device-code-auth.js";
+import type { DeviceCodeStateEvent } from "../shared/ipc-contracts.js";
 import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
 import { safeAttachmentFileName } from "./attachment-file-name.js";
 import { safeWebMailUrl } from "../shared/web-mail-url.js";
@@ -37,6 +39,13 @@ import type {
 
 const refreshCoordinator = new RefreshCoordinator();
 const ACCOUNT_MUTATION_LOCK = Symbol("account-mutation");
+const deviceCodeTasks = new Map<number, AbortController>();
+const DEVICE_CODE_FAILURE_CODES = {
+  auth_expired: "DEVICE_CODE_EXPIRED",
+  auth_declined: "DEVICE_CODE_DECLINED",
+  auth_request_failed: "NETWORK_ERROR",
+  auth_pending_timeout: "UNKNOWN"
+} as const;
 
 function cancelError(job: JobKind) {
   return job === "test" ? "批量测试已取消" : "刷新已取消";
@@ -297,6 +306,80 @@ export function registerIpcHandlers() {
 
     await writeFile(target.filePath, downloaded.bytes);
     return { saved: true, canceled: false, path: target.filePath };
+  });
+
+  // 设备代码登录：同一个窗口只允许一个进行中的流程，重新发起会取消上一个。
+  handleValidated(IPC_CHANNELS.authStartDeviceCode, IPC_REQUEST_SCHEMAS.authStartDeviceCode, async (event, options) => {
+    const sender = event.sender;
+    const emitState = (state: DeviceCodeStateEvent) =>
+      sendValidatedEvent(event.sender, IPC_EVENT_CHANNELS.authDeviceCodeState, state);
+
+    deviceCodeTasks.get(sender.id)?.abort();
+    const controller = new AbortController();
+    deviceCodeTasks.set(sender.id, controller);
+    sender.once("destroyed", () => controller.abort());
+
+    const session = await startDeviceCode({
+      clientId: options.clientId,
+      // 世纪互联等主权云可以指向自己的登录端点（见 README）。
+      baseUrl: process.env.MAILDECK_DEVICE_CODE_BASE,
+      signal: controller.signal
+    });
+    emitState({
+      phase: "waiting",
+      userCode: session.userCode,
+      verificationUri: session.verificationUri,
+      expiresInSec: session.expiresInSec,
+      clientId: session.clientId
+    });
+
+    // 轮询放到后台跑：用户可能要在浏览器里登录一分钟以上，不能把 invoke 挂住。
+    void (async () => {
+      try {
+        const tokens = await pollDeviceCode({ session, signal: controller.signal });
+        const email = await readAccountEmail({ accessToken: tokens.accessToken });
+        if (sender.isDestroyed()) {
+          return;
+        }
+        emitState({
+          phase: "authorized",
+          clientId: session.clientId,
+          refreshToken: tokens.refreshToken,
+          email,
+          scope: tokens.scope
+        });
+      } catch (error) {
+        if (sender.isDestroyed()) {
+          return;
+        }
+        if (controller.signal.aborted) {
+          emitState({ phase: "canceled" });
+          return;
+        }
+        const failureCode = error instanceof DeviceCodeAuthError ? error.code : "auth_request_failed";
+        emitState({
+          phase: "failed",
+          code: DEVICE_CODE_FAILURE_CODES[failureCode],
+          message: error instanceof Error ? error.message : String(error)
+        });
+      } finally {
+        if (deviceCodeTasks.get(sender.id) === controller) {
+          deviceCodeTasks.delete(sender.id);
+        }
+      }
+    })();
+
+    return {
+      userCode: session.userCode,
+      verificationUri: session.verificationUri,
+      expiresInSec: session.expiresInSec,
+      clientId: session.clientId
+    };
+  });
+
+  handleValidated(IPC_CHANNELS.authCancelDeviceCode, IPC_REQUEST_SCHEMAS.authCancelDeviceCode, async (event) => {
+    deviceCodeTasks.get(event.sender.id)?.abort();
+    return { canceled: true };
   });
 
   handleValidated(IPC_CHANNELS.mailCacheStats, IPC_REQUEST_SCHEMAS.cacheStats, async () => {

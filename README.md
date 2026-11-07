@@ -1,12 +1,14 @@
-# Outlook Manager
+# MailDeck
 
-[![Verify](https://github.com/xinghe-labs/outlook-manager/actions/workflows/verify.yml/badge.svg)](https://github.com/xinghe-labs/outlook-manager/actions/workflows/verify.yml)
-[![Release](https://img.shields.io/github/v/release/xinghe-labs/outlook-manager)](https://github.com/xinghe-labs/outlook-manager/releases)
-[![License](https://img.shields.io/github/license/xinghe-labs/outlook-manager)](LICENSE)
+[![Verify](https://github.com/xinghe-labs/maildeck/actions/workflows/verify.yml/badge.svg)](https://github.com/xinghe-labs/maildeck/actions/workflows/verify.yml)
+[![Release](https://img.shields.io/github/v/release/xinghe-labs/maildeck)](https://github.com/xinghe-labs/maildeck/releases)
+[![License](https://img.shields.io/github/license/xinghe-labs/maildeck)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4)](#下载安装)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.12-339933)](https://nodejs.org)
 
-桌面版 Microsoft/Outlook 邮箱管理工具，用于管理**自己拥有或获得授权**的多个邮箱账号（如个人多个备用邮箱、团队共享邮箱、企业租户内批量授权邮箱）。批量导入、连接测试、批量刷新、读信一屏完成。
+本地优先的邮箱工作台：账号与邮件缓存在本机，批量导入、连接测试、批量刷新、读信一屏完成。
+
+目前支持 Microsoft 邮箱（Outlook / Hotmail / Live），用于管理**自己拥有或获得授权**的多个邮箱账号（如个人多个备用邮箱、团队共享邮箱、企业租户内批量授权邮箱）。
 
 ![账号列表与读信界面](docs/screenshots/01-overview.png)
 
@@ -14,26 +16,62 @@
 
 ## 下载安装
 
-Windows 安装包与绿色版见 [Releases](https://github.com/xinghe-labs/outlook-manager/releases)：
+Windows 安装包与绿色版见 [Releases](https://github.com/xinghe-labs/maildeck/releases)：
 
 | 文件 | 说明 |
 | --- | --- |
-| `Outlook.Manager.Setup.<版本>.exe` | NSIS 安装包，装到本机并创建开始菜单快捷方式 |
-| `Outlook.Manager.<版本>.exe` | 绿色版（portable），免安装直接运行 |
+| `MailDeck-Setup-<版本>.exe` | NSIS 安装包，装到本机并创建开始菜单快捷方式 |
+| `MailDeck-<版本>-portable.exe` | 绿色版（portable），免安装直接运行 |
 | `SHA256SUMS-<版本>.txt` | 上述产物的 SHA-256 校验和 |
 
-安装包**未做 Authenticode 签名**，首次运行时 Windows SmartScreen 可能提示「已保护你的电脑」，需要点「更多信息 → 仍要运行」。校验下载完整性请比对 `SHA256SUMS`。
+### 绿色版怎么用
 
-账号需要自备可刷新的 `refresh_token`，应用不内置微软账号登录流程：
+绿色版是单个 exe，双击就能跑，不写注册表、不建快捷方式。数据仍在 `%APPDATA%\maildeck`（想便携存放就用下面的环境变量换目录）。
 
-- Graph token：需要 `Mail.Read` 或等价读取权限。
-- Outlook IMAP token：需要 `https://outlook.office.com/IMAP.AccessAsUser.All` 等邮件读取权限。
+```powershell
+# 把数据放到 exe 同级的 data 目录，U 盘携带时整个目录一起拷走
+$env:MAILDECK_USER_DATA_DIR = "$PSScriptRoot\data"
+.\MailDeck-0.3.0-portable.exe
+```
+
+### 校验下载完整性
+
+安装包**未做 Authenticode 签名**，首次运行时 Windows SmartScreen 可能提示「已保护你的电脑」，需要点「更多信息 → 仍要运行」。因为签名缺失，下载后请务必自己核对 SHA-256（`certutil` 每个 Windows 都有，不依赖 PowerShell 模块）：
+
+```cmd
+:: 1. 算出下载文件的哈希
+certutil -hashfile MailDeck-Setup-0.3.0.exe SHA256
+
+:: 2. 打开 SHA256SUMS-0.3.0.txt，比对应那一行
+type SHA256SUMS-0.3.0.txt
+```
+
+两串 64 位十六进制完全一致才说明文件没有被替换或损坏；不一致就不要运行。想一次校验全部产物（PowerShell）：
+
+```powershell
+Get-Content .\SHA256SUMS-0.3.0.txt | ForEach-Object {
+  $expected, $name = $_ -split '\s+', 2
+  $name = $name.Trim().TrimStart('*')
+  $actual = ((certutil -hashfile $name SHA256)[1] -replace '\s', '')
+  "{0}  {1}" -f ($(if ($actual -eq $expected.ToUpper()) { "OK  " } else { "FAIL" })), $name
+}
+```
+
+账号可以直接在应用里登录获取 token（设备代码授权，不用自己抓包），也可以自己粘 `refresh_token`：
+
+- **没有 token**：导入弹窗里点「用 Microsoft 账号登录」→ 浏览器打开 `https://login.microsoft.com/device` 输入页面上的 8 位代码 → 登录完回到应用，邮箱、client_id、refresh_token 自动填好。
+  - 微软提示「未验证的应用」是正常的：这里用的是公开客户端，应用只申请读信权限。
+  - 世纪互联等主权云账号可以指向自己的登录端点：启动前设 `MAILDECK_DEVICE_CODE_BASE=https://login.chinacloudapi.cn`。
+- **已有 token**：直接粘贴，需要满足：
+  - Graph token：`Mail.Read` 或等价读取权限。
+  - Outlook IMAP token：`https://outlook.office.com/IMAP.AccessAsUser.All` 等邮件读取权限。
 
 应用会根据 token 返回的 scope 自动选择 Graph 或 IMAP 读取路径。
 
 ## 功能
 
 - 导入邮箱账号：支持 CSV、`email----client_id----refresh_token`、`email----password----client_id----refresh_token`
+- 内置设备代码登录：不用自己抓 `refresh_token`，登录一次就自动填好
 - 自动识别 Microsoft Graph / Outlook IMAP OAuth token
 - 测试连接、批量测试、批量刷新收件箱
 - 读取邮件列表和邮件正文
@@ -113,26 +151,26 @@ CI 还会运行 `npm audit --omit=dev`，确保随应用发布的依赖没有已
 | 邮件协议 | Microsoft Graph（`undici`）、IMAP（`imapflow`）、`mailparser` / `@zone-eu/mailsplit` 解析 MIME |
 | 安全 | `safeStorage` 加密 refresh_token、`dompurify` 清洗邮件 HTML、CSP + 外部图片拦截 |
 | 存储 | 本机 SQLite（WAL），无需单独安装数据库 |
-| 测试 | Vitest（jsdom 组件测试 + 主进程单元测试），83 个测试文件 |
+| 测试 | Vitest（jsdom 组件测试 + 主进程单元测试），84 个测试文件 / 509 个用例 |
 
 ## 项目结构
 
 ```text
 electron/
   main/       主进程：Graph/IMAP 客户端、凭据加密、SQLite 存储、IPC 处理器、代理
-  preload/    contextBridge 暴露的 window.outlookManager
+  preload/    contextBridge 暴露的 window.maildeck
   shared/     主进程与渲染层共用的 IPC 契约、错误码、URL 白名单
 src/
   components/ 侧栏、邮件列表、阅读器、导入/设置弹窗、错误横幅等
   *.ts        会话状态机、分页、HTML 清洗、表单校验、列宽拖拽、已读痕迹
-tests/        83 个 Vitest 用例文件（每个用户可见行为都有对应断言）
+tests/        84 个 Vitest 用例文件（每个用户可见行为都有对应断言）
 scripts/      图标生成、Windows 打包与发布脚本
 docs/         开发计划与截图
 ```
 
 ## 数据与隐私
 
-账号和邮件缓存保存在本机 `outlook-manager.db` SQLite 文件中，不上传到任何第三方服务。旧版 `accounts.json` 和 `mail-cache.json` 会在首次启动时自动迁移，迁移后保留备份。应用不需要用户单独安装 SQLite。
+账号和邮件缓存保存在本机 `maildeck.db` SQLite 文件中，不上传到任何第三方服务。从旧版本（Outlook Manager）升级时，`%APPDATA%\outlook-manager` 整个目录会自动改名为 `%APPDATA%\maildeck`，旧库文件也会就地改成 `maildeck.db`，账号不用重新导入。更早的 `accounts.json` 和 `mail-cache.json` 会在首次启动时自动迁移，迁移后保留备份。应用不需要用户单独安装 SQLite。
 
 `refresh_token` 通过 Electron `safeStorage`（Windows DPAPI）加密后落盘；数据目录被拷贝到另一台机器或换了 Windows 用户后无法解密，此时应用会提示「凭据无法解密，请编辑账号重新填写 refresh_token」。
 
@@ -143,7 +181,8 @@ docs/         开发计划与截图
 ## 已知限制
 
 - **仅支持 Windows**：打包脚本与图标流程面向 Windows，未适配 macOS / Linux。
-- **需要自备 refresh_token**：不内置微软账号登录/OAuth 授权流程。
+- **登录用的是公共客户端**：设备代码登录走微软的公开 client_id（`Microsoft Graph PowerShell`），不能自定义权限或应用名；要自己的应用注册请用「粘贴 refresh_token」路径。
+- **主权云需要手动指端点**：世纪互联/其它云需设 `MAILDECK_DEVICE_CODE_BASE`。
 - **SOCKS 代理未启用**：只支持 HTTP/HTTPS 代理。
 - **附件只在 Graph 路径下可下载**：走 IMAP 兜底的账号，应用内看不到附件，需用「网页版」入口查看。
 - **大账号首次刷新较慢**：单账号首次拉取受微软接口限制，8 秒左右属正常；列表会显示已等待秒数，30 秒超时并给出失败原因。
@@ -166,7 +205,7 @@ email----password----client_id----refresh_token
 
 ## 注意
 
-应用启动时持有单实例锁：重复启动第二个实例会自动退出并聚焦已有窗口，避免两个进程同时写入 SQLite 数据库导致数据损坏。使用 `OUTLOOK_MANAGER_USER_DATA_DIR` 指定不同数据目录的实例互不影响。
+应用启动时持有单实例锁：重复启动第二个实例会自动退出并聚焦已有窗口，避免两个进程同时写入 SQLite 数据库导致数据损坏。使用 `MAILDECK_USER_DATA_DIR`（兼容旧名 `OUTLOOK_MANAGER_USER_DATA_DIR`）指定不同数据目录的实例互不影响。
 
 批量刷新会优先做增量读取：IMAP 使用上次最高 UID，Graph 使用上次最新邮件时间。首次刷新或没有游标时会读取最近邮件。
 

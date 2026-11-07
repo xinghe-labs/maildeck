@@ -1,6 +1,6 @@
 import { app } from "electron";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   readSchemaVersion
 } from "./database-migrations.js";
+import { DATABASE_FILE_NAME, resolveDatabaseFilePath } from "./user-data-path.js";
 
 export { applyDatabaseMigrations } from "./database-migrations.js";
 
@@ -25,7 +26,7 @@ function createMigrationBackup(target: DatabaseSync, userDataPath: string) {
   const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
   const backupPath = path.join(
     userDataPath,
-    `outlook-manager.pre-v${CURRENT_SCHEMA_VERSION}.${timestamp}.${randomUUID()}.db.bak`
+    `${DATABASE_FILE_NAME}.pre-v${CURRENT_SCHEMA_VERSION}.${timestamp}.${randomUUID()}.db.bak`
   );
   target.prepare("VACUUM INTO ?").run(backupPath);
   return backupPath;
@@ -38,7 +39,8 @@ export function getDatabase() {
 
   const userDataPath = app.getPath("userData");
   mkdirSync(userDataPath, { recursive: true });
-  const databasePath = path.join(userDataPath, "outlook-manager.db");
+  // 旧版本叫 outlook-manager.db：改名后首次启动会就地改成 maildeck.db，改不动就用旧文件。
+  const databasePath = resolveDatabaseFilePath(userDataPath, { existsSync, renameSync });
   const candidate = new DatabaseSync(databasePath);
   let backupPath: string | null = null;
 

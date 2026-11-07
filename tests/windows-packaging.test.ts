@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 
 // fs.realpathSync (JS impl) does NOT expand 8.3 short names on Windows;
@@ -22,7 +23,7 @@ interface PackagingRunState {
 }
 
 async function createPackagingFixture(npmExitCode: number) {
-  const root = await mkdtemp(path.join(tmpdir(), "outlook-manager-packaging-"));
+  const root = await mkdtemp(path.join(tmpdir(), "maildeck-packaging-"));
   temporaryDirectories.push(root);
   const scriptDirectory = path.join(root, "scripts");
   const electronDirectory = path.join(root, "node_modules", "electron");
@@ -39,16 +40,31 @@ async function createPackagingFixture(npmExitCode: number) {
   ]);
 
   const scriptPath = path.join(scriptDirectory, "package-windows-local.ps1");
+  const releaseDirectory = path.join(root, "release");
+  await mkdir(releaseDirectory, { recursive: true });
   await Promise.all([
     writeFile(scriptPath, packagingScript, "utf8"),
-    writeFile(path.join(root, "package.json"), JSON.stringify({ devDependencies: { electron: "43.3.0" } }), "utf8"),
+    writeFile(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        version: "0.3.0",
+        devDependencies: { electron: "43.3.0" },
+        build: {
+          portable: { artifactName: "MailDeck-${version}-portable.exe" },
+          nsis: { artifactName: "MailDeck-Setup-${version}.exe" }
+        }
+      }),
+      "utf8"
+    ),
+    writeFile(path.join(releaseDirectory, "MailDeck-0.3.0-portable.exe"), "portable-bytes", "utf8"),
+    writeFile(path.join(releaseDirectory, "MailDeck-Setup-0.3.0.exe"), "setup-bytes", "utf8"),
     writeFile(path.join(electronDirectory, "cli.js"), 'console.log("v43.3.0");\n', "utf8"),
     writeFile(path.join(electronDist, "electron.exe"), "", "utf8"),
     writeFile(path.join(builderDirectory, "electron-builder.cmd"), "@echo off\r\nexit /b 0\r\n", "utf8"),
     writeFile(path.join(toolsDirectory, "npm.cmd"), `@echo off\r\nexit /b ${npmExitCode}\r\n`, "utf8")
   ]);
 
-  return { scriptPath, toolsDirectory, callerDirectory };
+  return { scriptPath, toolsDirectory, callerDirectory, releaseDirectory };
 }
 
 function quotePowerShellLiteral(value: string) {
@@ -87,7 +103,8 @@ async function runPackagingFixture(npmExitCode: number, cscValue: string | null)
 
   return {
     fixture,
-    state: JSON.parse(stdout.trim()) as PackagingRunState
+    // 脚本会先输出 checksums written 等行，JSON 永远是最后一行
+    state: JSON.parse(stdout.trim().split(/\r?\n/u).pop() ?? "{}") as PackagingRunState
   };
 }
 
@@ -122,6 +139,23 @@ describe("offline-first Windows packaging", () => {
         csc: "",
         failed: false
       });
+    },
+    20_000
+  );
+
+  it.skipIf(process.platform !== "win32")(
+    "writes SHA256SUMS covering both artifacts after a successful package",
+    async () => {
+      const { fixture } = await runPackagingFixture(0, null);
+      const lines = readFileSync(path.join(fixture.releaseDirectory, "SHA256SUMS-0.3.0.txt"), "utf8")
+        .trim()
+        .split(/\r?\n/u);
+
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toMatch(/^[0-9a-f]{64} {2}MailDeck-0\.3\.0-portable\.exe$/u);
+      expect(lines[1]).toMatch(/^[0-9a-f]{64} {2}MailDeck-Setup-0\.3\.0\.exe$/u);
+      // 哈希必须是文件内容的真实 SHA-256，不是占位符
+      expect(lines[0]?.split("  ")[0]).toBe(createHash("sha256").update("portable-bytes").digest("hex"));
     },
     20_000
   );

@@ -269,7 +269,7 @@ describe("设置弹窗的信息分组", () => {
     );
 
     expect(headings).toEqual(["邮件与缓存", "网络与认证", "自动刷新"]);
-    expect(element.querySelector(".settings-version")?.textContent).toMatch(/^Outlook Manager v\S+$/);
+    expect(element.querySelector(".settings-version")?.textContent).toMatch(/^MailDeck v\S+$/);
     expect(element.textContent).toContain("关闭窗口后刷新停止");
   });
 });

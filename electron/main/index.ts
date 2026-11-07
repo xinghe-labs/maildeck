@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, Menu, session } from "electron";
+import { existsSync, renameSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
@@ -8,6 +9,7 @@ import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import { SECURE_WEB_PREFERENCES } from "./window-security.js";
 import { configureSessionPermissions } from "./session-security.js";
+import { migrateLegacyUserDataDirectory, readUserDataOverride } from "./user-data-path.js";
 import { TOKEN_GUIDE_TEXT, TOKEN_GUIDE_TITLE } from "../shared/token-guide.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,8 +21,18 @@ let fatalExitStarted = false;
 // 同一 userData 目录下不允许第二个进程（node:sqlite 不支持多进程并发写入，双开会触发
 // database is locked 甚至互相覆盖账号状态）；不同数据目录（如发布冒烟测试的隔离目录）
 // 互不影响。第二个实例直接退出。
-if (process.env.OUTLOOK_MANAGER_USER_DATA_DIR) {
-  app.setPath("userData", process.env.OUTLOOK_MANAGER_USER_DATA_DIR);
+const userDataOverride = readUserDataOverride(process.env);
+if (userDataOverride) {
+  app.setPath("userData", userDataOverride);
+} else {
+  const migratedPath = migrateLegacyUserDataDirectory({
+    defaultPath: app.getPath("userData"),
+    fs: { existsSync, renameSync },
+    onError: (error) => console.error("Failed to migrate legacy userData directory", formatErrorForLog(error))
+  });
+  if (migratedPath) {
+    app.setPath("userData", migratedPath);
+  }
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -70,10 +82,6 @@ process.on("unhandledRejection", (reason) => {
   exitAfterFatal("Unhandled rejection", reason);
 });
 
-if (process.env.OUTLOOK_MANAGER_USER_DATA_DIR) {
-  app.setPath("userData", process.env.OUTLOOK_MANAGER_USER_DATA_DIR);
-}
-
 function createWindow() {
   const window = new BrowserWindow({
     // 125% 缩放的 1440×900 笔记本，可用高度只有约 652 个 CSS 像素。
@@ -83,7 +91,7 @@ function createWindow() {
     height: 800,
     minWidth: 960,
     minHeight: 600,
-    title: "Outlook Manager",
+    title: "MailDeck",
     icon: path.join(__dirname, "../../build/icon.ico"),
     backgroundColor: "#fafafa", // 与 --bg-app 一致：窗口映射到首帧之间不留异色
     webPreferences: {
@@ -162,14 +170,14 @@ function buildApplicationMenu() {
         },
         { type: "separator" },
         {
-          label: "关于 Outlook Manager",
+          label: "关于 MailDeck",
           click: () => {
             const [window] = BrowserWindow.getAllWindows();
             const options = {
               type: "info" as const,
               title: "关于",
-              message: `Outlook Manager v${app.getVersion()}`,
-              detail: `Microsoft 邮箱工作台\n\nElectron ${process.versions.electron}\nNode ${process.versions.node}\n\n数据目录：${app.getPath("userData")}`,
+              message: `MailDeck v${app.getVersion()}`,
+              detail: `本地优先的邮箱工作台\n\nElectron ${process.versions.electron}\nNode ${process.versions.node}\n\n数据目录：${app.getPath("userData")}`,
               buttons: ["好"]
             };
             if (window) {

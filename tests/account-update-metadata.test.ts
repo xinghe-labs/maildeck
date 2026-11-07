@@ -21,7 +21,7 @@ const CLIENT_ID = "00000000-0000-4000-8000-000000000001";
 const REFRESH_TOKEN = `M.${"a".repeat(100)}`;
 
 async function createTemporaryUserData() {
-  const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-account-update-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "maildeck-account-update-"));
   temporaryDirectories.push(directory);
   electronState.userDataPath = directory;
   vi.resetModules();

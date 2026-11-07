@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { OutlookManagerApi } from "../electron/preload/index.cjs";
+import type { MailDeckApi } from "../electron/preload/index.cjs";
 import {
   createAccountCatalogSession,
   EMPTY_ACCOUNT_CATALOG_SESSION_STATE,
@@ -11,7 +11,7 @@ import { createStrictModeSessionHolder } from "./strict-mode-session-holder";
 const NO_SUBSCRIBE = () => () => undefined;
 const EMPTY_SNAPSHOT = () => EMPTY_ACCOUNT_CATALOG_SESSION_STATE;
 
-function createDesktopAccountCatalogAdapter(api: OutlookManagerApi): AccountCatalogAdapter {
+function createDesktopAccountCatalogAdapter(api: MailDeckApi): AccountCatalogAdapter {
   return {
     list: () => api.accounts.list(),
     previewImportText: (text) => api.accounts.previewImportText(text),
@@ -25,7 +25,7 @@ function createDesktopAccountCatalogAdapter(api: OutlookManagerApi): AccountCata
   };
 }
 
-export function useAccountCatalogSession(api: OutlookManagerApi | null) {
+export function useAccountCatalogSession(api: MailDeckApi | null) {
   const holder = useMemo(() => {
     if (!api) {
       return null;

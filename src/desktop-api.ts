@@ -1,3 +1,3 @@
 export function getDesktopApi() {
-  return window.outlookManager;
+  return window.maildeck;
 }

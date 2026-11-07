@@ -3,7 +3,7 @@
 import { StrictMode, act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OutlookManagerApi } from "../electron/preload/index.cjs";
+import type { MailDeckApi } from "../electron/preload/index.cjs";
 import type {
   RefreshJobKind,
   RefreshManyResult,
@@ -64,7 +64,7 @@ function createApi() {
     jobs: {
       cancel: vi.fn(async (kind: "test" | "refresh") => ({ canceled: kind, count: 1 }))
     }
-  } as unknown as OutlookManagerApi;
+  } as unknown as MailDeckApi;
 
   return {
     api,
@@ -124,7 +124,7 @@ describe("useRefreshJobSession", () => {
     const fakeA = createApi();
     const fakeB = createApi();
     let facade: RefreshJobFacade | null = null;
-    function Probe({ api }: { api: OutlookManagerApi }) {
+    function Probe({ api }: { api: MailDeckApi }) {
       facade = useRefreshJobSession(api);
       return null;
     }

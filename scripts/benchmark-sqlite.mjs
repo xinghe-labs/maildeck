@@ -123,7 +123,7 @@ async function measure(name, operation) {
   };
 }
 
-const directory = await mkdtemp(path.join(tmpdir(), "outlook-manager-sqlite-benchmark-"));
+const directory = await mkdtemp(path.join(tmpdir(), "maildeck-sqlite-benchmark-"));
 const databasePath = path.join(directory, "benchmark.db");
 const database = new DatabaseSync(databasePath);
 

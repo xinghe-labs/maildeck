@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import type { OutlookManagerApi } from "../electron/preload/index.cjs";
+import type { MailDeckApi } from "../electron/preload/index.cjs";
 import {
   createRefreshJobSession,
   EMPTY_REFRESH_JOB_SESSION_STATE,
@@ -11,7 +11,7 @@ import { createStrictModeSessionHolder } from "./strict-mode-session-holder";
 const NO_SUBSCRIBE = () => () => undefined;
 const EMPTY_SNAPSHOT = () => EMPTY_REFRESH_JOB_SESSION_STATE;
 
-function createDesktopRefreshJobAdapter(api: OutlookManagerApi): RefreshJobAdapter {
+function createDesktopRefreshJobAdapter(api: MailDeckApi): RefreshJobAdapter {
   return {
     testMany: (accountIds) => api.accounts.testMany(accountIds),
     refreshMany: (accountIds, kind) => api.accounts.refreshMany(accountIds, kind),
@@ -21,7 +21,7 @@ function createDesktopRefreshJobAdapter(api: OutlookManagerApi): RefreshJobAdapt
   };
 }
 
-export function useRefreshJobSession(api: OutlookManagerApi | null) {
+export function useRefreshJobSession(api: MailDeckApi | null) {
   const holder = useMemo(() => {
     if (!api) {
       return null;
