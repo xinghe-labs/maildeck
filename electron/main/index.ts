@@ -4,11 +4,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeDatabase, getDatabase } from "./database.js";
 import { formatErrorForLog } from "./error-utils.js";
-import { registerIpcHandlers } from "./ipc.js";
+import { refreshAllFromTray, registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import { startAppUpdater } from "./app-updater.js";
 import { getSettings } from "./settings-store.js";
+import {
+  applyLaunchAtStartup,
+  isTrayEnabled,
+  markQuitting,
+  shouldHideOnClose,
+  shouldStartHiddenFromArgv,
+  showMainWindow,
+  syncTray
+} from "./tray-controller.js";
 import { SECURE_WEB_PREFERENCES } from "./window-security.js";
 import { configureSessionPermissions } from "./session-security.js";
 import { migrateLegacyUserDataDirectory, readUserDataOverride } from "./user-data-path.js";
@@ -48,10 +57,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => {
     const [existingWindow] = BrowserWindow.getAllWindows();
     if (existingWindow) {
-      if (existingWindow.isMinimized()) {
-        existingWindow.restore();
-      }
-      existingWindow.focus();
+      // 托盘模式下窗口可能只是隐藏（不在任务栏），必须先 show 再抢焦点。
+      showMainWindow();
     }
   });
 }
@@ -119,6 +126,20 @@ function createWindow() {
   }
   guardExternalNavigation(window, devServerOrigin, isDev ? null : indexFilePath);
 
+  // 托盘模式（closeToTray 开启）下：关闭/最小化 = 隐藏到托盘，退出走托盘菜单。
+  // before-quit 会先 markQuitting()，之后 close 事件放行，不影响真实退出。
+  window.on("close", (event) => {
+    if (shouldHideOnClose()) {
+      event.preventDefault();
+      window.hide();
+    }
+  });
+  window.on("minimize", () => {
+    if (isTrayEnabled()) {
+      window.hide();
+    }
+  });
+
   if (isDev) {
     void window.loadURL(process.env.VITE_DEV_SERVER_URL!);
     window.webContents.openDevTools({ mode: "detach" });
@@ -170,6 +191,26 @@ if (app.hasSingleInstanceLock()) {
       console.error("Failed to start app updater", formatErrorForLog(error));
     }
 
+    // 托盘与开机自启按设置初始化；settings 读取失败时用保守默认（都不启用）。
+    try {
+      const settings = await getSettings();
+      const [window] = BrowserWindow.getAllWindows();
+      if (window) {
+        syncTray({
+          enabled: settings.closeToTray,
+          window,
+          hooks: { onRefreshAll: () => void refreshAllFromTray() }
+        });
+        applyLaunchAtStartup(settings.launchAtStartup);
+        // 开机自启带 --hidden 启动：托盘开着就藏窗口，直接进后台。
+        if (shouldStartHiddenFromArgv(process.argv) && isTrayEnabled()) {
+          window.hide();
+        }
+      }
+    } catch (error) {
+      console.error("Failed to init tray/startup settings", formatErrorForLog(error));
+    }
+
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
@@ -185,6 +226,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  // 置退出标志：托盘模式下窗口 close 被拦截为隐藏，真实退出必须放行 close。
+  markQuitting();
   closeProxyDispatchers();
   closeDatabase();
 });

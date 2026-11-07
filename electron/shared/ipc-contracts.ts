@@ -329,6 +329,8 @@ export interface AppSettings {
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: number;
   autoUpdateCheckEnabled: boolean;
+  closeToTray: boolean;
+  launchAtStartup: boolean;
 }
 
 const accountIdSchema = z.string().trim().min(1).max(128);
@@ -573,7 +575,9 @@ export const appSettingsUpdateSchema = z.strictObject({
   hotmailFallbackEnabled: z.boolean().optional(),
   autoRefreshEnabled: z.boolean().optional(),
   autoRefreshIntervalMinutes: z.number().int().min(1).max(120).optional(),
-  autoUpdateCheckEnabled: z.boolean().optional()
+  autoUpdateCheckEnabled: z.boolean().optional(),
+  closeToTray: z.boolean().optional(),
+  launchAtStartup: z.boolean().optional()
 });
 
 export type AppSettingsUpdate = z.input<typeof appSettingsUpdateSchema>;

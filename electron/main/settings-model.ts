@@ -20,6 +20,8 @@ interface StoredAppSettings {
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: number;
   autoUpdateCheckEnabled: boolean;
+  closeToTray: boolean;
+  launchAtStartup: boolean;
 }
 
 export interface SettingsFileV2 {
@@ -45,7 +47,9 @@ const DEFAULT_SETTINGS: StoredAppSettings = {
   hotmailFallbackEnabled: true,
   autoRefreshEnabled: false,
   autoRefreshIntervalMinutes: 10,
-  autoUpdateCheckEnabled: true
+  autoUpdateCheckEnabled: true,
+  closeToTray: false,
+  launchAtStartup: false
 };
 
 const STORED_PROXY_PROTOCOLS = new Set<StoredProxyProtocol>([
@@ -87,7 +91,10 @@ function normalizeStoredSettings(value: unknown): StoredAppSettings {
       120
     ),
     // 关闭自动检查只影响启动时的自动行为，设置页里的手动检查始终可用。
-    autoUpdateCheckEnabled: input.autoUpdateCheckEnabled !== false
+    autoUpdateCheckEnabled: input.autoUpdateCheckEnabled !== false,
+    // 两个开关都默认关：关窗行为和现在完全一样（直接退出），不给用户意外的后台驻留。
+    closeToTray: input.closeToTray === true,
+    launchAtStartup: input.launchAtStartup === true
   };
 }
 

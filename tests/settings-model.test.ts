@@ -193,3 +193,25 @@ describe("autoUpdateCheckEnabled setting", () => {
     expect(projectPublicSettings(kept.file).autoUpdateCheckEnabled).toBe(false);
   });
 });
+
+describe("tray/startup settings", () => {
+  it("defaults both toggles to off on fresh settings", () => {
+    const { file } = migrateSettingsFile(v1Settings("http://alice:secret@proxy.example:8080"), crypto);
+    expect(projectPublicSettings(file).closeToTray).toBe(false);
+    expect(projectPublicSettings(file).launchAtStartup).toBe(false);
+  });
+
+  it("persists toggles and keeps absent values", () => {
+    const { file } = migrateSettingsFile(v1Settings("http://alice:secret@proxy.example:8080"), crypto);
+    const turnedOn = applySettingsUpdate(file, { closeToTray: true, launchAtStartup: true }, crypto);
+    expect(projectPublicSettings(turnedOn.file)).toMatchObject({
+      closeToTray: true,
+      launchAtStartup: true
+    });
+    const kept = applySettingsUpdate(turnedOn.file, { batchConcurrency: 2 }, crypto);
+    expect(projectPublicSettings(kept.file)).toMatchObject({
+      closeToTray: true,
+      launchAtStartup: true
+    });
+  });
+});

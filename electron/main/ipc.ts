@@ -1,4 +1,4 @@
-import { dialog, shell } from "electron";
+import { dialog, shell, BrowserWindow, type WebContents } from "electron";
 import { writeFile } from "node:fs/promises";
 import {
   IPC_CHANNELS,
@@ -10,9 +10,11 @@ import {
 } from "../shared/ipc-contracts.js";
 import { clearAccountCache, clearAllMailCache, getMailCacheStats } from "./mail-cache.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
+import { applyLaunchAtStartup, notifyNewMail, syncTray } from "./tray-controller.js";
 import {
   deleteAccount,
   findAccountIdsByEmails,
+  getAccountRecord,
   listAccounts,
   previewAccounts,
   updateAccount,
@@ -24,7 +26,7 @@ import { RefreshCoordinator } from "./refresh-coordinator.js";
 import { createMailboxAccess, type MailboxAccess } from "./mailbox-access.js";
 import { handleValidated, sendValidatedEvent } from "./validated-ipc.js";
 import { DeviceCodeAuthError, pollDeviceCode, readAccountEmail, startDeviceCode } from "./device-code-auth.js";
-import type { DeviceCodeStateEvent } from "../shared/ipc-contracts.js";
+import type { DeviceCodeStateEvent, RefreshJobKind } from "../shared/ipc-contracts.js";
 import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
 import { safeAttachmentFileName } from "./attachment-file-name.js";
 import { safeAccountUrl, safeWebMailUrl } from "../shared/web-mail-url.js";
@@ -129,6 +131,13 @@ async function upsertAccountsCoordinated(inputs: Parameters<typeof upsertAccount
   );
 }
 
+// 托盘「立即收信」入口；实现在 registerIpcHandlers 里注册（依赖 listAccounts 与主窗口）。
+let trayRefreshAll: (() => Promise<void>) | null = null;
+
+export function refreshAllFromTray(): Promise<void> {
+  return trayRefreshAll?.() ?? Promise.resolve();
+}
+
 export function registerIpcHandlers() {
   // 外部链接统一从主进程打开：渲染进程只能递进来一个字符串，域名白名单在这里把关。
   handleValidated(IPC_CHANNELS.appOpenExternal, IPC_REQUEST_SCHEMAS.openExternal, async (_event, url) => {
@@ -153,6 +162,12 @@ export function registerIpcHandlers() {
         closeProxyDispatchers();
       }
       refreshCoordinator.setConcurrency(next.settings.batchConcurrency);
+      // 托盘与开机自启实时生效：开关切换不用重启应用。
+      const [window] = BrowserWindow.getAllWindows();
+      if (window) {
+        syncTray({ enabled: next.settings.closeToTray, window });
+      }
+      applyLaunchAtStartup(next.settings.launchAtStartup);
       return next.settings;
     }
   );
@@ -395,9 +410,9 @@ export function registerIpcHandlers() {
     return { cleared: "all" };
   });
 
-  handleValidated(IPC_CHANNELS.mailRefreshMany, IPC_REQUEST_SCHEMAS.refreshMany, async (event, request) => {
-    const { accountIds, jobKind } = request;
-    return refreshCoordinator.runJob(jobKind, async (job) => {
+  // 刷新批处理核心：IPC 与托盘「立即收信」共用；sender 为 null 时跳过进度事件。
+  const runRefreshAll = async (sender: WebContents | null, accountIds: string[], jobKind: RefreshJobKind) =>
+    refreshCoordinator.runJob(jobKind, async (job) => {
       const settingsSnapshot = await getSettingsSnapshot();
       const { settings } = settingsSnapshot;
       const mailbox = createMailboxAccess(settingsSnapshot);
@@ -408,7 +423,10 @@ export function registerIpcHandlers() {
       const total = accountIds.length;
       const batchLimit = resolveBatchLimit(settings.batchConcurrency, total);
       const sendProgress = (payload: Omit<RefreshProgressEvent, "jobId" | "kind">) => {
-        sendValidatedEvent(event.sender, IPC_EVENT_CHANNELS.mailRefreshProgress, {
+        if (!sender) {
+          return;
+        }
+        sendValidatedEvent(sender, IPC_EVENT_CHANNELS.mailRefreshProgress, {
           ...payload,
           jobId: job.id,
           kind: jobKind
@@ -425,6 +443,12 @@ export function registerIpcHandlers() {
             completed += 1;
             if (result.ok) {
               ok += 1;
+              // skipped（无需刷新）等路径不带 newCount；托盘气泡只报真正的新邮件。
+              const newCount = result.newCount ?? 0;
+              if (newCount > 0) {
+                const account = await getAccountRecord(accountId);
+                notifyNewMail({ email: account.email, newCount });
+              }
               sendProgress({ completed, total, ok, failed, accountId, metrics: result.metrics });
             } else {
               failed += 1;
@@ -479,5 +503,21 @@ export function registerIpcHandlers() {
       console.info("mail:refreshMany summary", { total, batchLimit, ok, failed, slowest });
       return results;
     });
+
+  handleValidated(IPC_CHANNELS.mailRefreshMany, IPC_REQUEST_SCHEMAS.refreshMany, async (event, request) => {
+    return runRefreshAll(event.sender, request.accountIds, request.jobKind);
   });
+
+  // 托盘「立即收信」：刷新所有未失效账号（排除 invalid）；进度事件发往主窗口（若存在）。
+  trayRefreshAll = async () => {
+    const accounts = await listAccounts();
+    const accountIds = accounts.filter((account) => account.status !== "invalid").map((account) => account.id);
+    if (accountIds.length === 0) {
+      return;
+    }
+    const [window] = BrowserWindow.getAllWindows();
+    const results = await runRefreshAll(window?.webContents ?? null, accountIds, "refresh");
+    const ok = results.filter((result) => result.ok).length;
+    console.info("tray refreshAll summary", { total: accountIds.length, ok, failed: results.length - ok });
+  };
 }

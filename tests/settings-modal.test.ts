@@ -33,6 +33,8 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoUpdateCheckEnabled: true,
     autoRefreshEnabled: false,
     autoRefreshIntervalMinutes: 10,
+    closeToTray: false,
+    launchAtStartup: false,
     ...overrides
   };
 }
@@ -268,5 +270,26 @@ describe("SettingsModal", () => {
     expect(clearCache).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("缓存占用：0 B（邮件 0 条 · 正文 0 封 · 1 个账号）");
     expect(container.textContent).toContain("邮件缓存已清空");
+  });
+
+  it("sends tray and startup toggles on save", async () => {
+    const saved = settings({ closeToTray: true, launchAtStartup: true });
+    const update = vi.fn<SettingsUpdate>(async () => saved);
+    setDesktopApi(update);
+    renderModal();
+
+    expect(container.textContent).toContain("窗口与启动");
+
+    const toggles = Array.from(container.querySelectorAll(".check-row"))
+      .filter((row) => /隐藏到托盘|开机自动启动/.test(row.textContent ?? ""))
+      .map((row) => row.querySelector<HTMLInputElement>("input[type=checkbox]"));
+    expect(toggles).toHaveLength(2);
+    act(() => toggles.forEach((input) => input?.click()));
+
+    submitForm();
+    await flushSubmit();
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update.mock.calls[0]?.[0]).toMatchObject({ closeToTray: true, launchAtStartup: true });
   });
 });

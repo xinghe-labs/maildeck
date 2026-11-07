@@ -49,7 +49,9 @@ const defaultSettings: AppSettings = {
   hotmailFallbackEnabled: true,
   autoRefreshEnabled: false,
   autoRefreshIntervalMinutes: 10,
-  autoUpdateCheckEnabled: true
+  autoUpdateCheckEnabled: true,
+  closeToTray: false,
+  launchAtStartup: false
 };
 
 /** 导入结果的 toast 文案：带跳过原因，否则用户只知道「跳过 1 个」却不知道为什么（P16）。 */

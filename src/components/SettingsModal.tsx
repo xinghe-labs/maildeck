@@ -26,6 +26,8 @@ interface SettingsFormState {
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: string;
   autoUpdateCheckEnabled: boolean;
+  closeToTray: boolean;
+  launchAtStartup: boolean;
 }
 
 function initialForm(settings: AppSettings): SettingsFormState {
@@ -40,7 +42,9 @@ function initialForm(settings: AppSettings): SettingsFormState {
     hotmailFallbackEnabled: settings.hotmailFallbackEnabled,
     autoRefreshEnabled: settings.autoRefreshEnabled,
     autoRefreshIntervalMinutes: String(settings.autoRefreshIntervalMinutes),
-    autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled
+    autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled,
+    closeToTray: settings.closeToTray,
+    launchAtStartup: settings.launchAtStartup
   };
 }
 
@@ -166,7 +170,9 @@ export function SettingsModal({
       hotmailFallbackEnabled: form.hotmailFallbackEnabled,
       autoRefreshEnabled: form.autoRefreshEnabled,
       autoRefreshIntervalMinutes: Number(form.autoRefreshIntervalMinutes),
-      autoUpdateCheckEnabled: form.autoUpdateCheckEnabled
+      autoUpdateCheckEnabled: form.autoUpdateCheckEnabled,
+      closeToTray: form.closeToTray,
+      launchAtStartup: form.launchAtStartup
     };
 
     setLoading(true);
@@ -363,6 +369,31 @@ export function SettingsModal({
               </span>
             ) : null}
           </label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>窗口与启动</h3>
+        <div className="settings-grid">
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={form.closeToTray}
+              onChange={(event) => setForm({ ...form, closeToTray: event.target.checked })}
+            />
+            关闭/最小化时隐藏到托盘
+          </label>
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={form.launchAtStartup}
+              onChange={(event) => setForm({ ...form, launchAtStartup: event.target.checked })}
+            />
+            开机自动启动 MailDeck
+          </label>
+          <span className="field-hint">
+            托盘模式下双击托盘图标恢复窗口；有新邮件时托盘气泡提醒。
+          </span>
         </div>
       </section>
 
