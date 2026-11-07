@@ -88,14 +88,12 @@ $hashLines | Set-Content -LiteralPath $Checksums -Encoding ascii
 $notes = @(
   ('# MailDeck ' + $Version),
   '',
-  '本地优先的邮箱桌面工作台。这一版把应用从 Outlook Manager 改名为 MailDeck，并内置了设备代码登录。',
+  '本地优先的邮箱桌面工作台。',
   '',
   '## 本版变化',
   '',
-  '- 改名 MailDeck：数据目录 `%APPDATA%\maildeck`，数据库 `maildeck.db`；旧目录会自动改名迁移，账号不用重新导入',
-  '- 内置设备代码登录：导入弹窗里点「用 Microsoft 账号登录」，浏览器输入 8 位代码，邮箱与 refresh_token 自动填好',
-  ('- 产物名改为无空格：`MailDeck-Setup-' + $Version + '.exe` / `MailDeck-' + $Version + '-portable.exe`'),
-  ('- 打包脚本自动生成 `SHA256SUMS-' + $Version + '.txt`'),
+  '- 修复：开启 Chromium 的 RendererCodeIntegrity，阻断搜狗输入法等第三方 DLL 注入渲染进程。',
+  '  此前在装有搜狗输入法的机器上，应用渲染进程启动即崩溃（0xC0000005，崩溃模块 SogouPY.ime），无法进入主界面。',
   '',
   '## Assets',
   '',
@@ -121,7 +119,7 @@ $notes = @(
   '',
   '## 自检',
   '',
-  '- `npm run verify` 全绿（typecheck + eslint + 539 个测试）',
+  '- `npm run verify` 全绿（typecheck + eslint + 567 个测试）',
   '- 打包后启动冒烟通过：窗口标题、桥接、SQLite、CSP、代理加密逐项校验'
 )
 [System.IO.File]::WriteAllText(
