@@ -33,6 +33,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     autoUpdateCheckEnabled: true,
     autoRefreshEnabled: false,
     autoRefreshIntervalMinutes: 10,
+    refreshScope: "all",
     closeToTray: false,
     launchAtStartup: false,
     ...overrides

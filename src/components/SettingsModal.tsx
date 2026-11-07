@@ -25,6 +25,7 @@ interface SettingsFormState {
   hotmailFallbackEnabled: boolean;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: string;
+  refreshScope: "all" | "recent";
   autoUpdateCheckEnabled: boolean;
   closeToTray: boolean;
   launchAtStartup: boolean;
@@ -42,6 +43,7 @@ function initialForm(settings: AppSettings): SettingsFormState {
     hotmailFallbackEnabled: settings.hotmailFallbackEnabled,
     autoRefreshEnabled: settings.autoRefreshEnabled,
     autoRefreshIntervalMinutes: String(settings.autoRefreshIntervalMinutes),
+    refreshScope: settings.refreshScope,
     autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled,
     closeToTray: settings.closeToTray,
     launchAtStartup: settings.launchAtStartup
@@ -170,6 +172,7 @@ export function SettingsModal({
       hotmailFallbackEnabled: form.hotmailFallbackEnabled,
       autoRefreshEnabled: form.autoRefreshEnabled,
       autoRefreshIntervalMinutes: Number(form.autoRefreshIntervalMinutes),
+      refreshScope: form.refreshScope,
       autoUpdateCheckEnabled: form.autoUpdateCheckEnabled,
       closeToTray: form.closeToTray,
       launchAtStartup: form.launchAtStartup
@@ -337,7 +340,9 @@ export function SettingsModal({
 
       <section className="settings-section">
         <h3>自动刷新</h3>
-        <p className="settings-section-hint">应用打开时才会定时刷新；关闭窗口后刷新停止。</p>
+        <p className="settings-section-hint">
+          应用打开时才会定时刷新；开启「关窗进托盘」后，关窗只是隐藏窗口，后台刷新照常进行。
+        </p>
         <div className="settings-grid">
           <label className="check-row">
             <input
@@ -368,6 +373,19 @@ export function SettingsModal({
                 {fieldErrors.autoRefreshIntervalMinutes}
               </span>
             ) : null}
+          </label>
+          <label>
+            刷新范围
+            <select
+              value={form.refreshScope}
+              disabled={!form.autoRefreshEnabled}
+              onChange={(event) =>
+                setForm({ ...form, refreshScope: event.target.value === "recent" ? "recent" : "all" })
+              }
+            >
+              <option value="all">全部可用账号</option>
+              <option value="recent">最近 7 天收到过邮件的账号</option>
+            </select>
           </label>
         </div>
       </section>

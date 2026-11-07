@@ -1,4 +1,4 @@
-import type { AppSettings, AppSettingsUpdate } from "../shared/ipc-contracts.js";
+import type { AppSettings, AppSettingsUpdate, RefreshScope } from "../shared/ipc-contracts.js";
 import {
   formatProxyUrl,
   formatPublicProxyUrl,
@@ -19,6 +19,7 @@ interface StoredAppSettings {
   hotmailFallbackEnabled: boolean;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: number;
+  refreshScope: RefreshScope;
   autoUpdateCheckEnabled: boolean;
   closeToTray: boolean;
   launchAtStartup: boolean;
@@ -47,6 +48,7 @@ const DEFAULT_SETTINGS: StoredAppSettings = {
   hotmailFallbackEnabled: true,
   autoRefreshEnabled: false,
   autoRefreshIntervalMinutes: 10,
+  refreshScope: "all",
   autoUpdateCheckEnabled: true,
   closeToTray: false,
   launchAtStartup: false
@@ -90,6 +92,8 @@ function normalizeStoredSettings(value: unknown): StoredAppSettings {
       1,
       120
     ),
+    // 只认 "recent"；旧文件没这个字段时保持全量刷新的历史行为。
+    refreshScope: input.refreshScope === "recent" ? "recent" : "all",
     // 关闭自动检查只影响启动时的自动行为，设置页里的手动检查始终可用。
     autoUpdateCheckEnabled: input.autoUpdateCheckEnabled !== false,
     // 两个开关都默认关：关窗行为和现在完全一样（直接退出），不给用户意外的后台驻留。

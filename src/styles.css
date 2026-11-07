@@ -1350,6 +1350,20 @@ select:disabled {
   background: var(--bg-hover);
 }
 
+/* P1-2：列表来自过期缓存兑底时的提示条（正常列表上方，非阻断式）。 */
+.list-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-panel);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    弹窗 / 表单
    ══════════════════════════════════════════════════════════════════════ */

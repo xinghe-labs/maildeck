@@ -517,6 +517,30 @@ export async function getCachedCursor(accountId: string, folderId = "INBOX") {
   return row?.next_cursor || null;
 }
 
+/**
+ * 过期缓存兑底（P1-2）：列表网络路径失败（凭据解不开 / 断网 / 代理挂了）时，
+ * 读「上次同步成功」的数据让用户仍能看到邮件。与 getCachedMessages 的区别：
+ * 不看 5 分钟新鲜度，也没有 top 截断——缓存里有多少给多少，保证离线状态
+ * 下仍有可读列表。
+ */
+export async function getStaleCachedMessages(accountId: string, folderId = "INBOX") {
+  await migrateLegacyCacheOnce();
+  const meta = getDatabase()
+    .prepare("SELECT next_cursor FROM mail_cache_meta WHERE account_id = ? AND folder_id = ?")
+    .get(accountId, folderId) as MailMetaRow | undefined;
+  // SAFETY: node:sqlite 的行类型是 unknown；列集合由 mail_messages 建表语句固定，
+  // 与 MailMessageRow 字段一一对应。
+  const rows = getDatabase()
+    .prepare(`
+      SELECT * FROM mail_messages
+      WHERE account_id = ? AND folder_id = ?
+      ORDER BY COALESCE(received_date_time, sent_date_time, updated_at) DESC
+      LIMIT ?
+    `)
+    .all(accountId, folderId, MAX_MESSAGES_PER_ACCOUNT) as unknown as MailMessageRow[];
+  return { messages: rows.map(rowToMessage), nextCursor: meta?.next_cursor || null };
+}
+
 export async function saveCachedMessages(
   accountId: string,
   messages: MailMessageSummary[],

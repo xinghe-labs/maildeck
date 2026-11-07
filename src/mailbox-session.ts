@@ -38,6 +38,9 @@ export interface MailboxSessionState {
   /** 上一次列表加载的失败原因。与 `error` 分开：`error` 是可被关闭的横幅，
    *  `listError` 必须一直留到下一次加载成功，否则失败态会退化成“没有邮件可显示”。 */
   readonly listError: string;
+  /** P1-2：当前列表是否来自过期缓存兑底（网络/凭据失败时）。 */
+  readonly listStale: boolean;
+  readonly listStaleReason: string;
   readonly error: string;
 }
 
@@ -87,8 +90,13 @@ export const EMPTY_MAILBOX_SESSION_STATE: MailboxSessionState = Object.freeze({
   loadingMore: false,
   loadingDetail: false,
   listError: "",
+  listStale: false,
+  listStaleReason: "",
   error: ""
 });
+
+/** 列表兑底提示的默认文案（result.staleReason 缺省时用）。 */
+const STALE_LIST_REASON = "暂时连不上邮箱服务器，显示的是上次同步的邮件";
 
 function mergeMessages(
   current: readonly MailMessageSummary[],
@@ -113,6 +121,8 @@ class DefaultMailboxSession implements MailboxSession {
   private detailGeneration = 0;
   private foldersGeneration = 0;
   private listError = "";
+  private listStale = false;
+  private listStaleReason = "";
   private detailError = "";
   private selectionTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -150,6 +160,8 @@ class DefaultMailboxSession implements MailboxSession {
     this.detailCache.clear();
     this.listError = "";
     this.detailError = "";
+    this.listStale = false;
+    this.listStaleReason = "";
     this.replaceState({
       ...EMPTY_MAILBOX_SESSION_STATE,
       accountId,
@@ -184,6 +196,8 @@ class DefaultMailboxSession implements MailboxSession {
     this.detailGeneration += 1;
     this.listError = "";
     this.detailError = "";
+    this.listStale = false;
+    this.listStaleReason = "";
     // 切换文件夹后列表、游标、正文详情全部失效；query 保留在当前文件夹内继续搜索。
     this.replaceState({
       ...this.state,
@@ -196,7 +210,9 @@ class DefaultMailboxSession implements MailboxSession {
       loadingMessages: false,
       loadingMore: false,
       loadingDetail: false,
-      listError: ""
+      listError: "",
+      listStale: false,
+      listStaleReason: ""
     });
 
     if (!this.state.accountId || this.disposed) {
@@ -300,6 +316,10 @@ class DefaultMailboxSession implements MailboxSession {
         ? previousSelection
         : messages[0]?.id || null;
       const selectionChanged = selectedMessageId !== previousSelection;
+      // P1-2：后端兑底成功时带 stale 标记，前端把「这是过期缓存」挂到列表上；
+      // 正常网络结果则清掉标记。
+      this.listStale = result.stale === true;
+      this.listStaleReason = result.stale === true ? result.staleReason || STALE_LIST_REASON : "";
       this.updateState({
         messages,
         selectedMessageId,
@@ -311,6 +331,8 @@ class DefaultMailboxSession implements MailboxSession {
         }),
         totalCount: totalCount ?? null,
         loadingMessages: false,
+        listStale: this.listStale,
+        listStaleReason: this.listStaleReason,
         ...this.errorPatch("list", "")
       });
 
@@ -361,6 +383,10 @@ class DefaultMailboxSession implements MailboxSession {
 
       const messages = mergeMessages(this.state.messages, result.messages);
       const totalCount = result.totalCount ?? this.state.totalCount;
+      if (result.stale === true && !this.listStale) {
+        this.listStale = true;
+        this.listStaleReason = result.staleReason || STALE_LIST_REASON;
+      }
       this.updateState({
         messages,
         cursor: resolveVisibleMailCursor({
@@ -370,6 +396,8 @@ class DefaultMailboxSession implements MailboxSession {
         }),
         totalCount: totalCount ?? null,
         loadingMore: false,
+        listStale: this.listStale,
+        listStaleReason: this.listStaleReason,
         ...this.errorPatch("list", "")
       });
     } catch (error) {

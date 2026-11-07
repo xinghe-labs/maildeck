@@ -8,6 +8,7 @@ import { refreshAllFromTray, registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
 import { startAppUpdater } from "./app-updater.js";
+import { applySessionProxy } from "./session-proxy.js";
 import { getSettings } from "./settings-store.js";
 import {
   applyLaunchAtStartup,
@@ -180,6 +181,9 @@ if (app.hasSingleInstanceLock()) {
     // （用户明确关过就不该被打扰），所以读失败就直接不调度，只保留手动检查入口。
     try {
       const settings = await getSettings();
+      // P1-1：electron-updater 只看默认 session 的代理，不认 Graph 用的
+      // per-request dispatcher；启动时同步一次，国内直连环境才能检查更新。
+      await applySessionProxy(settings.proxyUrl);
       const updateController = startAppUpdater({
         isDev,
         env: process.env,

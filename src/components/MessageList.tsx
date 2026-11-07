@@ -67,6 +67,8 @@ export const MessageList = memo(function MessageList({
   inboxFolderId,
   canRefresh,
   listError,
+  listStale = false,
+  listStaleReason = "",
   onMailQueryChange,
   onExecuteSearch,
   onClearSearch,
@@ -89,6 +91,9 @@ export const MessageList = memo(function MessageList({
   inboxFolderId: string | null;
   canRefresh: boolean;
   listError: string;
+  /** P1-2：列表来自过期缓存兑底时挂提示条，说明「为什么这些邮件可能不是最新的」。 */
+  listStale?: boolean;
+  listStaleReason?: string;
   onMailQueryChange: (value: string) => void;
   onExecuteSearch: () => void;
   onClearSearch: () => void;
@@ -262,6 +267,13 @@ export const MessageList = memo(function MessageList({
                 这个文件夹比平时慢，还在等微软返回；超过 30 秒会超时并给出失败原因。
               </p>
             ) : null}
+          </div>
+        ) : null}
+
+        {!loadingMessages && messages.length > 0 && listStale ? (
+          <div className="list-stale-banner" role="status">
+            <AlertCircle size={14} />
+            <span>{listStaleReason || "暂时连不上邮箱服务器，显示的是上次同步的邮件"}</span>
           </div>
         ) : null}
 

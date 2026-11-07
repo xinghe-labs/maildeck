@@ -10,6 +10,7 @@ import {
 } from "../shared/ipc-contracts.js";
 import { clearAccountCache, clearAllMailCache, getMailCacheStats } from "./mail-cache.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
+import { applySessionProxy } from "./session-proxy.js";
 import { applyLaunchAtStartup, notifyNewMail, syncTray } from "./tray-controller.js";
 import {
   deleteAccount,
@@ -161,6 +162,9 @@ export function registerIpcHandlers() {
       if (next.proxyChanged) {
         closeProxyDispatchers();
       }
+      // P1-1：代理变更同步给 Chromium session（更新器与 webContents 都吃这个）；
+      // 未配置代理时是 no-op，不影响直连用户。
+      await applySessionProxy(next.settings.proxyUrl);
       refreshCoordinator.setConcurrency(next.settings.batchConcurrency);
       // 托盘与开机自启实时生效：开关切换不用重启应用。
       const [window] = BrowserWindow.getAllWindows();

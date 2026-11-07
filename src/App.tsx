@@ -49,10 +49,14 @@ const defaultSettings: AppSettings = {
   hotmailFallbackEnabled: true,
   autoRefreshEnabled: false,
   autoRefreshIntervalMinutes: 10,
+  refreshScope: "all",
   autoUpdateCheckEnabled: true,
   closeToTray: false,
   launchAtStartup: false
 };
+
+/** P2-5：「最近活跃」刷新范围的窗口期。 */
+const REFRESH_SCOPE_RECENT_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 导入结果的 toast 文案：带跳过原因，否则用户只知道「跳过 1 个」却不知道为什么（P16）。 */
 function importResultMessage(result: ImportResult): string {
@@ -874,7 +878,18 @@ export default function App() {
         return;
       }
 
-      const accountIds = accounts.filter((account) => account.status === "valid").map((account) => account.id);
+      // P2-5：范围可选。recent = 只刷最近 7 天收到过邮件的可用账号，
+      // 避免 407 个账号 × 每 10 分钟把代理和微软接口压满。
+      const scopedAccounts = settings.refreshScope === "recent"
+        ? accounts.filter((account) => {
+            if (account.status !== "valid" || !account.lastMailAt) {
+              return false;
+            }
+            const lastMailAt = new Date(account.lastMailAt).getTime();
+            return Number.isFinite(lastMailAt) && Date.now() - lastMailAt <= REFRESH_SCOPE_RECENT_MS;
+          })
+        : accounts.filter((account) => account.status === "valid");
+      const accountIds = scopedAccounts.map((account) => account.id);
       if (accountIds.length === 0) {
         return;
       }
@@ -884,7 +899,7 @@ export default function App() {
 
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 定时器只跟随设置变化重建；accounts/anyJobRunning 在回调内读取最新值
-  }, [accounts, anyJobRunning, settings.autoRefreshEnabled, settings.autoRefreshIntervalMinutes]);
+  }, [accounts, anyJobRunning, settings.autoRefreshEnabled, settings.autoRefreshIntervalMinutes, settings.refreshScope]);
 
   useEffect(() => {
     setTestMenuOpen(false);
@@ -1111,6 +1126,8 @@ export default function App() {
               selectedFolderId={selectedFolderId}
               inboxFolderId={selectedAccount?.inboxFolderId ?? null}
               listError={mailbox.state.listError}
+              listStale={mailbox.state.listStale}
+              listStaleReason={mailbox.state.listStaleReason}
               canRefresh={Boolean(selectedAccountId)}
               onMailQueryChange={setMailQuery}
               onExecuteSearch={executeMailSearch}

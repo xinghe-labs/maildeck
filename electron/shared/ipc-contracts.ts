@@ -303,10 +303,16 @@ export interface GetMessageOptions {
   folderId?: string;
 }
 
+/** 定时刷新范围：all=全部可用账号；recent=最近 7 天收到过邮件的账号。 */
+export type RefreshScope = "all" | "recent";
+
 export interface MailListResult {
   messages: MailMessageSummary[];
   nextCursor: string | null;
   totalCount?: number;
+  /** P1-2：true 表示这份列表来自过期缓存兜底（网络/凭据失败），渲染层要挂提示条。 */
+  stale?: boolean;
+  staleReason?: string;
 }
 
 /** 设置弹窗里“缓存占用”那一行：计数 + 缓存文本的实际字节数（不含 SQLite 页开销）。 */
@@ -328,6 +334,7 @@ export interface AppSettings {
   hotmailFallbackEnabled: boolean;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: number;
+  refreshScope: RefreshScope;
   autoUpdateCheckEnabled: boolean;
   closeToTray: boolean;
   launchAtStartup: boolean;
@@ -575,6 +582,7 @@ export const appSettingsUpdateSchema = z.strictObject({
   hotmailFallbackEnabled: z.boolean().optional(),
   autoRefreshEnabled: z.boolean().optional(),
   autoRefreshIntervalMinutes: z.number().int().min(1).max(120).optional(),
+  refreshScope: z.enum(["all", "recent"]).optional(),
   autoUpdateCheckEnabled: z.boolean().optional(),
   closeToTray: z.boolean().optional(),
   launchAtStartup: z.boolean().optional()

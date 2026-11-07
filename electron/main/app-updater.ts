@@ -118,6 +118,41 @@ function readVersion(info: unknown): string {
   return typeof version === "string" && version.trim() ? version.trim() : "未知版本";
 }
 
+/**
+ * 一次更新检查的兑底收敛。真机实测：electron-updater 的 checkForUpdates() promise 可能
+ * 「正常 settle 却不发任何事件」（feed 响应了、事件链没走完），而事件驱动的状态机只会
+ * 在 onAvailable/onNotAvailable/onError 里推进——此时状态机永远卡在 checking，UI 停在
+ * 「正在检查更新…」。无论 promise resolve 还是 reject，这里都必须拉出终态；
+ * 超时由 withCheckTimeout 兑底。启动自动检查与 IPC 手动检查共用。
+ */
+async function runCheckToTerminal(controller: UpdateController, runner: UpdateRunner): Promise<void> {
+  const response = await withCheckTimeout(runner.checkForUpdates(), UPDATE_CHECK_TIMEOUT_MS).catch(
+    (error: unknown) => {
+      if (controller.getState().phase === "checking") {
+        controller.checkFailed(error instanceof Error ? error.message : String(error));
+      }
+      return null;
+    }
+  );
+  if (controller.getState().phase !== "checking") {
+    return;
+  }
+  // 注意：response 可能是 null（electron-updater 的 UpdateCheckResult | null，检查被
+  // 跳过时返回 null）——同样不发事件，必须照样拉出终态，不能提前 return。
+  const available = Boolean((response as { isUpdateAvailable?: boolean } | null)?.isUpdateAvailable);
+  if (available) {
+    const rawVersion = (response as { updateInfo?: { version?: unknown } } | null)?.updateInfo?.version;
+    const version = typeof rawVersion === "string" ? rawVersion : "";
+    controller.checkFoundUpdate(version);
+    controller.downloadStarted(version);
+    void runner.download().catch((error: unknown) => {
+      controller.downloadFailed(error instanceof Error ? error.message : String(error));
+    });
+  } else {
+    controller.checkNoUpdate("");
+  }
+}
+
 function registerUpdateIpc(controller: UpdateController, runner: UpdateRunner) {
   // 测试里可能对同一进程多次调用 startAppUpdater，重复注册会抛
   // "Attempted to register a second handler"，先摘旧的再挂新的。
@@ -129,9 +164,9 @@ function registerUpdateIpc(controller: UpdateController, runner: UpdateRunner) {
     const state = controller.requestCheck();
     if (state.phase === "checking") {
       try {
-        await withCheckTimeout(runner.checkForUpdates(), UPDATE_CHECK_TIMEOUT_MS);
+        await runCheckToTerminal(controller, runner);
       } catch (error) {
-        // error 事件监听也会收到这次失败，这里只是同步兜底，保证 invoke 返回终态。
+        // runCheckToTerminal 内部已兑底，这里只是保底终态；error 事件监听也会收到这次失败。
         controller.checkFailed(error instanceof Error ? error.message : String(error));
       }
     }
@@ -209,7 +244,7 @@ export function startAppUpdater(options: {
 /**
  * 启动延迟后自动检查一次（仅 background 模式）。此前版本的 bug：只把状态机切到
  * checking 而从没调用 runner，导致 UI 永远停在「正在检查更新…」——检查请求必须
- * 真正发出去；超时由 IPC 路径的 withCheckTimeout 兜底，这里只需处理 reject。
+ * 真正发出去；超时由 withCheckTimeout（IPC 与启动自动检查共用）兜底，这里只需处理 reject。
  */
 function scheduleStartupCheck(controller: UpdateController, runner: UpdateRunner, delayMs: number): void {
   if (controller.getMode() !== "background" || !(delayMs >= 0)) {
@@ -218,11 +253,7 @@ function scheduleStartupCheck(controller: UpdateController, runner: UpdateRunner
   const timer = setTimeout(() => {
     const state = controller.requestCheck();
     if (state.phase === "checking") {
-      runner
-        .checkForUpdates()
-        .catch((error: unknown) => {
-          controller.checkFailed(error instanceof Error ? error.message : String(error));
-        });
+      void runCheckToTerminal(controller, runner);
     }
   }, delayMs);
   // 应用若在延迟期内退出，别让这个 timer 拖住进程。

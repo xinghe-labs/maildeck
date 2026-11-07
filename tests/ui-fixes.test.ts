@@ -258,6 +258,7 @@ describe("设置弹窗的信息分组", () => {
     hotmailFallbackEnabled: true,
     autoRefreshEnabled: false,
     autoRefreshIntervalMinutes: 10,
+    refreshScope: "all",
     autoUpdateCheckEnabled: true,
     closeToTray: false,
     launchAtStartup: false
@@ -273,7 +274,7 @@ describe("设置弹窗的信息分组", () => {
 
     expect(headings).toEqual(["邮件与缓存", "网络与认证", "自动刷新", "窗口与启动", "应用更新"]);
     expect(element.querySelector(".settings-version")?.textContent).toMatch(/^MailDeck v\S+$/);
-    expect(element.textContent).toContain("关闭窗口后刷新停止");
+    expect(element.textContent).toContain("关窗只是隐藏窗口，后台刷新照常进行");
   });
 });
 

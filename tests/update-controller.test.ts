@@ -227,6 +227,96 @@ describe("startAppUpdater", () => {
     }
   });
 
+  it("启动检查：runner resolve 但没发事件时，兜底把状态拉出 checking（真机卡死根因）", async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = makeRunner();
+      runner.checkForUpdates = () => Promise.resolve({ isUpdateAvailable: false });
+      const controller = startAppUpdater({
+        isDev: false,
+        env: {},
+        autoUpdateCheckEnabled: true,
+        runner,
+        startupCheckDelayMs: 1000
+      });
+
+      await vi.advanceTimersByTimeAsync(1000 + 100);
+      const state = controller.getState();
+      expect(state.phase).toBe("not-available");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("启动检查：resolve 且 isUpdateAvailable=true 时，兜底进入下载流程", async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = makeRunner();
+      runner.checkForUpdates = () =>
+        Promise.resolve({ isUpdateAvailable: true, updateInfo: { version: "9.9.9" } });
+      const controller = startAppUpdater({
+        isDev: false,
+        env: {},
+        autoUpdateCheckEnabled: true,
+        runner,
+        startupCheckDelayMs: 1000
+      });
+
+      await vi.advanceTimersByTimeAsync(1000 + 100);
+      expect(controller.getState().phase).toBe("downloading");
+      expect(runner.download).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("启动检查：runner resolve(null)（不发事件）也必须拉出终态", async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = makeRunner();
+      runner.checkForUpdates = () => Promise.resolve(null);
+      const controller = startAppUpdater({
+        isDev: false,
+        env: {},
+        autoUpdateCheckEnabled: true,
+        runner,
+        startupCheckDelayMs: 1000
+      });
+
+      await vi.advanceTimersByTimeAsync(1000 + 100);
+      expect(controller.getState().phase).toBe("not-available");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("启动检查悬挂时超时转错误态（P1-1：不能永远停在「正在检查更新…」）", async () => {
+    vi.useFakeTimers();
+    try {
+      const hungRunner = makeRunner();
+      hungRunner.checkForUpdates = () => new Promise(() => undefined);
+      const controller = startAppUpdater({
+        isDev: false,
+        env: {},
+        autoUpdateCheckEnabled: true,
+        runner: hungRunner,
+        startupCheckDelayMs: 1000
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(controller.getState().phase).toBe("checking");
+      // withCheckTimeout 的 30 秒定时器到点后必须把状态机推到 error。
+      await vi.advanceTimersByTimeAsync(UPDATE_CHECK_TIMEOUT_MS + 10);
+      const state = controller.getState();
+      expect(state.phase).toBe("error");
+      if (state.phase === "error") {
+        expect(state.message).toContain("检查更新超时");
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("绿色版 / 关闭自动检查时不调度启动检查", async () => {
     vi.useFakeTimers();
     try {

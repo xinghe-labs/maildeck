@@ -2,6 +2,7 @@ import {
   getCachedCursor,
   getCachedMessageDetail,
   getCachedMessages,
+  getStaleCachedMessages,
   saveCachedMessageDetail,
   saveCachedMessages
 } from "./mail-cache.js";
@@ -367,7 +368,39 @@ class DefaultMailboxAccess implements MailboxAccess {
     }
   };
 
-  readonly listMessages = async (options: ListMessagesOptions, signal: AbortSignal): Promise<MailListResult> => {
+  /**
+   * P1-2：网络路径失败时的过期缓存兑底。凭据解不开 / 断网 / 代理挂掉时，
+   * 已同步过的邮件仍应可读（「本地优先」）。仅首屏兑底：搜索、分页、强制
+   * 刷新的语义在过期缓存上不成立，失败时维持原错误。
+   */
+  readonly listMessages = async (
+    options: ListMessagesOptions,
+    signal: AbortSignal
+  ): Promise<MailListResult> => {
+    try {
+      return await this.listMessagesOnline(options, signal);
+    } catch (error) {
+      if (signal.aborted || options.forceRefresh || options.search?.trim() || options.cursor || options.skip) {
+        throw error;
+      }
+      const requestedFolderId = options.folderId?.trim() || "";
+      const folderKey = requestedFolderId.length > 0 ? requestedFolderId : PRIMARY_FOLDER_KEY;
+      const cached = await getStaleCachedMessages(options.accountId, folderKey).catch(() => null);
+      if (!cached || cached.messages.length === 0) {
+        throw error;
+      }
+      const payload = reportIpcError(error, `List messages ${options.accountId}`);
+      return {
+        messages: cached.messages,
+        nextCursor: cached.nextCursor,
+        totalCount: cached.messages.length,
+        stale: true,
+        staleReason: payload.message
+      };
+    }
+  };
+
+  private readonly listMessagesOnline = async (options: ListMessagesOptions, signal: AbortSignal): Promise<MailListResult> => {
     const guard = this.beginOperation(options.accountId, signal);
     const search = options.search?.trim() || "";
     const top = options.top || 50;
