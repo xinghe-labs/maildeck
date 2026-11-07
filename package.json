@@ -90,7 +90,7 @@
     "typescript-eslint": "^8.71.1",
     "vite": "^6.3.5",
     "vitest": "^4.1.10",
-    "wait-on": "^8.0.3"
+    "wait-on": "^9.5.1"
   },
   "overrides": {
     "deepmerge-ts": "8.0.1",
