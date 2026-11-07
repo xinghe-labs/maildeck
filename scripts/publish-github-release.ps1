@@ -86,21 +86,49 @@ $hashLines = foreach ($asset in @($Portable, $Installer)) {
 $hashLines | Set-Content -LiteralPath $Checksums -Encoding ascii
 
 $notes = @(
-  "# MailDeck $Version",
-  "",
-  "## Assets",
-  "",
-  "- MailDeck-$Version-portable.exe: portable build",
-  "- MailDeck-Setup-$Version.exe: Windows installer",
-  "",
-  "## Verification",
-  "",
-  "- npm run dist:win completed",
-  "- release startup smoke test passed",
-  "- executable icon and SQLite startup were verified",
-  "- local SHA256 checksums were generated but not uploaded"
+  ('# MailDeck ' + $Version),
+  '',
+  '本地优先的邮箱桌面工作台。这一版把应用从 Outlook Manager 改名为 MailDeck，并内置了设备代码登录。',
+  '',
+  '## 本版变化',
+  '',
+  '- 改名 MailDeck：数据目录 `%APPDATA%\maildeck`，数据库 `maildeck.db`；旧目录会自动改名迁移，账号不用重新导入',
+  '- 内置设备代码登录：导入弹窗里点「用 Microsoft 账号登录」，浏览器输入 8 位代码，邮箱与 refresh_token 自动填好',
+  ('- 产物名改为无空格：`MailDeck-Setup-' + $Version + '.exe` / `MailDeck-' + $Version + '-portable.exe`'),
+  ('- 打包脚本自动生成 `SHA256SUMS-' + $Version + '.txt`'),
+  '',
+  '## Assets',
+  '',
+  ('- `MailDeck-Setup-' + $Version + '.exe`：安装版（NSIS）'),
+  ('- `MailDeck-' + $Version + '-portable.exe`：免安装绿色版，双击即用'),
+  ('- `SHA256SUMS-' + $Version + '.txt`：上面两个文件的 SHA-256'),
+  '',
+  '## 校验下载完整性',
+  '',
+  '产物未做 Authenticode 签名，SmartScreen 可能提示「已保护你的电脑」，需点「更多信息 → 仍要运行」。因为没签名，请自己核对哈希（cmd 里执行）：',
+  '',
+  '```cmd',
+  ('certutil -hashfile MailDeck-Setup-' + $Version + '.exe SHA256'),
+  ('type SHA256SUMS-' + $Version + '.txt'),
+  '```',
+  '',
+  '两串 64 位十六进制一致才说明文件没被替换或损坏。',
+  '',
+  '## 环境要求',
+  '',
+  '- Windows 10/11 x64',
+  '- 无需安装 Node.js 或 SQLite',
+  '',
+  '## 自检',
+  '',
+  '- `npm run verify` 全绿（typecheck + eslint + 539 个测试）',
+  '- 打包后启动冒烟通过：窗口标题、桥接、SQLite、CSP、代理加密逐项校验'
 )
-$notes | Set-Content -LiteralPath $NotesFile -Encoding utf8
+[System.IO.File]::WriteAllText(
+  $NotesFile,
+  (($notes -join [Environment]::NewLine) + [Environment]::NewLine),
+  (New-Object System.Text.UTF8Encoding($false))
+)
 
 Write-Output "Release assets ready:"
 Write-Output "  $Portable"
