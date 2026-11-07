@@ -206,7 +206,6 @@ export function startAppUpdater(options: {
   scheduleStartupCheck(controller, runner, options.startupCheckDelayMs ?? 8_000);
   return controller;
 }
-
 /**
  * 启动延迟后自动检查一次（仅 background 模式）。此前版本的 bug：只把状态机切到
  * checking 而从没调用 runner，导致 UI 永远停在「正在检查更新…」——检查请求必须
