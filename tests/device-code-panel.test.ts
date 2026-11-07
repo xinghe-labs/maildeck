@@ -160,6 +160,17 @@ describe("DeviceCodePanel", () => {
     expect(openExternal).toHaveBeenCalledWith("https://microsoft.com/devicelogin");
   });
 
+  it("点「注册」打开微软注册页并提示回应用内收尾", async () => {
+    await render();
+    await clickByText("没有微软账号？注册一个");
+
+    expect(openExternal).toHaveBeenCalledWith("https://signup.live.com/signup?lic=1");
+    expect(container.textContent).toContain("回到这里点「用微软账号登录」收尾");
+    // 注册入口不影响登录流程本身
+    await clickByText("用微软账号登录，自动获取 token");
+    expect(startDeviceCode).toHaveBeenCalledTimes(1);
+  });
+
   it("卸载时退订事件，避免窗口关掉后还往死组件里塞状态", async () => {
     await render();
     expect(unsubscribed).toBe(false);

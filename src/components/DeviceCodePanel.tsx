@@ -1,10 +1,13 @@
-import { CheckCircle2, Copy, ExternalLink, Loader2, LogIn, XCircle } from "lucide-react";
+import { CheckCircle2, Copy, ExternalLink, Loader2, LogIn, UserPlus, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { errorMessage } from "../app-error";
 import { getDesktopApi } from "../desktop-api";
 import type { DeviceCodeStateEvent } from "../../electron/shared/ipc-contracts";
 
 type Phase = "idle" | "starting" | "waiting" | "authorized" | "failed";
+
+// 微软个人账号注册页：没有账号的用户从这里开始，注册完回应用里走设备代码登录。
+const SIGNUP_URL = "https://signup.live.com/signup?lic=1";
 
 export interface DeviceCodeResult {
   clientId: string;
@@ -32,6 +35,7 @@ export function DeviceCodePanel({ onAuthorized }: { onAuthorized: (result: Devic
   const [remainingSec, setRemainingSec] = useState(0);
   const [message, setMessage] = useState("");
   const [copied, setCopied] = useState(false);
+  const [signupOpened, setSignupOpened] = useState(false);
   const authorizedRef = useRef(onAuthorized);
   authorizedRef.current = onAuthorized;
 
@@ -99,6 +103,15 @@ export function DeviceCodePanel({ onAuthorized }: { onAuthorized: (result: Devic
     setMessage("");
   }
 
+  async function openSignup() {
+    try {
+      await getDesktopApi().app.openExternal(SIGNUP_URL);
+      setSignupOpened(true);
+    } catch {
+      // 打不开浏览器时保持原提示，用户仍可走已有账号登录。
+    }
+  }
+
   async function copyCode() {
     try {
       await navigator.clipboard.writeText(userCode);
@@ -111,11 +124,23 @@ export function DeviceCodePanel({ onAuthorized }: { onAuthorized: (result: Devic
   if (phase === "idle") {
     return (
       <div className="device-code span-2">
-        <button type="button" className="secondary-button dark-button device-code-start" onClick={() => void start()}>
-          <LogIn size={16} />
-          用微软账号登录，自动获取 token
-        </button>
-        <span className="field-hint">不用自己抓 refresh_token：点这里登录一次，邮箱和 token 会自动填好。</span>
+        <div className="device-code-row">
+          <button type="button" className="secondary-button dark-button device-code-start" onClick={() => void start()}>
+            <LogIn size={16} />
+            用微软账号登录，自动获取 token
+          </button>
+          <button type="button" className="secondary-button dark-button" onClick={() => void openSignup()}>
+            <UserPlus size={16} />
+            没有微软账号？注册一个
+          </button>
+        </div>
+        {signupOpened ? (
+          <span className="field-hint">
+            已在浏览器打开微软注册页，完成人机验证后回到这里点「用微软账号登录」收尾。
+          </span>
+        ) : (
+          <span className="field-hint">不用自己抓 refresh_token：点这里登录一次，邮箱和 token 会自动填好。</span>
+        )}
       </div>
     );
   }
