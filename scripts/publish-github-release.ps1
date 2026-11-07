@@ -167,9 +167,15 @@ if (-not $releaseExists) {
     throw "Commit $Target is not on any remote-tracking branch. Push the branch first: git push origin HEAD"
   }
 
-  $localSha = (& git.exe rev-list -n 1 $Tag 2>$null)
+  # 用 rev-parse --verify --quiet 判断本地 tag 是否存在：
+  # 直接 rev-list 一个不存在的 tag 会往 stderr 写 fatal，在 $ErrorActionPreference="Stop" 下直接抛错。
+  $localSha = $null
+  $tagRef = "refs/tags/$Tag"
+  $resolved = (& git.exe rev-parse --verify --quiet $tagRef 2>$null)
+  if ($LASTEXITCODE -eq 0 -and $resolved) {
+    $localSha = $resolved.Trim()
+  }
   if ($localSha) {
-    $localSha = $localSha.Trim()
     if ($localSha -ne $Target) {
       throw "Tag $Tag already exists at $localSha, but HEAD is $Target. Delete or retag it before publishing."
     }
