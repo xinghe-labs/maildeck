@@ -1329,6 +1329,10 @@ select:disabled {
 .modal-backdrop {
   position: fixed;
   inset: 0;
+  /* 必须高于页内所有层叠层（侧栏 scroll-state z-2、列拖拽手柄 z-6、popover z-30），
+     否则侧栏会盖住遮罩和弹窗左缘（真机踩过：标签被裁成「箱/efresh Token」）；
+     低于 toast z-60。多层弹窗同层级靠 DOM 顺序，与 modalStack 的 Esc 行为一致。 */
+  z-index: 50;
   display: grid;
   place-items: center;
   background: var(--bg-overlay);
