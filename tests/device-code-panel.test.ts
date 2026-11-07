@@ -171,6 +171,16 @@ describe("DeviceCodePanel", () => {
     expect(startDeviceCode).toHaveBeenCalledTimes(1);
   });
 
+  it("注册页打开失败时不再静默，提示手动访问地址", async () => {
+    await render();
+    // installBridge 在 render 时会把 openExternal 设成 resolve，拒绝要在 render 之后注入。
+    openExternal.mockRejectedValue(new Error("blocked"));
+    await clickByText("没有微软账号？注册一个");
+
+    expect(container.textContent).toContain("无法打开系统浏览器");
+    expect(container.textContent).toContain("signup.live.com/signup");
+  });
+
   it("卸载时退订事件，避免窗口关掉后还往死组件里塞状态", async () => {
     await render();
     expect(unsubscribed).toBe(false);

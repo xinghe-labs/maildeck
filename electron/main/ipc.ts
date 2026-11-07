@@ -27,7 +27,7 @@ import { DeviceCodeAuthError, pollDeviceCode, readAccountEmail, startDeviceCode 
 import type { DeviceCodeStateEvent } from "../shared/ipc-contracts.js";
 import { FileTooLargeError, readUtf8FileBounded } from "./bounded-file-reader.js";
 import { safeAttachmentFileName } from "./attachment-file-name.js";
-import { safeWebMailUrl } from "../shared/web-mail-url.js";
+import { safeAccountUrl, safeWebMailUrl } from "../shared/web-mail-url.js";
 import type {
   JobKind,
   RefreshManyResult,
@@ -132,9 +132,9 @@ async function upsertAccountsCoordinated(inputs: Parameters<typeof upsertAccount
 export function registerIpcHandlers() {
   // 外部链接统一从主进程打开：渲染进程只能递进来一个字符串，域名白名单在这里把关。
   handleValidated(IPC_CHANNELS.appOpenExternal, IPC_REQUEST_SCHEMAS.openExternal, async (_event, url) => {
-    const target = safeWebMailUrl(url);
+    const target = safeWebMailUrl(url) ?? safeAccountUrl(url);
     if (!target) {
-      throw new IpcRequestValidationError("只允许打开 Outlook 网页版地址");
+      throw new IpcRequestValidationError("只允许打开 Outlook 网页版或微软账号相关地址");
     }
     await shell.openExternal(target);
     return { opened: true };

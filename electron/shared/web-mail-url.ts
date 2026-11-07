@@ -14,6 +14,25 @@ const ALLOWED_WEB_MAIL_HOSTS = [
   "outlook.cn"
 ] as const;
 
+/**
+ * 微软账号/登录相关域名：设备代码登录页（microsoft.com/devicelogin 及各主权云）、
+ * 账号注册页（signup.live.com）都从这里来。与邮件 webLink 分开白名单，
+ * 避免为了登录入口把整个 live.com 放进邮件链接白名单。
+ */
+const ALLOWED_ACCOUNT_HOSTS = [
+  "microsoft.com",
+  "live.com",
+  "microsoftonline.com",
+  "microsoftonline.cn",
+  "chinacloudapi.cn",
+  "msauth.net"
+] as const;
+
+function allowedHost(url: URL, candidates: readonly string[]): boolean {
+  const host = url.hostname.toLowerCase();
+  return candidates.some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+}
+
 export function safeWebMailUrl(raw: string | null | undefined): string | null {
   const value = (raw || "").trim();
   if (!value) {
@@ -31,12 +50,28 @@ export function safeWebMailUrl(raw: string | null | undefined): string | null {
     return null;
   }
 
-  const host = url.hostname.toLowerCase();
-  const allowed = ALLOWED_WEB_MAIL_HOSTS.some(
-    (candidate) => host === candidate || host.endsWith(`.${candidate}`)
-  );
+  return allowedHost(url, ALLOWED_WEB_MAIL_HOSTS) ? url.toString() : null;
+}
 
-  return allowed ? url.toString() : null;
+/** 设备代码登录页、注册页这类微软账号地址：https + 账号域名白名单。 */
+export function safeAccountUrl(raw: string | null | undefined): string | null {
+  const value = (raw || "").trim();
+  if (!value) {
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "https:") {
+    return null;
+  }
+
+  return allowedHost(url, ALLOWED_ACCOUNT_HOSTS) ? url.toString() : null;
 }
 
 /** 消费级邮箱域名：网页版入口在 outlook.live.com，其余走 office365。 */

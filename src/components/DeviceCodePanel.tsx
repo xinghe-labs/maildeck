@@ -36,6 +36,7 @@ export function DeviceCodePanel({ onAuthorized }: { onAuthorized: (result: Devic
   const [message, setMessage] = useState("");
   const [copied, setCopied] = useState(false);
   const [signupOpened, setSignupOpened] = useState(false);
+  const [signupOpenFailed, setSignupOpenFailed] = useState(false);
   const authorizedRef = useRef(onAuthorized);
   authorizedRef.current = onAuthorized;
 
@@ -104,11 +105,13 @@ export function DeviceCodePanel({ onAuthorized }: { onAuthorized: (result: Devic
   }
 
   async function openSignup() {
+    setSignupOpenFailed(false);
     try {
       await getDesktopApi().app.openExternal(SIGNUP_URL);
       setSignupOpened(true);
     } catch {
-      // 打不开浏览器时保持原提示，用户仍可走已有账号登录。
+      // 主进程拒绝或打不开浏览器时不再静默：给出地址让用户手动访问。
+      setSignupOpenFailed(true);
     }
   }
 
@@ -138,6 +141,8 @@ export function DeviceCodePanel({ onAuthorized }: { onAuthorized: (result: Devic
           <span className="field-hint">
             已在浏览器打开微软注册页，完成人机验证后回到这里点「用微软账号登录」收尾。
           </span>
+        ) : signupOpenFailed ? (
+          <span className="field-hint">无法打开系统浏览器，请手动访问 signup.live.com/signup，完成后回这里登录收尾。</span>
         ) : (
           <span className="field-hint">不用自己抓 refresh_token：点这里登录一次，邮箱和 token 会自动填好。</span>
         )}

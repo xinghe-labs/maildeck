@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveWebMailEntry, safeWebMailUrl } from "../electron/shared/web-mail-url.js";
+import { resolveWebMailEntry, safeAccountUrl, safeWebMailUrl } from "../electron/shared/web-mail-url.js";
 
 describe("safeWebMailUrl", () => {
   it("allows the Outlook web links Graph returns", () => {
@@ -24,6 +24,25 @@ describe("safeWebMailUrl", () => {
     expect(safeWebMailUrl(undefined)).toBeNull();
     expect(safeWebMailUrl("   ")).toBeNull();
     expect(safeWebMailUrl("not a url")).toBeNull();
+  });
+});
+
+describe("safeAccountUrl", () => {
+  it("allows device-code login and signup pages", () => {
+    expect(safeAccountUrl("https://microsoft.com/devicelogin")).not.toBeNull();
+    expect(safeAccountUrl("https://login.microsoftonline.com/common/oauth2/v2.0/devicecode")).not.toBeNull();
+    expect(safeAccountUrl("https://signup.live.com/signup?lic=1")).not.toBeNull();
+    // 世纪互联（主权云）登录页
+    expect(safeAccountUrl("https://login.chinacloudapi.cn/common/oauth2/v2.0/devicecode")).not.toBeNull();
+  });
+
+  it("rejects non-https, unknown hosts and suffix-lookalikes", () => {
+    expect(safeAccountUrl("http://microsoft.com/devicelogin")).toBeNull();
+    expect(safeAccountUrl("https://evil.example/signup")).toBeNull();
+    // 子串仍不能绕过
+    expect(safeAccountUrl("https://microsoft.com.evil.example/signup")).toBeNull();
+    expect(safeAccountUrl("https://evilmicrosoft.com/signup")).toBeNull();
+    expect(safeAccountUrl(null)).toBeNull();
   });
 });
 
