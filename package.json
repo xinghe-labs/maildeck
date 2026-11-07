@@ -78,7 +78,7 @@
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.0",
-    "concurrently": "^9.2.5",
+    "concurrently": "^10.0.6",
     "cross-env": "^7.0.3",
     "electron": "43.8.1",
     "electron-builder": "26.15.3",
