@@ -107,6 +107,9 @@
 
 body {
   margin: 0;
+  /* 应用是 100vh 固定布局（.mail-shell 自身 overflow:hidden，列表/弹窗都有内部滚动），
+     body 的 overflow 传播到视口，根层不允许出窗口级滚动条（真机看到右侧多出一条带箭头的滚动条）。 */
+  overflow: hidden;
   /* 必须小于 BrowserWindow.minWidth(960)，留出竖向滚动条的宽度 */
   min-width: 940px;
   min-height: 100vh;

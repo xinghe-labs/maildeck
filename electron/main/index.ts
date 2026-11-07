@@ -12,7 +12,6 @@ import { getSettings } from "./settings-store.js";
 import { SECURE_WEB_PREFERENCES } from "./window-security.js";
 import { configureSessionPermissions } from "./session-security.js";
 import { migrateLegacyUserDataDirectory, readUserDataOverride } from "./user-data-path.js";
-import { TOKEN_GUIDE_TEXT, TOKEN_GUIDE_TITLE } from "../shared/token-guide.js";
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -123,89 +122,9 @@ function createWindow() {
   }
 }
 
-// 默认菜单把 DevTools/重新加载/强制重新加载 摆在一个键就能点到的地方，
-// 普通用户很容易误触；这里换成只保留“编辑/视图/帮助”，开发菜单只在 dev 下挂载。
-function buildApplicationMenu() {
-  const template: Electron.MenuItemConstructorOptions[] = [];
-
-  if (isDev) {
-    template.push({
-      label: "开发",
-      submenu: [{ role: "toggleDevTools" }, { role: "reload" }]
-    });
-  }
-
-  template.push(
-    {
-      label: "编辑",
-      submenu: [
-        { role: "undo" },
-        { role: "redo" },
-        { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "selectAll" }
-      ]
-    },
-    {
-      label: "视图",
-      submenu: [
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "togglefullscreen" }
-      ]
-    },
-    {
-      label: "帮助",
-      submenu: [
-        {
-          // 应用不内置微软登录流程，所以“去哪拿 refresh_token”必须有个入口可查，
-          // 否则新手只能在导入弹窗里对着两个空字段猜。
-          label: TOKEN_GUIDE_TITLE,
-          click: () => {
-            const [window] = BrowserWindow.getAllWindows();
-            const options = {
-              type: "info" as const,
-              title: TOKEN_GUIDE_TITLE,
-              message: TOKEN_GUIDE_TITLE,
-              detail: TOKEN_GUIDE_TEXT,
-              buttons: ["知道了"]
-            };
-            if (window) {
-              void dialog.showMessageBox(window, options);
-            } else {
-              void dialog.showMessageBox(options);
-            }
-          }
-        },
-        { type: "separator" },
-        {
-          label: "关于 MailDeck",
-          click: () => {
-            const [window] = BrowserWindow.getAllWindows();
-            const options = {
-              type: "info" as const,
-              title: "关于",
-              message: `MailDeck v${app.getVersion()}`,
-              detail: `本地优先的邮箱工作台\n\nElectron ${process.versions.electron}\nNode ${process.versions.node}\n\n数据目录：${app.getPath("userData")}`,
-              buttons: ["好"]
-            };
-            if (window) {
-              void dialog.showMessageBox(window, options);
-            } else {
-              void dialog.showMessageBox(options);
-            }
-          }
-        }
-      ]
-    }
-  );
-
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
-}
+// 不挂应用菜单：顶部菜单栏（编辑/视图/帮助）去掉，窗口更干净。
+// 代价与补偿：编辑快捷键 Windows 下由 Chromium 原生处理不受影响；
+// token 获取指南仍由渲染层的 TokenGuidePanel/侧栏卡片承载；版本号在设置页可见。
 
 if (app.hasSingleInstanceLock()) {
   // 未拿到单实例锁时上面的 app.quit() 已排队，这里不能再初始化数据库和窗口。
@@ -227,7 +146,7 @@ if (app.hasSingleInstanceLock()) {
       return;
     }
     registerIpcHandlers();
-    buildApplicationMenu();
+    Menu.setApplicationMenu(null);
     createWindow();
 
     // 更新器放在窗口创建之后：广播目标是 BrowserWindow 列表，且启动 8 秒后才
