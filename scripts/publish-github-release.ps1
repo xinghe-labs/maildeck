@@ -234,6 +234,10 @@ $uploadArgs = @(
   $Tag,
   $Portable,
   $Installer,
+  # electron-updater 的 feed：没有 latest.yml 客户端会 404，自动更新直接失效；
+  # blockmap 供增量下载。两者都必须与同一构建的 exe 配套上传。
+  $Installer -replace "\.exe$", ".exe.blockmap",
+  (Join-Path $Root "release\latest.yml"),
   $Checksums,
   "--repo",
   $Repo

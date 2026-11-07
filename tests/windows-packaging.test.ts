@@ -120,6 +120,17 @@ describe("offline-first Windows packaging", () => {
     expect(packagingScript).toContain("$RuntimeVersion");
   });
 
+  it("publishes to the MailDeck GitHub repo so electron-updater can find latest.yml", () => {
+    const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+      build?: { publish?: { provider?: string; owner?: string; repo?: string } };
+    };
+    expect(packageJson.build?.publish).toEqual({
+      provider: "github",
+      owner: "xinghe-labs",
+      repo: "maildeck"
+    });
+  });
+
   it("runs every release gate and disables certificate auto-discovery", () => {
     expect(packagingScript).toContain('$env:CSC_IDENTITY_AUTO_DISCOVERY = "false"');
     expect(packagingScript).toMatch(/npm\.cmd" @\("run", "icons"\)[\s\S]*npm\.cmd" @\("run", "build"\)/u);

@@ -173,3 +173,23 @@ describe("settings v2 model", () => {
     );
   });
 });
+
+describe("autoUpdateCheckEnabled setting", () => {
+  it("migrated v1 settings default to auto update check on", () => {
+    const { file } = migrateSettingsFile(v1Settings("http://alice:secret@proxy.example:8080"), crypto);
+    expect(projectPublicSettings(file).autoUpdateCheckEnabled).toBe(true);
+  });
+
+  it("applying the update persists the toggle", () => {
+    const { file } = migrateSettingsFile(v1Settings("http://alice:secret@proxy.example:8080"), crypto);
+    const updated = applySettingsUpdate(file, { autoUpdateCheckEnabled: false }, crypto);
+    expect(projectPublicSettings(updated.file).autoUpdateCheckEnabled).toBe(false);
+  });
+
+  it("absent toggle keeps the current value", () => {
+    const { file } = migrateSettingsFile(v1Settings("http://alice:secret@proxy.example:8080"), crypto);
+    const turnedOff = applySettingsUpdate(file, { autoUpdateCheckEnabled: false }, crypto);
+    const kept = applySettingsUpdate(turnedOff.file, { batchConcurrency: 3 }, crypto);
+    expect(projectPublicSettings(kept.file).autoUpdateCheckEnabled).toBe(false);
+  });
+});

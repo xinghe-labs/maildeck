@@ -257,7 +257,8 @@ describe("设置弹窗的信息分组", () => {
     batchConcurrency: 4,
     hotmailFallbackEnabled: true,
     autoRefreshEnabled: false,
-    autoRefreshIntervalMinutes: 10
+    autoRefreshIntervalMinutes: 10,
+    autoUpdateCheckEnabled: true
   };
 
   it("groups the fields and shows the running version", () => {
@@ -268,7 +269,7 @@ describe("设置弹窗的信息分组", () => {
       (node) => node.textContent
     );
 
-    expect(headings).toEqual(["邮件与缓存", "网络与认证", "自动刷新"]);
+    expect(headings).toEqual(["邮件与缓存", "网络与认证", "自动刷新", "应用更新"]);
     expect(element.querySelector(".settings-version")?.textContent).toMatch(/^MailDeck v\S+$/);
     expect(element.textContent).toContain("关闭窗口后刷新停止");
   });

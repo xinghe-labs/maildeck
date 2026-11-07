@@ -34,13 +34,17 @@ export const IPC_CHANNELS = {
   mailClearCache: "mail:clearCache",
   mailRefreshMany: "mail:refreshMany",
   authStartDeviceCode: "auth:startDeviceCode",
-  authCancelDeviceCode: "auth:cancelDeviceCode"
+  authCancelDeviceCode: "auth:cancelDeviceCode",
+  updateGetState: "update:getState",
+  updateCheck: "update:check",
+  updateInstall: "update:install"
 } as const;
 
 export const IPC_EVENT_CHANNELS = {
   accountsTestProgress: "accounts:testProgress",
   mailRefreshProgress: "mail:refreshProgress",
-  authDeviceCodeState: "auth:deviceCodeState"
+  authDeviceCodeState: "auth:deviceCodeState",
+  updateState: "update:state"
 } as const;
 
 export type IpcInvokeChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -324,6 +328,7 @@ export interface AppSettings {
   hotmailFallbackEnabled: boolean;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: number;
+  autoUpdateCheckEnabled: boolean;
 }
 
 const accountIdSchema = z.string().trim().min(1).max(128);
@@ -442,16 +447,70 @@ const deviceCodeStateEventSchema = z.discriminatedUnion("phase", [
   z.strictObject({ phase: z.literal("canceled") })
 ]);
 
+export type UpdatePhase =
+  | "idle"
+  | "checking"
+  | "available"
+  | "not-available"
+  | "downloading"
+  | "downloaded"
+  | "error"
+  | "unsupported";
+
+export type UpdateErrorCode = "UPDATE_NETWORK" | "UPDATE_CHECK_FAILED" | "UPDATE_DOWNLOAD_FAILED";
+
+/** 自动更新的完整状态快照：每次变化全量广播，渲染层不需要自己做局部合并。 */
+export interface UpdateStateEvent {
+  phase: UpdatePhase;
+  /** 新版本号（available/downloaded）或当前版本号（not-available）。 */
+  version?: string;
+  /** Releases 页地址，绿色版/出错时引导用户手动下载。 */
+  releaseUrl?: string;
+  percent?: number;
+  transferredBytes?: number;
+  totalBytes?: number;
+  bytesPerSecond?: number;
+  /** unsupported 时的原因：绿色版无法自更新；dev 下主进程压根不启动更新器。 */
+  reason?: "portable";
+  /** error 时的错误码与文案。 */
+  code?: UpdateErrorCode;
+  message?: string;
+}
+
+const updateStateEventSchema = z.strictObject({
+  phase: z.enum([
+    "idle",
+    "checking",
+    "available",
+    "not-available",
+    "downloading",
+    "downloaded",
+    "error",
+    "unsupported"
+  ]),
+  version: z.string().trim().min(1).max(64).optional(),
+  releaseUrl: z.string().trim().url().max(2_048).optional(),
+  percent: z.number().min(0).max(100).optional(),
+  transferredBytes: z.number().min(0).optional(),
+  totalBytes: z.number().min(0).optional(),
+  bytesPerSecond: z.number().min(0).optional(),
+  reason: z.literal("portable").optional(),
+  code: z.enum(["UPDATE_NETWORK", "UPDATE_CHECK_FAILED", "UPDATE_DOWNLOAD_FAILED"]).optional(),
+  message: z.string().min(1).max(APP_ERROR_MESSAGE_MAX_CHARS).optional()
+});
+
 export interface IpcEventPayloadMap {
   [IPC_EVENT_CHANNELS.accountsTestProgress]: TestProgressEvent;
   [IPC_EVENT_CHANNELS.mailRefreshProgress]: RefreshProgressEvent;
   [IPC_EVENT_CHANNELS.authDeviceCodeState]: DeviceCodeStateEvent;
+  [IPC_EVENT_CHANNELS.updateState]: UpdateStateEvent;
 }
 
 export const IPC_EVENT_SCHEMAS = {
   [IPC_EVENT_CHANNELS.accountsTestProgress]: testProgressEventSchema,
   [IPC_EVENT_CHANNELS.mailRefreshProgress]: refreshProgressEventSchema,
-  [IPC_EVENT_CHANNELS.authDeviceCodeState]: deviceCodeStateEventSchema
+  [IPC_EVENT_CHANNELS.authDeviceCodeState]: deviceCodeStateEventSchema,
+  [IPC_EVENT_CHANNELS.updateState]: updateStateEventSchema
 } as const;
 
 const accountInputSchema = z.strictObject({
@@ -513,7 +572,8 @@ export const appSettingsUpdateSchema = z.strictObject({
   batchConcurrency: z.number().int().min(1).max(12).optional(),
   hotmailFallbackEnabled: z.boolean().optional(),
   autoRefreshEnabled: z.boolean().optional(),
-  autoRefreshIntervalMinutes: z.number().int().min(1).max(120).optional()
+  autoRefreshIntervalMinutes: z.number().int().min(1).max(120).optional(),
+  autoUpdateCheckEnabled: z.boolean().optional()
 });
 
 export type AppSettingsUpdate = z.input<typeof appSettingsUpdateSchema>;
@@ -574,6 +634,9 @@ export const IPC_REQUEST_SCHEMAS = {
     .union([z.tuple([]), z.tuple([z.strictObject({ clientId: z.string().trim().max(256).optional() })])])
     .transform(([options]) => options ?? {}),
   authCancelDeviceCode: z.tuple([]),
+  updateGetState: noArgsSchema,
+  updateCheck: noArgsSchema,
+  updateInstall: noArgsSchema,
   refreshMany: z
     .union([z.tuple([accountBatchSchema]), z.tuple([accountBatchSchema, refreshJobKindSchema])])
     .transform(([accountIds, jobKind]) => ({ accountIds, jobKind: jobKind ?? "refresh" }))

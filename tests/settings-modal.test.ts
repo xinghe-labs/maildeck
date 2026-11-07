@@ -30,6 +30,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     proxySupported: true,
     batchConcurrency: 4,
     hotmailFallbackEnabled: true,
+    autoUpdateCheckEnabled: true,
     autoRefreshEnabled: false,
     autoRefreshIntervalMinutes: 10,
     ...overrides

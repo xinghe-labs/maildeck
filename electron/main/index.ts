@@ -7,10 +7,13 @@ import { formatErrorForLog } from "./error-utils.js";
 import { registerIpcHandlers } from "./ipc.js";
 import { guardExternalNavigation } from "./navigation-guard.js";
 import { closeProxyDispatchers } from "./proxy-agent.js";
+import { startAppUpdater } from "./app-updater.js";
+import { getSettings } from "./settings-store.js";
 import { SECURE_WEB_PREFERENCES } from "./window-security.js";
 import { configureSessionPermissions } from "./session-security.js";
 import { migrateLegacyUserDataDirectory, readUserDataOverride } from "./user-data-path.js";
 import { TOKEN_GUIDE_TEXT, TOKEN_GUIDE_TITLE } from "../shared/token-guide.js";
+
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -100,7 +103,17 @@ function createWindow() {
     }
   });
   const indexFilePath = path.join(__dirname, "../../dist/index.html");
-  guardExternalNavigation(window, isDev ? new URL(process.env.VITE_DEV_SERVER_URL!).origin : null, isDev ? null : indexFilePath);
+  // dev server URL 来自本地环境变量，一般不会错；但 new URL 对畸形输入直接抛，
+  // 不能让它把整个窗口创建炸掉——坏 URL 就当作没有外部导航白名单。
+  let devServerOrigin: string | null = null;
+  if (isDev) {
+    try {
+      devServerOrigin = new URL(process.env.VITE_DEV_SERVER_URL ?? "").origin;
+    } catch (error) {
+      console.error("Invalid VITE_DEV_SERVER_URL:", formatErrorForLog(error));
+    }
+  }
+  guardExternalNavigation(window, devServerOrigin, isDev ? null : indexFilePath);
 
   if (isDev) {
     void window.loadURL(process.env.VITE_DEV_SERVER_URL!);
@@ -196,7 +209,7 @@ function buildApplicationMenu() {
 
 if (app.hasSingleInstanceLock()) {
   // 未拿到单实例锁时上面的 app.quit() 已排队，这里不能再初始化数据库和窗口。
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     configureSessionPermissions(session.defaultSession);
     try {
       getDatabase();
@@ -216,6 +229,22 @@ if (app.hasSingleInstanceLock()) {
     registerIpcHandlers();
     buildApplicationMenu();
     createWindow();
+
+    // 更新器放在窗口创建之后：广播目标是 BrowserWindow 列表，且启动 8 秒后才
+    // 真正联网检查，不抸慢首屏。设置读取失败时按「开启自动检查」的保守默认不合适
+    // （用户明确关过就不该被打扰），所以读失败就直接不调度，只保留手动检查入口。
+    try {
+      const settings = await getSettings();
+      const updateController = startAppUpdater({
+        isDev,
+        env: process.env,
+        autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled
+      });
+      // 启动自动检查已并入 startAppUpdater（内部会真正调用 runner，之前的版本只切状态不发请求）。
+      void updateController;
+    } catch (error) {
+      console.error("Failed to start app updater", formatErrorForLog(error));
+    }
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

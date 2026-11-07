@@ -6,7 +6,8 @@ import { APP_VERSION } from "../app-version";
 import { validateNumberField } from "../form-validation";
 import type { FieldErrors } from "../form-validation";
 import { formatBytes } from "../ui-utils";
-import type { AppSettings, AppSettingsUpdate, MailCacheStats } from "../types";
+import { useAppUpdater } from "../use-app-updater";
+import type { AppSettings, AppSettingsUpdate, MailCacheStats, UpdateStateEvent } from "../types";
 import { ModalShell } from "./ModalShell";
 
 type SettingsField = "batchConcurrency" | "autoRefreshIntervalMinutes";
@@ -24,6 +25,7 @@ interface SettingsFormState {
   hotmailFallbackEnabled: boolean;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: string;
+  autoUpdateCheckEnabled: boolean;
 }
 
 function initialForm(settings: AppSettings): SettingsFormState {
@@ -37,7 +39,8 @@ function initialForm(settings: AppSettings): SettingsFormState {
     batchConcurrency: String(settings.batchConcurrency),
     hotmailFallbackEnabled: settings.hotmailFallbackEnabled,
     autoRefreshEnabled: settings.autoRefreshEnabled,
-    autoRefreshIntervalMinutes: String(settings.autoRefreshIntervalMinutes)
+    autoRefreshIntervalMinutes: String(settings.autoRefreshIntervalMinutes),
+    autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled
   };
 }
 
@@ -63,6 +66,7 @@ export function SettingsModal({
   const [cacheStats, setCacheStats] = useState<MailCacheStats | null>(null);
   const [clearingCache, setClearingCache] = useState(false);
   const [cacheMessage, setCacheMessage] = useState("");
+  const updater = useAppUpdater();
 
   // 缓存开关只控制“以后还缓不缓存”，已经落盘的数据得让用户看得见、能清掉（P6）。
   useEffect(() => {
@@ -161,7 +165,8 @@ export function SettingsModal({
       batchConcurrency: Number(form.batchConcurrency),
       hotmailFallbackEnabled: form.hotmailFallbackEnabled,
       autoRefreshEnabled: form.autoRefreshEnabled,
-      autoRefreshIntervalMinutes: Number(form.autoRefreshIntervalMinutes)
+      autoRefreshIntervalMinutes: Number(form.autoRefreshIntervalMinutes),
+      autoUpdateCheckEnabled: form.autoUpdateCheckEnabled
     };
 
     setLoading(true);
@@ -365,7 +370,96 @@ export function SettingsModal({
         <div className="error-box">当前代理协议不受支持，请改为 HTTP/HTTPS 或清空代理地址。</div>
       ) : null}
       {error ? <div className="error-box">{error}</div> : null}
+      <section className="settings-section">
+        <h3>应用更新</h3>
+        {updater.supported ? (
+          <UpdateStatusLine state={updater.state} busy={updater.busy} onCheck={() => void updater.check()} onInstall={() => void updater.install()} />
+        ) : (
+          <p className="field-hint">当前环境不支持应用内更新，请到 GitHub Releases 页下载新版本。</p>
+        )}
+        <div className="settings-grid">
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={form.autoUpdateCheckEnabled}
+              onChange={(event) => setForm({ ...form, autoUpdateCheckEnabled: event.target.checked })}
+            />
+            启动时自动检查更新
+          </label>
+        </div>
+      </section>
       <p className="settings-version">MailDeck v{APP_VERSION}</p>
     </ModalShell>
+  );
+}
+
+function updateStatusText(state: UpdateStateEvent): string {
+  switch (state.phase) {
+    case "idle":
+      return "未检查更新。";
+    case "checking":
+      return "正在检查更新…";
+    case "not-available":
+      return `已是最新版本（v${state.version}）。`;
+    case "available":
+      return `发现新版本 v${state.version}，正在下载…`;
+    case "downloading": {
+      const total = state.totalBytes ?? 0;
+      const transferred = state.transferredBytes ?? 0;
+      const progress = total ? `${formatBytes(transferred)} / ${formatBytes(total)}` : "";
+      return `正在下载 v${state.version}：${state.percent}%${progress ? `（${progress}）` : ""}`;
+    }
+    case "downloaded":
+      return `新版本 v${state.version} 已就绪，重启应用即完成安装。`;
+    case "error":
+      return `更新失败：${state.message}`;
+    case "unsupported":
+      return "绿色版不支持应用内更新，请到发布页手动下载新版本。";
+  }
+}
+
+function UpdateStatusLine({
+  state,
+  busy,
+  onCheck,
+  onInstall
+}: {
+  state: UpdateStateEvent;
+  busy: boolean;
+  onCheck: () => void;
+  onInstall: () => void;
+}) {
+  const canCheck =
+    !busy && state.phase !== "downloading" && state.phase !== "downloaded" && state.phase !== "checking";
+  return (
+    <div className="settings-update-row">
+      <p className="field-hint" role="status">
+        {updateStatusText(state)}
+      </p>
+      <div className="settings-update-actions">
+        {canCheck ? (
+          <button type="button" className="secondary-button dark-button" onClick={onCheck}>
+            检查更新
+          </button>
+        ) : null}
+        {state.phase === "downloaded" ? (
+          <button type="button" className="primary-button dark-primary" onClick={onInstall} disabled={busy}>
+            {busy ? <Loader2 size={16} className="spin" /> : null}
+            重启并更新
+          </button>
+        ) : null}
+        {state.phase === "unsupported" || state.phase === "error" ? (
+          <button
+            type="button"
+            className="secondary-button dark-button"
+            onClick={() => {
+              void getDesktopApi()?.app.openExternal(state.releaseUrl ?? "https://github.com/xinghe-labs/maildeck/releases/latest");
+            }}
+          >
+            打开发布页
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }

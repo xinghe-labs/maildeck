@@ -19,6 +19,7 @@ interface StoredAppSettings {
   hotmailFallbackEnabled: boolean;
   autoRefreshEnabled: boolean;
   autoRefreshIntervalMinutes: number;
+  autoUpdateCheckEnabled: boolean;
 }
 
 export interface SettingsFileV2 {
@@ -43,7 +44,8 @@ const DEFAULT_SETTINGS: StoredAppSettings = {
   batchConcurrency: 4,
   hotmailFallbackEnabled: true,
   autoRefreshEnabled: false,
-  autoRefreshIntervalMinutes: 10
+  autoRefreshIntervalMinutes: 10,
+  autoUpdateCheckEnabled: true
 };
 
 const STORED_PROXY_PROTOCOLS = new Set<StoredProxyProtocol>([
@@ -83,7 +85,9 @@ function normalizeStoredSettings(value: unknown): StoredAppSettings {
       DEFAULT_SETTINGS.autoRefreshIntervalMinutes,
       1,
       120
-    )
+    ),
+    // 关闭自动检查只影响启动时的自动行为，设置页里的手动检查始终可用。
+    autoUpdateCheckEnabled: input.autoUpdateCheckEnabled !== false
   };
 }
 

@@ -30,7 +30,8 @@ import type {
   TestManyResult,
   TestProgressEvent,
   DeviceCodeSessionView,
-  DeviceCodeStateEvent
+  DeviceCodeStateEvent,
+  UpdateStateEvent
 } from "../shared/ipc-contracts.js";
 
 const APP_ERROR_CODES = new Set([
@@ -160,6 +161,14 @@ const api = {
     cancelDeviceCode: () => invoke<{ canceled: boolean }>("auth:cancelDeviceCode"),
     onDeviceCodeState: (callback: (event: DeviceCodeStateEvent) => void) => {
       return onEvent("auth:deviceCodeState", callback);
+    }
+  },
+  update: {
+    getState: () => invoke<UpdateStateEvent>("update:getState"),
+    check: () => invoke<UpdateStateEvent>("update:check"),
+    install: () => invoke<{ started: boolean; state: UpdateStateEvent }>("update:install"),
+    onState: (callback: (event: UpdateStateEvent) => void) => {
+      return onEvent("update:state", callback);
     }
   }
 };
