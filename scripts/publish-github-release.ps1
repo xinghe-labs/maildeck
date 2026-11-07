@@ -234,6 +234,7 @@ $uploadArgs = @(
   $Tag,
   $Portable,
   $Installer,
+  $Checksums,
   "--repo",
   $Repo
 )
