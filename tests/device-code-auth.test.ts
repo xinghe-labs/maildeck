@@ -31,7 +31,8 @@ const session: DeviceCodeSession = {
   intervalSec: 5,
   message: "请打开页面并输入代码",
   clientId: DEFAULT_DEVICE_CODE_CLIENT_ID,
-  baseUrl: "https://login.microsoftonline.com"
+  baseUrl: "https://login.microsoftonline.com",
+  tenant: "common"
 };
 
 describe("resolveDeviceCodeClientId", () => {
@@ -107,7 +108,8 @@ describe("startDeviceCode", () => {
     expect(tokens.refreshToken).toBe("rt");
     expect(calls).toEqual([
       "https://login.chinacloudapi.cn/common/oauth2/v2.0/devicecode",
-      "https://login.chinacloudapi.cn/oauth2/v2.0/token"
+      // token 轮询必须带 tenant 段：漏掉会 404（真机踩过：start 能拿到短码，轮询永远 404）
+      "https://login.chinacloudapi.cn/common/oauth2/v2.0/token"
     ]);
   });
 

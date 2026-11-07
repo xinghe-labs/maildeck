@@ -44,6 +44,8 @@ export interface DeviceCodeSession {
   readonly message: string;
   readonly clientId: string;
   readonly baseUrl: string;
+  /** 与 devicecode 端点同一个租户段；token 轮询必须带上，否则 404。 */
+  readonly tenant: string;
 }
 
 export interface DeviceCodeTokens {
@@ -144,6 +146,7 @@ export async function startDeviceCode(options: {
   }
 
   const verificationUri = readString(payload, "verification_uri") ?? "https://microsoft.com/devicelogin";
+  const tenant = tenantSegment(options.tenant);
   return {
     deviceCode,
     userCode,
@@ -152,7 +155,8 @@ export async function startDeviceCode(options: {
     intervalSec: readNumber(payload, "interval") ?? 5,
     message: readString(payload, "message") ?? `请在浏览器打开 ${verificationUri} 并输入代码 ${userCode}`,
     clientId,
-    baseUrl
+    baseUrl,
+    tenant
   };
 }
 
@@ -167,7 +171,7 @@ export async function pollDeviceCode(options: {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
-  const url = `${options.session.baseUrl}/oauth2/v2.0/token`;
+  const url = `${options.session.baseUrl}/${options.session.tenant}/oauth2/v2.0/token`;
   const deadline = now() + options.session.expiresInSec * 1000;
   let intervalSec = Math.max(1, options.session.intervalSec);
 
