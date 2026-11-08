@@ -762,6 +762,8 @@ export async function updateAccountStatus(
     expectedCredentialGeneration?: number;
     assertCurrent?: () => void;
     afterCommit?: () => void;
+    /** 失败路径传 false：「上次测试」只记成功，网络故障不把旧时间顶掉（报告 v3 问题 4）。 */
+    bumpLastCheckedAt?: boolean;
   } = {}
 ): Promise<AccountView> {
   await migrateLegacyAccountsOnce();
@@ -784,7 +786,7 @@ export async function updateAccountStatus(
       ...account,
       status,
       lastError,
-      lastCheckedAt: timestamp,
+      lastCheckedAt: options.bumpLastCheckedAt === false ? account.lastCheckedAt : timestamp,
       updatedAt: timestamp,
       encryptedRefreshToken: refreshToken ? encryptSecret(refreshToken) : account.encryptedRefreshToken
     };
@@ -819,7 +821,7 @@ export async function updateAccountRefreshState(
     options.assertCurrent?.();
 
     const timestamp = nowIso();
-    const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, true);
+    const refreshTimestamps = resolveRefreshTimestamps(account, timestamp, true);
     const next: AccountRecord = {
       ...account,
       status: values.status,
@@ -885,7 +887,7 @@ export async function updateAccountRefreshFailure(
     }
     options.assertCurrent?.();
     const timestamp = nowIso();
-    const refreshTimestamps = resolveRefreshTimestamps(account.lastRefreshedAt, timestamp, false);
+    const refreshTimestamps = resolveRefreshTimestamps(account, timestamp, false);
     const next: AccountRecord = {
       ...account,
       status: values.status,

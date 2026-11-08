@@ -301,7 +301,11 @@ class DefaultMailboxAccess implements MailboxAccess {
           resolveRefreshFailureStatus(currentStatus, payload.code),
           payload.message,
           undefined,
-          { assertCurrent: guard?.assertCurrent ?? (() => signal?.throwIfAborted()) }
+          {
+            assertCurrent: guard?.assertCurrent ?? (() => signal?.throwIfAborted()),
+            // 测试失败不是一次有效测试：保留旧「上次测试」，避免时间新而结果旧的自相矛盾。
+            bumpLastCheckedAt: false
+          }
         );
       } catch (statusError) {
         signal?.throwIfAborted();

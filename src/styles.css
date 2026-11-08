@@ -2042,6 +2042,33 @@ summary:focus-visible,
   font-size: 12px;
 }
 
+/* 正文加载失败（报告 v3 问题 1）：无内容时占满面板给重试；有旧内容时在头部下方给一条内联提示。 */
+.panel-empty.is-detail-error {
+  color: var(--danger, #b3564d);
+}
+
+.panel-empty.is-detail-error .secondary-button {
+  margin-top: 10px;
+}
+
+.reader-detail-error.is-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--warn-bg);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.reader-detail-error.is-inline span {
+  flex: 1;
+  min-width: 0;
+}
+
 .link-button {
   padding: 0;
   border: 0;

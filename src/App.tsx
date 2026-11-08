@@ -1144,6 +1144,8 @@ export default function App() {
               selectedMessage={selectedMessage}
               messageDetail={messageDetail}
               loadingDetail={loadingDetail}
+              detailError={mailbox.state.detailError}
+              onRetryDetail={() => void mailbox.retryDetail()}
             />
           </div>
         </main>

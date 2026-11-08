@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Loader2, Mail, Paperclip } from "lucide-react";
+import { AlertTriangle, Download, Loader2, Mail, Paperclip } from "lucide-react";
 import type { MailAttachmentListResult, MailMessageDetail, MailMessageSummary } from "../types";
 import { buildMailHtmlDocument, isMailHtmlBody, sanitizeMailHtmlDetailed } from "../mail-content-security";
 import { errorMessage } from "../app-error";
@@ -24,13 +24,18 @@ export const MailReader = memo(function MailReader({
   folderId,
   selectedMessage,
   messageDetail,
-  loadingDetail
+  loadingDetail,
+  detailError,
+  onRetryDetail
 }: {
   accountId?: string | null;
   folderId?: string | null;
   selectedMessage: MailMessageSummary | null;
   messageDetail: MailMessageDetail | null;
   loadingDetail: boolean;
+  /** 正文加载失败原因（列表错误走顶部横幅，正文区单独展示以便重试）。 */
+  detailError?: string;
+  onRetryDetail?: () => void;
 }) {
   // 防白闪：切换邮件时保留上一次完整渲染的内容（变暗 + 顶部加载指示），
   // 仅在没有可展示的旧内容时才退回空态 spinner。
@@ -46,7 +51,12 @@ export const MailReader = memo(function MailReader({
     }
   }, [hasCompleteRender, selectedMessage, messageDetail]);
 
-  const staleRender = loadingDetail && lastRendered ? lastRendered : null;
+  // 防白闪只限「同一封邮件的后台刷新」：换邮件/换账号时旧内容必须退场，
+  // 否则失败/慢网时会把上一封（甚至别的账号）的邮件一直挂着（报告 v3 问题 1）。
+  const staleRender =
+    loadingDetail && lastRendered && selectedMessage && lastRendered.summary.id === selectedMessage.id
+      ? lastRendered
+      : null;
   const shownDetail = messageDetail ?? staleRender?.detail ?? null;
   // 附件与图片策略只认「已经加载完的那一封」：陈旧渲染期间不要拿上一封的附件冒充。
   const freshDetail =
@@ -187,10 +197,20 @@ export const MailReader = memo(function MailReader({
   return (
     <article className={`reader-panel ${staleRender ? "is-stale" : ""}`}>
       {!loadingDetail && !shownDetail ? (
-        <div className="panel-empty">
-          <Mail size={30} />
-          <p>选择一封邮件查看正文</p>
-        </div>
+        detailError && selectedMessage ? (
+          <div className="panel-empty is-detail-error">
+            <AlertTriangle size={26} />
+            <p>{detailError}</p>
+            <button type="button" className="secondary-button" onClick={onRetryDetail}>
+              重试
+            </button>
+          </div>
+        ) : (
+          <div className="panel-empty">
+            <Mail size={30} />
+            <p>选择一封邮件查看正文</p>
+          </div>
+        )
       ) : null}
 
       {loadingDetail && !shownDetail ? (
@@ -228,6 +248,16 @@ export const MailReader = memo(function MailReader({
               ) : null}
             </div>
           </header>
+
+          {!loadingDetail && detailError ? (
+            <div className="reader-detail-error is-inline">
+              <AlertTriangle size={14} />
+              <span>正文刷新失败：{detailError}</span>
+              <button type="button" className="link-button" onClick={onRetryDetail}>
+                重试
+              </button>
+            </div>
+          ) : null}
 
           <div className="reader-body">
             {sanitized && sanitized.blockedImages > 0 && !showRemoteImages ? (

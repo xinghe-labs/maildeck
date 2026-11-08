@@ -80,6 +80,8 @@ purifier.addHook("uponSanitizeAttribute", (node, event) => {
         node.setAttribute(BLOCKED_IMAGE_ATTR, "1");
         event.attrValue = TRANSPARENT_PIXEL;
         blockedImageCount += 1;
+        // 尺寸剥离放在 afterSanitizeAttributes：这里铰掉 width/height 会被后续的 style
+        // 处理重新写回（报告 v3 问题 3）。
       }
     } else {
       event.keepAttr = false;
@@ -94,6 +96,14 @@ purifier.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName.toLowerCase() === "a" && node.hasAttribute("href")) {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener noreferrer");
+  }
+  // 被拦外部图片：把尺寸声明全部掊掉（属性 + 内联样式），
+  // 否则透明占位图会被撑成大片空白，看起来像页面坏了（报告 v3 问题 3）。
+  // 交给注入样式收折成小灰条。
+  if (node.tagName?.toLowerCase() === "img" && node.hasAttribute(BLOCKED_IMAGE_ATTR)) {
+    node.removeAttribute("width");
+    node.removeAttribute("height");
+    node.removeAttribute("style");
   }
 });
 
@@ -144,5 +154,5 @@ export function sanitizeMailHtmlDetailed(
 
 export function buildMailHtmlDocument(sanitizedHtml: string, options: MailHtmlSanitizeOptions = {}) {
   const csp = options.allowRemoteImages ? MAIL_DOCUMENT_CSP_WITH_REMOTE_IMAGES : MAIL_DOCUMENT_CSP;
-  return `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;padding:0;background:#fff;color:#17262a;font:14px/1.68 "Segoe UI",sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}</style></head><body>${sanitizedHtml}</body></html>`;
+  return `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;padding:0;background:#fff;color:#17262a;font:14px/1.68 "Segoe UI",sans-serif;overflow-wrap:anywhere}img{max-width:100%;height:auto}pre{white-space:pre-wrap}img[data-blocked-image]{width:auto;min-width:36px;max-height:22px;opacity:.35;background:#e8ecee;border-radius:3px}</style></head><body>${sanitizedHtml}</body></html>`;
 }

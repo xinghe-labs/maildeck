@@ -41,6 +41,8 @@ export interface MailboxSessionState {
   /** P1-2：当前列表是否来自过期缓存兑底（网络/凭据失败时）。 */
   readonly listStale: boolean;
   readonly listStaleReason: string;
+  /** 正文加载失败原因（列表错误走 listError，两者分开以便正文区单独展示重试）。 */
+  readonly detailError: string;
   readonly error: string;
 }
 
@@ -62,6 +64,8 @@ export interface MailboxSession {
   ) => Promise<boolean>;
   readonly loadMore: () => Promise<void>;
   readonly selectMessage: (messageId: string | null) => Promise<void>;
+  /** 正文加载失败后重试当前选中邮件（报告 v3 问题 1：失败要有恢复路径）。 */
+  readonly retryDetail: () => Promise<void>;
   readonly clearError: () => void;
   readonly dispose: () => void;
 }
@@ -92,11 +96,20 @@ export const EMPTY_MAILBOX_SESSION_STATE: MailboxSessionState = Object.freeze({
   listError: "",
   listStale: false,
   listStaleReason: "",
+  detailError: "",
   error: ""
 });
 
 /** 列表兑底提示的默认文案（result.staleReason 缺省时用）。 */
 const STALE_LIST_REASON = "暂时连不上邮箱服务器，显示的是上次同步的邮件";
+
+/**
+ * 正文加载的渲染层看门狗（报告 v3 问题 2）。
+ * 主进程出站请求已有 30s 超时，这里是防御纵深：协调器/IPC 万一黑住，
+ * 正文区也不能永远转圈——超时后走失败路径（可重试），
+ * 迟到的真实响应因 generation 校验不会污染已重试的状态。
+ */
+const DETAIL_LOAD_TIMEOUT_MS = 45_000;
 
 function mergeMessages(
   current: readonly MailMessageSummary[],
@@ -457,6 +470,17 @@ class DefaultMailboxSession implements MailboxSession {
     }
   };
 
+  /** 正文加载失败后的重试入口：对当前选中邮件重新发起加载（报告 v3 问题 1）。 */
+  readonly retryDetail = async (): Promise<void> => {
+    const accountId = this.state.accountId;
+    const messageId = this.state.selectedMessageId;
+    if (this.disposed || !accountId || !messageId) {
+      return;
+    }
+    this.detailGeneration += 1; // 使在途请求作废，避免旧响应与重试竞争
+    await this.loadDetail(accountId, messageId);
+  };
+
   readonly dispose = () => {
     if (this.disposed) {
       return;
@@ -486,11 +510,13 @@ class DefaultMailboxSession implements MailboxSession {
       ...this.errorPatch("detail", "")
     });
     try {
-      const detail = await this.adapter.getMessage({
-        accountId,
-        messageId,
-        ...(folderId ? { folderId } : {})
-      });
+      const detail = await this.withDetailWatchdog(
+        this.adapter.getMessage({
+          accountId,
+          messageId,
+          ...(folderId ? { folderId } : {})
+        })
+      );
       if (this.isCurrentDetail(generation, accountId, messageId, folderId)) {
         this.rememberDetail(accountId, messageId, detail);
         this.updateState({
@@ -507,6 +533,27 @@ class DefaultMailboxSession implements MailboxSession {
         });
       }
     }
+  }
+
+  /** 正文请求看门狗：超时按失败处理（详见 DETAIL_LOAD_TIMEOUT_MS 注释）。 */
+  private withDetailWatchdog(promise: Promise<MailMessageDetail>): Promise<MailMessageDetail> {
+    return new Promise<MailMessageDetail>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`读取正文超时（${Math.round(DETAIL_LOAD_TIMEOUT_MS / 1000)} 秒无响应），请重试`)),
+        DETAIL_LOAD_TIMEOUT_MS
+      );
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          // prefer-promise-reject-errors：拒绝值必须是 Error（IPC 错误可能只是字符串）
+          reject(error instanceof Error ? error : new Error(errorMessage(error)));
+        }
+      );
+    });
   }
 
   private isCurrentList(generation: number, accountId: string, query: string, folderId: string | null) {
@@ -554,7 +601,7 @@ class DefaultMailboxSession implements MailboxSession {
     } else if (source === "detail") {
       this.detailError = error;
     }
-    return { listError: this.listError, error: this.listError || this.detailError };
+    return { listError: this.listError, detailError: this.detailError, error: this.listError || this.detailError };
   }
 
   private replaceState(state: MailboxSessionState) {

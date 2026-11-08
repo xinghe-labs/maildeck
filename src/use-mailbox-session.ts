@@ -42,6 +42,7 @@ export function useMailboxSession(adapter: MailboxSessionAdapter | null) {
     reloadIfCurrentAccount: session?.reloadIfCurrentAccount ?? (async () => false),
     loadMore: session?.loadMore ?? (async () => undefined),
     selectMessage: session?.selectMessage ?? (async () => undefined),
+    retryDetail: session?.retryDetail ?? (async () => undefined),
     clearError: session?.clearError ?? (() => undefined)
   }), [session, state]);
 }
