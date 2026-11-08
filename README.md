@@ -31,7 +31,7 @@ Windows 安装包与绿色版见 [Releases](https://github.com/xinghe-labs/maild
 ```powershell
 # 把数据放到 exe 同级的 data 目录，U 盘携带时整个目录一起拷走
 $env:MAILDECK_USER_DATA_DIR = "$PSScriptRoot\data"
-.\MailDeck-0.3.0-portable.exe
+.\MailDeck-0.3.1-portable.exe
 ```
 
 ### 校验下载完整性
@@ -40,16 +40,16 @@ $env:MAILDECK_USER_DATA_DIR = "$PSScriptRoot\data"
 
 ```cmd
 :: 1. 算出下载文件的哈希
-certutil -hashfile MailDeck-Setup-0.3.0.exe SHA256
+certutil -hashfile MailDeck-Setup-0.3.1.exe SHA256
 
-:: 2. 打开 SHA256SUMS-0.3.0.txt，比对应那一行
-type SHA256SUMS-0.3.0.txt
+:: 2. 打开 SHA256SUMS-0.3.1.txt，比对应那一行
+type SHA256SUMS-0.3.1.txt
 ```
 
 两串 64 位十六进制完全一致才说明文件没有被替换或损坏；不一致就不要运行。想一次校验全部产物（PowerShell）：
 
 ```powershell
-Get-Content .\SHA256SUMS-0.3.0.txt | ForEach-Object {
+Get-Content .\SHA256SUMS-0.3.1.txt | ForEach-Object {
   $expected, $name = $_ -split '\s+', 2
   $name = $name.Trim().TrimStart('*')
   $actual = ((certutil -hashfile $name SHA256)[1] -replace '\s', '')
@@ -85,6 +85,8 @@ Get-Content .\SHA256SUMS-0.3.0.txt | ForEach-Object {
 - 支持在设置中调整批量任务并发数
 - 批量测试和批量刷新支持取消
 - 批量刷新失败后可单独重试失败账号
+- 支持关闭窗口最小化到系统托盘、开机自启与新邮件桌面通知（Windows）
+- 定时刷新可配置刷新范围，账号量大时不必每次全量扫描
 - 支持关闭邮件列表/正文缓存
 - 支持 HTTP/HTTPS 代理配置；SOCKS 暂不启用，以避免部分邮件传输绕过代理
 - 本地加密保存 refresh token
@@ -92,16 +94,16 @@ Get-Content .\SHA256SUMS-0.3.0.txt | ForEach-Object {
 
 ## 截图
 
-| 读信与附件 | 导入账号 |
+| 读信与图片拦截 | 导入账号 |
 | --- | --- |
-| ![读信与附件](docs/screenshots/02-attachments.png) | ![导入账号](docs/screenshots/03-import.png) |
+| ![读信与图片拦截](docs/screenshots/02-attachments.png) | ![导入账号](docs/screenshots/03-import.png) |
 
 ![设置](docs/screenshots/04-settings.png)
 
-- **读信**：正文按内容高度自适应（只留一条滚动条），外部图片默认拦截并可一键显示；附件可逐个「保存到…」，也可直接跳「在浏览器中打开」。
+- **读信**：正文按内容高度自适应（只留一条滚动条），外部图片默认拦截并可一键显示；附件可逐个「保存到…」。
 - **导入**：支持单账号表单与批量粘贴/文件导入，导入前预检有效行、重复行、token 类型；重复导入会要求确认覆盖。
-- **设置**：缓存开关与占用、批量并发、HTTP/HTTPS 代理、内置 Hotmail 兜底、定时刷新。
-- **应用内更新**（安装版）：启动 8 秒后自动检查 GitHub Releases，发现新版本后台下载并提示「重启并更新」；也可在设置里手动检查。绿色版不支持自更新，会引导到发布页手动下载。
+- **设置**：缓存开关与占用、批量并发、HTTP/HTTPS 代理、内置 Hotmail 兜底、定时刷新与刷新范围、托盘与开机自启、应用内更新。
+- **应用内更新**（安装版）：启动后自动检查 GitHub Releases（检查失败会快速给出结果并支持手动重试，不会一直卡在检查中），发现新版本后台下载并提示「重启并更新」；也可在设置里手动检查。绿色版不支持自更新，会引导到发布页手动下载。
 
 ## 开发运行
 
@@ -152,7 +154,7 @@ CI 还会运行 `npm audit --omit=dev`，确保随应用发布的依赖没有已
 | 邮件协议 | Microsoft Graph（`undici`）、IMAP（`imapflow`）、`mailparser` / `@zone-eu/mailsplit` 解析 MIME |
 | 安全 | `safeStorage` 加密 refresh_token、`dompurify` 清洗邮件 HTML、CSP + 外部图片拦截 |
 | 存储 | 本机 SQLite（WAL），无需单独安装数据库 |
-| 测试 | Vitest（jsdom 组件测试 + 主进程单元测试），84 个测试文件 / 509 个用例 |
+| 测试 | Vitest（jsdom 组件测试 + 主进程单元测试），88 个测试文件 / 579 个用例 |
 
 ## 项目结构
 
@@ -164,7 +166,7 @@ electron/
 src/
   components/ 侧栏、邮件列表、阅读器、导入/设置弹窗、错误横幅等
   *.ts        会话状态机、分页、HTML 清洗、表单校验、列宽拖拽、已读痕迹
-tests/        84 个 Vitest 用例文件（每个用户可见行为都有对应断言）
+tests/        88 个 Vitest 用例文件（每个用户可见行为都有对应断言）
 scripts/      图标生成、Windows 打包与发布脚本
 docs/         开发计划与截图
 ```
@@ -175,7 +177,7 @@ docs/         开发计划与截图
 
 `refresh_token` 通过 Electron `safeStorage`（Windows DPAPI）加密后落盘；数据目录被拷贝到另一台机器或换了 Windows 用户后无法解密，此时应用会提示「凭据无法解密，请编辑账号重新填写 refresh_token」。
 
-**备份/换机建议整个目录一起拷**（P2-4）：`%APPDATA%\maildeck`。`refresh_token` 用 Windows DPAPI 加密（Electron safeStorage），绑定「当前 Windows 用户」——同一台机器同一用户下只拷 `maildeck.db` 也能解密；但换机器或换 Windows 用户后一律解不开，需要逐个账号重新填 `refresh_token`。整个目录拷贝可保留邮件缓存与设置。
+**备份/换机建议整个目录一起拷**：`%APPDATA%\maildeck`。`refresh_token` 用 Windows DPAPI 加密（Electron safeStorage），绑定「当前 Windows 用户」——同一台机器同一用户下只拷 `maildeck.db` 也能解密；但换机器或换 Windows 用户后一律解不开，需要逐个账号重新填 `refresh_token`。整个目录拷贝可保留邮件缓存与设置。
 
 邮件摘要和已打开正文默认缓存 5 分钟。需要立即读取服务器最新邮件时，可使用邮件列表右上角的强制刷新按钮。即使缓存过期或凭据暂时解不开，列表也会先展示上次同步的内容并标注「本地缓存模式」，网络恢复后自动恢复正常读取。
 
@@ -188,7 +190,7 @@ docs/         开发计划与截图
 - **登录用的是公共客户端**：设备代码登录走微软的公开 client_id（`Microsoft Graph PowerShell`），不能自定义权限或应用名；要自己的应用注册请用「粘贴 refresh_token」路径。
 - **主权云需要手动指端点**：世纪互联/其它云需设 `MAILDECK_DEVICE_CODE_BASE`。
 - **SOCKS 代理未启用**：只支持 HTTP/HTTPS 代理。
-- **附件只在 Graph 路径下可下载**：走 IMAP 兜底的账号，应用内看不到附件，需用「网页版」入口查看。
+- **附件只在 Graph 路径下可下载**：走 IMAP 兜底的账号，应用内看不到附件，需登录 Outlook 网页版查看。
 - **大账号首次刷新较慢**：单账号首次拉取受微软接口限制，8 秒左右属正常；列表会显示已等待秒数，30 秒超时并给出失败原因。
 - **产物未签名**：没有 Authenticode 证书，SmartScreen 会提示。
 
