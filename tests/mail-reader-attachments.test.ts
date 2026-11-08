@@ -88,7 +88,6 @@ afterEach(() => {
 
 async function render(props: {
   messageDetail: MailMessageDetail | null;
-  accountEmail?: string | null;
   accountId?: string | null;
   folderId?: string | null;
 }) {
@@ -102,7 +101,6 @@ async function render(props: {
         loadingDetail: false,
         accountId: "account-1",
         folderId: "INBOX",
-        accountEmail: "someone@outlook.com",
         ...props
       })
     );
@@ -184,40 +182,29 @@ describe("MailReader 附件与网页版入口", () => {
     expect(container.querySelector(".reader-attachments")).toBeNull();
   });
 
-  it("webLink 是 Outlook 地址时给「在浏览器中打开」", async () => {
+  it("附件不支持时的提示不再引导网页版按钮（入口已移除）", async () => {
     installApi();
     await render({
       messageDetail: detail({ hasAttachments: false, webLink: "https://outlook.office365.com/owa/?ItemID=x" })
     });
 
-    const button = container.querySelector<HTMLButtonElement>(".reader-open-external");
-    expect(button?.textContent).toContain("在浏览器中打开");
-    await act(async () => {
-      button?.click();
-      await Promise.resolve();
-    });
-    expect(openExternal).toHaveBeenCalledWith("https://outlook.office365.com/owa/?ItemID=x");
+    expect(container.querySelector(".reader-open-external")).toBeNull();
+    expect(
+      container.querySelector(".reader-attachment-hint")?.textContent ?? ""
+    ).not.toContain("在浏览器中打开");
   });
 
-  it("没有 webLink 时退回网页版收件箱，恶意地址则不给入口", async () => {
+  it("网页版入口整体移除：有无 webLink 都不再渲染按钮", async () => {
     installApi();
     await render({ messageDetail: detail({ hasAttachments: false }) });
-
-    const button = container.querySelector<HTMLButtonElement>(".reader-open-external");
-    expect(button?.textContent).toContain("网页版");
-    await act(async () => {
-      button?.click();
-      await Promise.resolve();
-    });
-    expect(openExternal).toHaveBeenCalledWith(expect.stringContaining("outlook.live.com"));
+    expect(container.querySelector(".reader-open-external")).toBeNull();
 
     await act(async () => root.unmount());
     container.remove();
 
     installApi();
     await render({
-      messageDetail: detail({ hasAttachments: false, webLink: "https://evil.example/phish" }),
-      accountEmail: null
+      messageDetail: detail({ hasAttachments: false, webLink: "https://outlook.office365.com/owa/?ItemID=x" })
     });
     expect(container.querySelector(".reader-open-external")).toBeNull();
   });

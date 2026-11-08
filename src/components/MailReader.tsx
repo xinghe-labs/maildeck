@@ -1,9 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, ExternalLink, Loader2, Mail, Paperclip } from "lucide-react";
+import { Download, Loader2, Mail, Paperclip } from "lucide-react";
 import type { MailAttachmentListResult, MailMessageDetail, MailMessageSummary } from "../types";
 import { buildMailHtmlDocument, isMailHtmlBody, sanitizeMailHtmlDetailed } from "../mail-content-security";
 import { errorMessage } from "../app-error";
-import { resolveWebMailEntry } from "../../electron/shared/web-mail-url";
 import { getDesktopApi } from "../desktop-api";
 import { addressList, formatDate } from "../ui-utils";
 
@@ -23,15 +22,12 @@ function formatBytes(size: number) {
 export const MailReader = memo(function MailReader({
   accountId,
   folderId,
-  accountEmail,
   selectedMessage,
   messageDetail,
   loadingDetail
 }: {
   accountId?: string | null;
   folderId?: string | null;
-  /** 当前账号邮箱：没有 webLink 时用它决定网页版入口指向 live 还是 office365。 */
-  accountEmail?: string | null;
   selectedMessage: MailMessageSummary | null;
   messageDetail: MailMessageDetail | null;
   loadingDetail: boolean;
@@ -108,10 +104,8 @@ export const MailReader = memo(function MailReader({
       window.clearTimeout(timer);
     };
   }, [isHtml, measureMailFrame, shownDetail?.id, showRemoteImages, mailDocument]);
-  // webLink 来自服务器；只把已知的 Outlook 网页版地址交给 window.open。
-  // IMAP/Hotmail 兜底取回的邮件没有 webLink，这时退一步打开网页版收件箱。
-  const webLink = shownDetail?.webLink ?? null;
-  const webMail = useMemo(() => resolveWebMailEntry(webLink, accountEmail), [webLink, accountEmail]);
+  // 「在浏览器中打开」按钮已移除（OWA 需要重新登录，体验差且用户基本不用），
+  // webLink / webMail 相关逻辑一并下线。
 
   const [attachments, setAttachments] = useState<MailAttachmentListResult | null>(null);
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
@@ -167,15 +161,6 @@ export const MailReader = memo(function MailReader({
     };
   }, [accountId, folderId, freshHasAttachments, freshMessageId]);
 
-  async function openInBrowser(url: string) {
-    setSaveNotice(null);
-    try {
-      await getDesktopApi().app.openExternal(url);
-    } catch (error) {
-      setSaveNotice({ kind: "error", text: errorMessage(error) });
-    }
-  }
-
   async function saveAttachment(attachmentId: string) {
     if (!accountId || !freshMessageId) {
       return;
@@ -220,17 +205,6 @@ export const MailReader = memo(function MailReader({
           <header className="reader-header">
             <div className="reader-title-row">
               <h2>{shownDetail.subject}</h2>
-              {webMail ? (
-                <button
-                  type="button"
-                  className="secondary-button reader-open-external"
-                  title={webMail.title}
-                  onClick={() => void openInBrowser(webMail.url)}
-                >
-                  <ExternalLink size={13} />
-                  {webMail.label}
-                </button>
-              ) : null}
             </div>
             {staleRender ? (
               <span className="reader-loading-chip">
@@ -289,8 +263,7 @@ export const MailReader = memo(function MailReader({
 
                 {attachments && !attachments.supported ? (
                   <p className="reader-attachment-hint">
-                    这个账号的正文不走 Graph，应用内看不到附件。
-                    {webMail ? `可以用上方「${webMail.label}」查看。` : ""}
+                    这个账号的正文不走 Graph，应用内看不到附件；需要时可在网页版邮箱里查看。
                   </p>
                 ) : null}
 

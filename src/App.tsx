@@ -1141,7 +1141,6 @@ export default function App() {
             <MailReader
               accountId={selectedAccountId}
               folderId={selectedFolderId}
-              accountEmail={selectedAccount?.email}
               selectedMessage={selectedMessage}
               messageDetail={messageDetail}
               loadingDetail={loadingDetail}
