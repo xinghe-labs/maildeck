@@ -280,11 +280,14 @@ describe("startAppUpdater", () => {
         env: {},
         autoUpdateCheckEnabled: true,
         runner,
-        startupCheckDelayMs: 1000
+        startupCheckDelayMs: 1000,
+        currentVersion: "0.3.1"
       });
 
       await vi.advanceTimersByTimeAsync(1000 + 100);
       expect(controller.getState().phase).toBe("not-available");
+      // 兑底必须带上当前版本号，否则 UI 渲染成「已是最新版本（v）。」
+      expect(controller.getState().version).toBe("0.3.1");
     } finally {
       vi.useRealTimers();
     }

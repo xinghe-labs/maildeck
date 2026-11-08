@@ -187,7 +187,8 @@ if (app.hasSingleInstanceLock()) {
       const updateController = startAppUpdater({
         isDev,
         env: process.env,
-        autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled
+        autoUpdateCheckEnabled: settings.autoUpdateCheckEnabled,
+        currentVersion: app.getVersion()
       });
       // 启动自动检查已并入 startAppUpdater（内部会真正调用 runner，之前的版本只切状态不发请求）。
       void updateController;

@@ -125,7 +125,11 @@ function readVersion(info: unknown): string {
  * 「正在检查更新…」。无论 promise resolve 还是 reject，这里都必须拉出终态；
  * 超时由 withCheckTimeout 兑底。启动自动检查与 IPC 手动检查共用。
  */
-async function runCheckToTerminal(controller: UpdateController, runner: UpdateRunner): Promise<void> {
+async function runCheckToTerminal(
+  controller: UpdateController,
+  runner: UpdateRunner,
+  currentVersion: string
+): Promise<void> {
   const response = await withCheckTimeout(runner.checkForUpdates(), UPDATE_CHECK_TIMEOUT_MS).catch(
     (error: unknown) => {
       if (controller.getState().phase === "checking") {
@@ -149,11 +153,12 @@ async function runCheckToTerminal(controller: UpdateController, runner: UpdateRu
       controller.downloadFailed(error instanceof Error ? error.message : String(error));
     });
   } else {
-    controller.checkNoUpdate("");
+    // 版本号必须带上：UI 会渲染「已是最新版本（vX.Y.Z）」，传空串会变成孤零零的「（v）」。
+    controller.checkNoUpdate(currentVersion || "未知版本");
   }
 }
 
-function registerUpdateIpc(controller: UpdateController, runner: UpdateRunner) {
+function registerUpdateIpc(controller: UpdateController, runner: UpdateRunner, currentVersion: string) {
   // 测试里可能对同一进程多次调用 startAppUpdater，重复注册会抛
   // "Attempted to register a second handler"，先摘旧的再挂新的。
   for (const channel of [IPC_CHANNELS.updateGetState, IPC_CHANNELS.updateCheck, IPC_CHANNELS.updateInstall]) {
@@ -164,7 +169,7 @@ function registerUpdateIpc(controller: UpdateController, runner: UpdateRunner) {
     const state = controller.requestCheck();
     if (state.phase === "checking") {
       try {
-        await runCheckToTerminal(controller, runner);
+        await runCheckToTerminal(controller, runner, currentVersion);
       } catch (error) {
         // runCheckToTerminal 内部已兑底，这里只是保底终态；error 事件监听也会收到这次失败。
         controller.checkFailed(error instanceof Error ? error.message : String(error));
@@ -194,6 +199,8 @@ export function startAppUpdater(options: {
   autoUpdateCheckEnabled: boolean;
   /** 供测试注入假 updater；生产路径走 electron-updater 单例。 */
   runner?: UpdateRunner;
+  /** 兑底 not-available 时展示的当前版本（app.getVersion()）；不传则显示「未知版本」。 */
+  currentVersion?: string;
   /** 启动自动检查延迟；传 null 禁用（测试用）。默认 8 秒。 */
   startupCheckDelayMs?: number | null;
 }): UpdateController {
@@ -237,8 +244,8 @@ export function startAppUpdater(options: {
     }
   });
 
-  registerUpdateIpc(controller, runner);
-  scheduleStartupCheck(controller, runner, options.startupCheckDelayMs ?? 8_000);
+  registerUpdateIpc(controller, runner, options.currentVersion ?? "");
+  scheduleStartupCheck(controller, runner, options.startupCheckDelayMs ?? 8_000, options.currentVersion ?? "");
   return controller;
 }
 /**
@@ -246,14 +253,19 @@ export function startAppUpdater(options: {
  * checking 而从没调用 runner，导致 UI 永远停在「正在检查更新…」——检查请求必须
  * 真正发出去；超时由 withCheckTimeout（IPC 与启动自动检查共用）兜底，这里只需处理 reject。
  */
-function scheduleStartupCheck(controller: UpdateController, runner: UpdateRunner, delayMs: number): void {
+function scheduleStartupCheck(
+  controller: UpdateController,
+  runner: UpdateRunner,
+  delayMs: number,
+  currentVersion: string
+): void {
   if (controller.getMode() !== "background" || !(delayMs >= 0)) {
     return;
   }
   const timer = setTimeout(() => {
     const state = controller.requestCheck();
     if (state.phase === "checking") {
-      void runCheckToTerminal(controller, runner);
+      void runCheckToTerminal(controller, runner, currentVersion);
     }
   }, delayMs);
   // 应用若在延迟期内退出，别让这个 timer 拖住进程。
