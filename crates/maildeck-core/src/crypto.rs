@@ -193,8 +193,12 @@ fn secret_decrypt(ciphertext: &[u8]) -> Result<Vec<u8>, String> {
 
 /// 32 字节主密钥：keyring（服务 maildeck，用户 master-key）优先；
 /// 无 keyring daemon（headless Linux）时回退 userData/master.key（随机生成后持久化）。
+/// MAILDECK_NO_KEYRING=1 强制跳过 keyring（CI 无 GUI 环境，钥匙串授权弹窗会挂死测试）。
 #[cfg(not(windows))]
 fn master_key() -> Result<[u8; 32], String> {
+    if std::env::var("MAILDECK_NO_KEYRING").is_ok() {
+        return master_key_file();
+    }
     if let Ok(entry) = keyring::Entry::new("maildeck", "master-key") {
         match entry.get_password() {
             Ok(hex) => {

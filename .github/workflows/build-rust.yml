@@ -60,6 +60,8 @@ jobs:
           restore-keys: ${{ matrix.os }}-cargo-
 
       - name: Run tests
+        env:
+          MAILDECK_NO_KEYRING: "1"
         run: cargo test --workspace
 
       - name: Build release binaries + bundles
