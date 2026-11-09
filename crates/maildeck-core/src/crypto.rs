@@ -227,11 +227,8 @@ fn master_key_file() -> Result<[u8; 32], String> {
         }
     }
     let key = random_key();
-    std::fs::create_dir_all(
-        path.parent()
-            .ok_or_else(|| "no parent dir".to_string())?,
-    )
-    .map_err(|e| format!("create dir: {e}"))?;
+    std::fs::create_dir_all(path.parent().ok_or_else(|| "no parent dir".to_string())?)
+        .map_err(|e| format!("create dir: {e}"))?;
     std::fs::write(&path, key_to_hex(&key)).map_err(|e| format!("write master.key: {e}"))?;
     Ok(key)
 }

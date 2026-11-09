@@ -227,23 +227,31 @@ fn mail_refresh_many(
     state: tauri::State<'_, AppContext>,
     request: Value,
 ) -> CmdResult {
-    let account_ids: Vec<String> = request
-        .get("accountIds")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    // 原版契约（mailbox.ts handleAccountsRefreshMany）：accountIds 为 string[] | "all"。
+    let raw_ids = request.get("accountIds");
+    let account_ids_opt: Option<Vec<String>> = if raw_ids.and_then(|v| v.as_str()) == Some("all") {
+        None
+    } else {
+        Some(
+            raw_ids
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
+    };
     let job_kind = request
         .get("jobKind")
         .and_then(|v| v.as_str())
         .unwrap_or("refresh")
         .to_string();
-    match maildeck_app::cmd_refresh_accounts(&state, Some(account_ids.clone())) {
+    let account_ids_for_event = account_ids_opt.clone().unwrap_or_default();
+    match maildeck_app::cmd_refresh_accounts(&state, account_ids_opt) {
         Ok(report) => {
-            emit_refresh_progress(&app, &job_kind, &account_ids, &report);
+            emit_refresh_progress(&app, &job_kind, &account_ids_for_event, &report);
             ser(report_to_refresh_many(&report))
         }
         Err(e) => Err(fail(e)),

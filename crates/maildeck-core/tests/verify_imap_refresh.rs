@@ -17,8 +17,7 @@ use std::time::Duration;
 #[test]
 #[ignore]
 fn verify_mislabeled_accounts_recover() {
-    let text =
-        std::fs::read_to_string("D:/AgentWork/tmp/verify_import.txt").expect("import file");
+    let text = std::fs::read_to_string("D:/AgentWork/tmp/verify_import.txt").expect("import file");
     let dir = std::path::PathBuf::from("D:/AgentWork/tmp/maildeck-verify-core");
     let _ = std::fs::create_dir_all(&dir);
     let store = AccountStore::open(Some(dir.clone())).expect("store");
@@ -55,7 +54,9 @@ fn verify_mislabeled_accounts_recover() {
             o.email.chars().take(30).collect::<String>(),
             o.status,
             o.inbox_count,
-            o.error.as_deref().map(|e| e.chars().take(60).collect::<String>())
+            o.error
+                .as_deref()
+                .map(|e| e.chars().take(60).collect::<String>())
         );
     }
 
@@ -82,5 +83,8 @@ fn verify_mislabeled_accounts_recover() {
         }
     }
     println!("RESULT: {ok_count}/11 valid（原版对照基线：5/11，其余 6 个 refresh_token 真失效）");
-    assert!(ok_count >= 5, "至少 5 个误标账号应恢复（其余 6 个与原版同判真失效）");
+    assert!(
+        ok_count >= 5,
+        "至少 5 个误标账号应恢复（其余 6 个与原版同判真失效）"
+    );
 }
