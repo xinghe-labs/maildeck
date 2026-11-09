@@ -14,14 +14,20 @@ pub const USER_DATA_ENV_KEYS: [&str; 2] =
 pub const LEGACY_USER_DATA_DIR_NAME: &str = "outlook-manager";
 pub const USER_DATA_DIR_NAME: &str = "maildeck";
 
-/// %APPDATA%/maildeck（可被 MAILDECK_USER_DATA_DIR / OUTLOOK_MANAGER_USER_DATA_DIR 覆盖）。
+/// 用户数据目录：Windows=%APPDATA%/maildeck；macOS=~/Library/Application Support/maildeck；
+/// Linux=$XDG_DATA_HOME/maildeck（缺省 ~/.local/share/maildeck）。
+/// 可被 MAILDECK_USER_DATA_DIR / OUTLOOK_MANAGER_USER_DATA_DIR 覆盖。
 pub fn user_data_path() -> PathBuf {
     if let Some(p) = read_user_data_override(&|key| std::env::var(key).ok()) {
         return p;
     }
+    #[cfg(windows)]
     let base = std::env::var("APPDATA")
         .map(PathBuf::from)
+        .or_else(|_| dirs::data_dir().ok_or(()))
         .unwrap_or_else(|_| PathBuf::from("."));
+    #[cfg(not(windows))]
+    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(USER_DATA_DIR_NAME)
 }
 

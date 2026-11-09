@@ -3,7 +3,7 @@
 //! v1 = DPAPI（自有格式），v2 = AES-256-GCM（当前默认写入口）。
 //! 存储后端：keyring（Windows Credential Manager）优先，失败回退到 userData 下加密文件。
 
-use crate::crypto::{b64_encode, derive_aes_key, PREFIX_AES, PREFIX_DPAPI};
+use crate::crypto::{b64_encode, derive_aes_key, PREFIX_AES, PREFIX_DPAPI, PREFIX_SEC};
 
 /// v0 前缀（原 token-crypto.ts ENCRYPTED_PREFIX）。
 pub const PREFIX_SAFE: &str = "safe:";
@@ -278,10 +278,7 @@ pub fn protect_refresh_token(
             let ct = crate::crypto::aes_gcm_encrypt(&key, plaintext.as_bytes())?;
             Ok(format!("{PREFIX_AES}{}", b64_encode(&ct)))
         }
-        CredentialGeneration::Dpapi => {
-            let ct = crate::crypto::protect(plaintext.as_bytes())?;
-            Ok(format!("{PREFIX_DPAPI}{}", b64_encode(&ct)))
-        }
+        CredentialGeneration::Dpapi => crate::crypto::secret_encrypt_str(plaintext),
         CredentialGeneration::LegacySafeStorage => {
             Err("cannot write legacy safeStorage from Rust".into())
         }
@@ -303,9 +300,9 @@ pub fn reveal_refresh_token(stored: &str) -> Result<String, AppError> {
     ))
 }
 
-/// 判断存储串属于哪一代。
+/// 判断存储串属于哪一代。dpapi:v1: 与 sec:v1: 同属“平台安全代”（跨平台等价实现）。
 pub fn detect_generation(stored: &str) -> Option<CredentialGeneration> {
-    if stored.starts_with(PREFIX_DPAPI) {
+    if stored.starts_with(PREFIX_DPAPI) || stored.starts_with(PREFIX_SEC) {
         Some(CredentialGeneration::Dpapi)
     } else if stored.starts_with(PREFIX_AES) {
         Some(CredentialGeneration::Aes256Gcm)
@@ -336,7 +333,7 @@ mod tests {
     #[test]
     fn protect_reveal_dpapi_roundtrip() {
         let stored = protect_refresh_token("secret-refresh", CredentialGeneration::Dpapi).unwrap();
-        assert!(stored.starts_with(PREFIX_DPAPI));
+        assert!(stored.starts_with(crate::crypto::secret_prefix()));
         assert_eq!(reveal_refresh_token(&stored).unwrap(), "secret-refresh");
         assert_eq!(
             detect_generation(&stored),

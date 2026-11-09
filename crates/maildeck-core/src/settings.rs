@@ -368,29 +368,30 @@ pub trait SettingsCrypto {
     fn decrypt(&self, value: &str) -> Result<String, String>;
 }
 
-/// 默认实现：DPAPI（dpapi:v1:）+ 旧版 Electron safeStorage（safe:）兼容读取。
+/// 默认实现：平台安全层（Windows=DPAPI dpapi:v1:，macOS/Linux=钥匙串主密钥 sec:v1:）
+/// + 旧版 Electron safeStorage（safe:）兼容读取。
 pub struct DefaultSettingsCrypto;
 
 impl SettingsCrypto for DefaultSettingsCrypto {
     fn encrypt(&self, value: &str) -> Result<String, String> {
-        let ct = crate::crypto::protect(value.as_bytes())?;
-        Ok(format!(
-            "{}{}",
-            crate::crypto::PREFIX_DPAPI,
-            crate::crypto::b64_encode(&ct)
-        ))
+        crate::crypto::secret_encrypt_str(value)
     }
 
     fn decrypt(&self, value: &str) -> Result<String, String> {
         if let Some(rest) = value.strip_prefix(crate::crypto::PREFIX_DPAPI) {
             let raw = crate::crypto::b64_decode(rest)?;
-            let plain = crate::crypto::unprotect(&raw)?;
+            let plain = crate::crypto::secret_decrypt_bytes(&raw)?;
+            return String::from_utf8(plain).map_err(|e| format!("utf8: {e}"));
+        }
+        if let Some(rest) = value.strip_prefix(crate::crypto::PREFIX_SEC) {
+            let raw = crate::crypto::b64_decode(rest)?;
+            let plain = crate::crypto::secret_decrypt_bytes(&raw)?;
             return String::from_utf8(plain).map_err(|e| format!("utf8: {e}"));
         }
         if let Some(rest) = value.strip_prefix(SAFE_PREFIX) {
-            // 旧版 Electron safeStorage（Windows = DPAPI 无熵）也能用 CryptUnprotectData 解
+            // 旧版 Electron safeStorage（Windows = DPAPI 无熵）也能解；非 Windows 无此格式
             let raw = crate::crypto::b64_decode(rest)?;
-            let plain = crate::crypto::unprotect(&raw)?;
+            let plain = crate::crypto::secret_decrypt_bytes(&raw)?;
             return String::from_utf8(plain).map_err(|e| format!("utf8: {e}"));
         }
         Ok(value.to_string())
