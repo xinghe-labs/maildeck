@@ -14,21 +14,21 @@ jobs:
         include:
           - os: windows-latest
             bundles: nsis
-            exe_name: maildeck-shell.exe
+            exe_name: MailDeck.exe
             artifact: maildeck-windows-x64
           - os: macos-latest
             bundles: dmg
-            exe_name: maildeck-shell
+            exe_name: MailDeck
             artifact: maildeck-macos-aarch64
           - os: ubuntu-22.04
             bundles: appimage,deb
-            exe_name: maildeck-shell
+            exe_name: MailDeck
             artifact: maildeck-linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
       # 与 crates/maildeck-shell/tauri.conf.json version 同步；用于精确匹配产物文件名
-      APP_VERSION: "0.5.1"
+      APP_VERSION: "0.5.2"
     permissions:
       contents: write
     steps:

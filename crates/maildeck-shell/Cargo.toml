@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "MailDeck Tauri 桌面壳"
 
+# 二进制名与产品名一致：task manager / 安装后的可执行文件都是 MailDeck(.exe)
+[[bin]]
+name = "MailDeck"
+path = "src/main.rs"
+
 [dependencies]
 maildeck-core = { path = "../maildeck-core" }
 maildeck-app = { path = "../maildeck-app" }
