@@ -12,8 +12,6 @@ use maildeck_core::import_module;
 use maildeck_core::mailbox_access::{test_connection, MailboxRuntime};
 use maildeck_core::refresh_state::{refresh_accounts, RefreshContext, RefreshOptions};
 use maildeck_core::transports::graph_client::GraphClient;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[test]
