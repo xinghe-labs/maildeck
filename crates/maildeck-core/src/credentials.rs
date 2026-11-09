@@ -291,7 +291,10 @@ pub fn reveal_refresh_token(stored: &str) -> Result<String, AppError> {
         return crate::crypto::decrypt_electron_v10(&crate::db::user_data_path(), rest)
             .map_err(AppError::CredentialUnreadable);
     }
-    if stored.starts_with(PREFIX_DPAPI) || stored.starts_with(PREFIX_AES) {
+    if stored.starts_with(PREFIX_DPAPI)
+        || stored.starts_with(PREFIX_SEC)
+        || stored.starts_with(PREFIX_AES)
+    {
         return crate::crypto::try_unprotect_text(stored).map_err(AppError::CredentialUnreadable);
     }
     // 未知格式
