@@ -1,5 +1,7 @@
 //! maildeck-shell：Tauri 桌面壳。每个 invoke 命令只做参数/状态提取与事件发射，
 //! 业务全部委托 maildeck-app 门面。命令通道名与原版 electron IPC 一一对应。
+// release 构建标记为 GUI 子系统，避免启动时弹出命令行窗口（debug 保留 console 看日志）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use maildeck_app::AppContext;
 use maildeck_core::contracts::{
