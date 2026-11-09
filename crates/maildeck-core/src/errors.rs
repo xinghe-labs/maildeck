@@ -40,7 +40,7 @@ pub enum AppError {
     TokenExpired(String),
     #[error("clientId 无效或应用已停用：{0}")]
     InvalidClient(String),
-    #[error("IMAP 认证失败：{0}")]
+    #[error("IMAP 登录失败：请确认 token 包含 IMAP.AccessAsUser.All，且邮箱未禁用 IMAP。原始错误：{0}")]
     ImapAuthFailed(String),
     #[error("token 缺少所需权限范围：{0}")]
     ScopeMissing(String),

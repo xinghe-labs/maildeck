@@ -188,11 +188,50 @@ fn do_refresh(
         }
     }
 
-    // 3) inbox 计数（Graph delta 或 count endpoint；失败不致整体失败 → 用 0 兜底标记）
-    let inbox = match graph_client.inbox_unread_count(&graph_token.access_token, record) {
-        Ok(count) => count,
-        Err(e) => {
-            return fail(crate::errors::normalize_error(e.as_ref()), None);
+    // 3) inbox 计数：原版 refreshAccount 按 authMode 路由（mailbox-access.ts:840）——
+    //    imap 账号用 IMAP 通道计数，graph 账号用 Graph endpoint。
+    //    固定走 Graph 会让 IMAP scope 的 access token 打 Graph 得 401，
+    //    账号被误标 invalid（2026-11 发现的 11 个“失效”号的根因）。
+    let mode = crate::oauth::auth_mode_from_scope(&graph_token.scope);
+    let inbox = if mode == "imap" {
+        let imap = (|| {
+            let (_unseen, all) = crate::transports::imap_client::fetch_inbox_counts(
+                &record.email,
+                &graph_token.access_token,
+                options.timeout,
+            )?;
+            // 最新邮件时间与原版一致从摘要取（原版 refreshImapInbox 返回 messages 后取 latestMailTime）。
+            let latest = crate::transports::imap_client::list_messages(
+                &record.email,
+                &graph_token.access_token,
+                "INBOX",
+                1,
+                "",
+                "",
+                "",
+                options.timeout,
+            )
+            .ok()
+            .and_then(|page| {
+                page.messages
+                    .first()
+                    .and_then(|m| m.received_date_time.clone())
+            });
+            Ok(crate::transports::graph_client::InboxCount {
+                count: all,
+                latest_mail_at: latest,
+            })
+        })();
+        match imap {
+            Ok(count) => count,
+            Err(e) => return fail(e, None),
+        }
+    } else {
+        match graph_client.inbox_unread_count(&graph_token.access_token, record) {
+            Ok(count) => count,
+            Err(e) => {
+                return fail(crate::errors::normalize_error(e.as_ref()), None);
+            }
         }
     };
 
