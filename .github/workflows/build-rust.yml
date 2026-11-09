@@ -25,7 +25,10 @@ jobs:
             exe_name: maildeck-shell
             artifact: maildeck-linux-x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 50
+    timeout-minutes: 90
+    env:
+      # 与 crates/maildeck-shell/tauri.conf.json version 同步；用于精确匹配产物文件名
+      APP_VERSION: "0.5.1"
     permissions:
       contents: write
     steps:
@@ -71,24 +74,26 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-bin
-          path: target/release/${{ matrix.exe_name }}
+          # mainBinaryName=MailDeck 后产物为 MailDeck.exe / MailDeck，裸 crate 名产物不再存在
+          path: target/release/MailDeck*
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-installer
           path: |
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/dmg/*.dmg
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/deb/*.deb
+            target/release/bundle/nsis/MailDeck_${APP_VERSION}_x64-setup.exe
+            target/release/bundle/dmg/MailDeck_${APP_VERSION}_aarch64.dmg
+            target/release/bundle/appimage/MailDeck_${APP_VERSION}_amd64.AppImage
+            target/release/bundle/deb/MailDeck_${APP_VERSION}_amd64.deb
 
       - name: Release on tag
         if: startsWith(github.ref, 'refs/tags/rust-v')
         uses: softprops/action-gh-release@v2
         with:
+          # 按版本号精确匹配，避免缓存 target 里旧版本 bundle 被当幽灵资产上传
           files: |
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/dmg/*.dmg
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/deb/*.deb
+            target/release/bundle/nsis/MailDeck_${APP_VERSION}_x64-setup.exe
+            target/release/bundle/dmg/MailDeck_${APP_VERSION}_aarch64.dmg
+            target/release/bundle/appimage/MailDeck_${APP_VERSION}_amd64.AppImage
+            target/release/bundle/deb/MailDeck_${APP_VERSION}_amd64.deb
