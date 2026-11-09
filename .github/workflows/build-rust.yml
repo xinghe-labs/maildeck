@@ -2,7 +2,7 @@ name: build-rust
 
 on:
   push:
-    branches: [rust-rewrite]
+    branches: [main]
     tags: ['rust-v*']
   workflow_dispatch:
 
