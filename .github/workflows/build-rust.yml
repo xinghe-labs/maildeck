@@ -8,8 +8,24 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
-    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundles: nsis
+            exe_name: maildeck-shell.exe
+            artifact: maildeck-windows-x64
+          - os: macos-latest
+            bundles: dmg
+            exe_name: maildeck-shell
+            artifact: maildeck-macos-aarch64
+          - os: ubuntu-22.04
+            bundles: appimage,deb
+            exe_name: maildeck-shell
+            artifact: maildeck-linux-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
     permissions:
       contents: write
     steps:
@@ -23,6 +39,12 @@ jobs:
         with:
           tool: tauri-cli
 
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev libglib2.0-dev
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -30,31 +52,37 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: windows-cargo-
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
 
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Build release exe + NSIS installer
-        run: cargo tauri build
+      - name: Build release binaries + bundles
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
 
-      - name: Upload exe artifact
+      - name: Upload raw binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maildeck-shell-windows-x64
-          path: target/release/maildeck-shell.exe
+          name: ${{ matrix.artifact }}-bin
+          path: target/release/${{ matrix.exe_name }}
 
-      - name: Upload NSIS installer artifact
+      - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: maildeck-setup-windows-x64
-          path: target/release/bundle/nsis/*.exe
+          name: ${{ matrix.artifact }}-installer
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb
 
       - name: Release on tag
         if: startsWith(github.ref, 'refs/tags/rust-v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/release/maildeck-shell.exe
             target/release/bundle/nsis/*.exe
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/deb/*.deb

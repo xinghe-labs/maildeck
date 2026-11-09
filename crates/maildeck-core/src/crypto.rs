@@ -1,14 +1,19 @@
-//! Windows DPAPI 凭据加密（对应原 credential-crypto.ts）。
-//! 原版 node 实现用 node dpapi（Electron 内置）protectData 输出 base64。
-//! Rust 侧用 windows-sys CryptProtectData，密文格式（base64(NONCE||DPAPI blob)）互通。
+//! 凭据加密层（对应原 credential-crypto.ts）。
+//! Windows：DPAPI（CryptProtectData），密文格式（base64(NONCE||DPAPI blob)）与原版 node 实现互通。
+//! macOS/Linux：系统钥匙串主密钥（keyring）+ AES-256-GCM，前缀 sec:v1:；
+//! 无 keyring daemon（headless Linux）时回退 userData/master.key 文件。
+//! 旧版兼容：safe:（Electron safeStorage，仅 Windows）、aes256gcm:v1:（固定密钥，全平台）。
 
-use aes_gcm::aead::{Aead, KeyInit};
-use base64::Engine;
-use rand::RngCore;
+#[cfg(windows)]
 use windows_sys::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
 };
 
+use aes_gcm::aead::{Aead, KeyInit};
+use base64::Engine;
+use rand::RngCore;
+
+#[cfg(windows)]
 pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let blob_in = CRYPT_INTEGER_BLOB {
         cbData: plaintext.len() as u32,
@@ -40,6 +45,7 @@ pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(windows)]
 pub fn unprotect(ciphertext: &[u8]) -> Result<Vec<u8>, String> {
     if ciphertext.is_empty() {
         return Err("empty ciphertext".into());
@@ -121,24 +127,158 @@ pub fn derive_aes_key(salt: &[u8], secret: &str) -> [u8; 32] {
 
 pub const PREFIX_DPAPI: &str = "dpapi:v1:";
 pub const PREFIX_AES: &str = "aes256gcm:v1:";
+pub const PREFIX_SEC: &str = "sec:v1:";
 
-/// Electron safeStorage（Windows = Chromium os_crypt）legacy 解密。
-/// blob 布局：base64("v10" || nonce(12) || ciphertext+tag)，
-/// AES-256 密钥 = CryptUnprotectData(user_data_dir/Local State 的 os_crypt.encrypted_key，剥 "DPAPI" 前缀)。
-/// 实证：原版 v0.3.1 账号库内 `safe:` 密文可用此链路还原为 MS refresh token。
+// ---------------------------------------------------------------
+// 平台安全层（secret_encrypt/secret_decrypt）
+// Windows = DPAPI（与旧库互通）；其他平台 = 钥匙串主密钥 + AES-256-GCM。
+// 输出格式：前缀 + base64(密文字节)。
+// ---------------------------------------------------------------
+
+/// 平台安全加密（返回带前缀完整串）。
+pub fn secret_encrypt_str(plaintext: &str) -> Result<String, String> {
+    let ct = secret_encrypt(plaintext.as_bytes())?;
+    Ok(format!("{}{}", secret_prefix(), b64_encode(&ct)))
+}
+
+/// 平台安全解密（接受本平台前缀）。
+pub fn secret_decrypt_str(stored: &str) -> Result<String, String> {
+    let rest = stored
+        .strip_prefix(secret_prefix())
+        .ok_or("unknown cipher prefix")?;
+    let raw = b64_decode(rest)?;
+    let plain = secret_decrypt(&raw)?;
+    String::from_utf8(plain).map_err(|e| format!("utf8: {e}"))
+}
+
+/// 当前平台安全层前缀。
+pub fn secret_prefix() -> &'static str {
+    #[cfg(windows)]
+    {
+        PREFIX_DPAPI
+    }
+    #[cfg(not(windows))]
+    {
+        PREFIX_SEC
+    }
+}
+
+#[cfg(windows)]
+fn secret_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    protect(plaintext)
+}
+
+#[cfg(windows)]
+fn secret_decrypt(ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    unprotect(ciphertext)
+}
+
+/// 平台安全层原始字节解密（供 settings 等外部调用）。
+pub fn secret_decrypt_bytes(ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    secret_decrypt(ciphertext)
+}
+
+/// 非 Windows：AES-256-GCM + 钥匙串主密钥（无 keyring 时回退 userData/master.key）。
+#[cfg(not(windows))]
+fn secret_encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let key = master_key()?;
+    aes_gcm_encrypt(&key, plaintext)
+}
+
+#[cfg(not(windows))]
+fn secret_decrypt(ciphertext: &[u8]) -> Result<Vec<u8>, String> {
+    let key = master_key()?;
+    aes_gcm_decrypt(&key, ciphertext)
+}
+
+/// 32 字节主密钥：keyring（服务 maildeck，用户 master-key）优先；
+/// 无 keyring daemon（headless Linux）时回退 userData/master.key（随机生成后持久化）。
+#[cfg(not(windows))]
+fn master_key() -> Result<[u8; 32], String> {
+    if let Ok(entry) = keyring::Entry::new("maildeck", "master-key") {
+        match entry.get_password() {
+            Ok(hex) => {
+                if let Some(key) = hex_to_key(&hex) {
+                    return Ok(key);
+                }
+            }
+            Err(keyring::Error::NoEntry) => {
+                let key = random_key();
+                if entry.set_password(&key_to_hex(&key)).is_ok() {
+                    return Ok(key);
+                }
+            }
+            Err(_) => {} // daemon 不可用 → 文件回退
+        }
+    }
+    master_key_file()
+}
+
+#[cfg(not(windows))]
+fn master_key_file() -> Result<[u8; 32], String> {
+    let path = crate::db::user_data_path().join("master.key");
+    if let Ok(hex) = std::fs::read_to_string(&path) {
+        if let Some(key) = hex_to_key(hex.trim()) {
+            return Ok(key);
+        }
+    }
+    let key = random_key();
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| "no parent dir".to_string())?,
+    )
+    .map_err(|e| format!("create dir: {e}"))?;
+    std::fs::write(&path, key_to_hex(&key)).map_err(|e| format!("write master.key: {e}"))?;
+    Ok(key)
+}
+
+#[cfg(not(windows))]
+fn random_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+
+#[cfg(not(windows))]
+fn key_to_hex(key: &[u8; 32]) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(not(windows))]
+fn hex_to_key(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(key)
+}
+
+/// Electron safeStorage（Windows = Chromium os_crypt）legacy 解密，仅 Windows。
 pub fn decrypt_electron_v10(
     user_data_dir: &std::path::Path,
     stored_b64: &str,
 ) -> Result<String, String> {
-    let raw = b64_decode(stored_b64)?;
-    if raw.len() < 3 + 12 + 16 || &raw[..3] != b"v10" {
-        return Err("not a Chromium os_crypt v10 blob".into());
+    #[cfg(not(windows))]
+    {
+        let _ = (user_data_dir, stored_b64);
+        return Err("safe: is a Windows-only legacy format".into());
     }
-    let key = load_chromium_oscrypt_key(user_data_dir)?;
-    let plain = aes_gcm_decrypt(&key, &raw[3..])?;
-    String::from_utf8(plain).map_err(|e| format!("utf8: {e}"))
+    #[cfg(windows)]
+    {
+        let raw = b64_decode(stored_b64)?;
+        if raw.len() < 3 + 12 + 16 || &raw[..3] != b"v10" {
+            return Err("not a Chromium os_crypt v10 blob".into());
+        }
+        let key = load_chromium_oscrypt_key(user_data_dir)?;
+        let plain = aes_gcm_decrypt(&key, &raw[3..])?;
+        String::from_utf8(plain).map_err(|e| format!("utf8: {e}"))
+    }
 }
 
+#[cfg(windows)]
 fn load_chromium_oscrypt_key(user_data_dir: &std::path::Path) -> Result<[u8; 32], String> {
     let path = user_data_dir.join("Local State");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("read Local State: {e}"))?;
@@ -161,8 +301,21 @@ fn load_chromium_oscrypt_key(user_data_dir: &std::path::Path) -> Result<[u8; 32]
 
 pub fn try_unprotect_text(value: &str) -> Result<String, String> {
     if let Some(rest) = value.strip_prefix(PREFIX_DPAPI) {
+        #[cfg(not(windows))]
+        {
+            let _ = rest;
+            return Err("dpapi:v1: is a Windows-only legacy format".into());
+        }
+        #[cfg(windows)]
+        {
+            let raw = b64_decode(rest)?;
+            let plain = unprotect(&raw)?;
+            return String::from_utf8(plain).map_err(|e| format!("utf8: {e}"));
+        }
+    }
+    if let Some(rest) = value.strip_prefix(PREFIX_SEC) {
         let raw = b64_decode(rest)?;
-        let plain = unprotect(&raw)?;
+        let plain = secret_decrypt(&raw)?;
         return String::from_utf8(plain).map_err(|e| format!("utf8: {e}"));
     }
     if let Some(rest) = value.strip_prefix(PREFIX_AES) {
