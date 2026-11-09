@@ -1,0 +1,17 @@
+[package]
+name = "maildeck-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MailDeck 命令路由与事件层（不依赖具体桌面壳，可独立测试）"
+
+[dependencies]
+maildeck-core = { path = "../maildeck-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

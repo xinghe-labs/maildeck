@@ -1,0 +1,30 @@
+[package]
+name = "maildeck-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MailDeck 领域核心：契约、存储、凭据、Job 调度与邮箱业务"
+
+[dependencies]
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+mailparse = { workspace = true }
+percent-encoding = { workspace = true }
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+windows-sys = { workspace = true }
+rayon = { workspace = true }
+keyring = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

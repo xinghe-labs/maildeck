@@ -1,0 +1,22 @@
+[package]
+name = "maildeck-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MailDeck Tauri 桌面壳"
+
+[dependencies]
+maildeck-core = { path = "../maildeck-core" }
+maildeck-app = { path = "../maildeck-app" }
+uuid = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
