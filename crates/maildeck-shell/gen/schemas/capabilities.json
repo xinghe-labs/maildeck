@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"MailDeck 主窗口默认能力（事件监听/窗口管理等核心插件）。","local":true,"windows":["main"],"permissions":["core:default"]}}

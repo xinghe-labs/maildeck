@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MailDeck",
+  "version": "0.4.0",
+  "identifier": "com.maildeck.app",
+  "build": {
+    "frontendDist": "../../frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MailDeck",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ]
+  }
+}

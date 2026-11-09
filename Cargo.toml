@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/maildeck-core",
+    "crates/maildeck-app",
+    "crates/maildeck-shell",
+]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+mailparse = "0.15"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }
+aes-gcm = "0.10"
+sha2 = "0.10"
+percent-encoding = "2"
+rand = "0.8"
+rayon = "1"
+keyring = { version = "3", features = ["windows-native"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

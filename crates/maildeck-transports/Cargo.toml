@@ -1,0 +1,23 @@
+[package]
+name = "maildeck-transports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MailDeck 传输适配器：Graph / IMAP / Hotmail fallback / 代理"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+async-imap = { workspace = true }
+tokio-native-tls = { workspace = true }
+native-tls = { workspace = true }
+mailparse = { workspace = true }
+thiserror = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
