@@ -2295,7 +2295,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "maildeck-app"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "maildeck-core",
  "serde",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "maildeck-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "maildeck-shell"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "maildeck-app",
  "maildeck-core",
