@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(rec.credential_generation, 1);
         // 加密落库
         let stored = ctx.store.get(&rec.id).unwrap().unwrap();
-        assert!(stored.encrypted_refresh_token.starts_with("dpapi:v1:"));
+        assert!(stored.encrypted_refresh_token.starts_with(maildeck_core::crypto::secret_prefix()));
         // 重复添加被拒
         assert!(cmd_account_add(&ctx, "a@x.com", "cid", "rt", "", "").is_err());
         // patch
@@ -725,7 +725,7 @@ mod tests {
         // 换 token
         let upd =
             cmd_account_update(&ctx, &rec.id, serde_json::json!({"refreshToken": "rt-2"})).unwrap();
-        assert!(upd.encrypted_refresh_token.starts_with("dpapi:v1:"));
+        assert!(upd.encrypted_refresh_token.starts_with(maildeck_core::crypto::secret_prefix()));
         // 删除（含缓存清理）
         cmd_account_delete(&ctx, &rec.id).unwrap();
         assert!(ctx.store.get(&rec.id).unwrap().is_none());
