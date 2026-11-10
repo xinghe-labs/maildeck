@@ -16,6 +16,10 @@ use std::time::Duration;
 pub const POLL_TIMEOUT_SECS: u64 = 30;
 /// HTTP 超时必须比轮询等待长，否则每轮都被自己的超时掐断。
 const HTTP_TIMEOUT_SECS: u64 = POLL_TIMEOUT_SECS + 15;
+/// 429 限流最多重试几次（重试次数不包含首次尝试）。
+const RATE_LIMIT_RETRIES: usize = 3;
+/// `retry_after` 的上限（秒）：Telegram 异常/恶意响应不该把我们卡死。
+const RETRY_AFTER_CAP_SECS: u64 = 60;
 
 /// 运行时配置（token 已解密为明文，只在内存里）。
 #[derive(Debug, Clone)]
@@ -48,6 +52,30 @@ struct TelegramFile {
 /// `%APPDATA%/maildeck/telegram.json`
 pub fn config_path() -> PathBuf {
     crate::db::user_data_path().join("telegram.json")
+}
+
+/// `%APPDATA%/maildeck/telegram_offset`：已确认的 `update_id + 1`。
+///
+/// 不落盘的话，进程中途退出后重启会把 Telegram 保留期内（约 24h）未确认的
+/// update 再执行一遍——表现为重复刷新、重复打开账号。
+pub fn offset_path() -> PathBuf {
+    crate::db::user_data_path().join("telegram_offset")
+}
+
+/// 读取上次确认的 offset；缺失/损坏都当作 0（从头收，不阻塞）。
+pub fn load_offset() -> i64 {
+    std::fs::read_to_string(offset_path())
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(0)
+}
+
+/// 记录 offset。写失败只告警：收消息比记录进度重要。
+pub fn save_offset(offset: i64) {
+    if let Err(err) = std::fs::write(offset_path(), offset.to_string()) {
+        crate::logging::warn(format!("[telegram] 写 offset 失败：{err}"));
+    }
 }
 
 /// 读取配置。文件不存在、字段为空、或内容非法都返回 `Ok(None)`（= Bot 不启动）。
@@ -95,9 +123,19 @@ fn decode_secret(stored: &str) -> Result<String, String> {
 }
 
 /// Bot API 客户端。所有请求都走设置的 `proxyUrl`（国内直连 api.telegram.org 不通）。
+///
+/// `Clone` 是为了能把客户端移进后台线程（刷新/取正文不能堵住轮询循环）。
+#[derive(Clone)]
 pub struct BotApi {
     client: reqwest::blocking::Client,
     base: String,
+}
+
+/// `call_once` 的失败分类：429 要退避重试，其余直接报错。
+enum CallError {
+    /// 429：Telegram 要求至少等这么多秒再试。
+    RateLimited(u64),
+    Other(String),
 }
 
 impl BotApi {
@@ -119,26 +157,64 @@ impl BotApi {
     }
 
     /// 统一调用入口。**错误信息必须剔除 URL**——URL 里含 bot token。
+    ///
+    /// 429 限流会按 `retry_after` 退避重试（最多 [`RATE_LIMIT_RETRIES`] 次）：
+    /// 连点按钮、短时间发多条消息时 Telegram 会限流，不重试就是静默丢消息。
     fn call(&self, method: &str, body: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut attempt = 0;
+        loop {
+            match self.call_once(method, &body) {
+                Ok(value) => return Ok(value),
+                Err(CallError::Other(msg)) => return Err(msg),
+                Err(CallError::RateLimited(wait)) => {
+                    if attempt >= RATE_LIMIT_RETRIES {
+                        return Err(format!(
+                            "Telegram 限流：{method} 重试 {RATE_LIMIT_RETRIES} 次仍被拒"
+                        ));
+                    }
+                    let wait = wait.clamp(1, RETRY_AFTER_CAP_SECS);
+                    crate::logging::warn(format!(
+                        "[telegram] {method} 触发限流，{wait}s 后重试（第 {} 次）",
+                        attempt + 1
+                    ));
+                    std::thread::sleep(Duration::from_secs(wait));
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    fn call_once(
+        &self,
+        method: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, CallError> {
         let url = format!("{}/{method}", self.base);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .map_err(|e| format!("连接 Telegram 失败：{}", e.without_url()))?;
+        let resp =
+            self.client.post(&url).json(body).send().map_err(|e| {
+                CallError::Other(format!("连接 Telegram 失败：{}", e.without_url()))
+            })?;
         let status = resp.status().as_u16();
-        let text = resp
-            .text()
-            .map_err(|e| format!("读取 Telegram 响应失败：{}", e.without_url()))?;
+        let text = resp.text().map_err(|e| {
+            CallError::Other(format!("读取 Telegram 响应失败：{}", e.without_url()))
+        })?;
         let value: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|_| format!("Telegram 返回非 JSON（HTTP {status}）"))?;
+            .map_err(|_| CallError::Other(format!("Telegram 返回非 JSON（HTTP {status}）")))?;
         if value.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let code = value.get("error_code").and_then(|v| v.as_i64());
             let desc = value
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("未知错误");
-            return Err(format!("Telegram 返回错误：{desc}"));
+            // 429 时 Telegram 在 parameters.retry_after 里给出等待秒数，缺失按 1s。
+            if code == Some(429) {
+                let wait = value
+                    .pointer("/parameters/retry_after")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                return Err(CallError::RateLimited(wait));
+            }
+            return Err(CallError::Other(format!("Telegram 返回错误：{desc}")));
         }
         Ok(value
             .get("result")
@@ -240,6 +316,27 @@ mod tests {
     fn plaintext_token_is_accepted() {
         // 手填明文时不能被当成损坏的密文拒绝。
         assert_eq!(decode_secret("123:plain").unwrap(), "123:plain");
+    }
+
+    /// 写文件，所以默认 ignore；需显式指定临时数据目录后手动跑：
+    /// `MAILDECK_USER_DATA_DIR=... cargo test -p maildeck-core offset_roundtrip -- --ignored`
+    #[test]
+    #[ignore = "会写数据目录，需 MAILDECK_USER_DATA_DIR 指向临时目录"]
+    fn offset_roundtrip() {
+        let dir = crate::db::user_data_path();
+        assert!(
+            dir.to_string_lossy().to_lowercase().contains("mdtest"),
+            "拒绝在真实数据目录跑：{}",
+            dir.display()
+        );
+        let _ = std::fs::remove_file(offset_path());
+        assert_eq!(load_offset(), 0, "文件不存在时应为 0");
+        save_offset(4242);
+        assert_eq!(load_offset(), 4242);
+        // 损坏内容不能卡住轮询。
+        std::fs::write(offset_path(), "not-a-number").unwrap();
+        assert_eq!(load_offset(), 0);
+        let _ = std::fs::remove_file(offset_path());
     }
 
     #[test]

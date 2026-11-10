@@ -13,6 +13,8 @@ use maildeck_core::contracts::{
 use maildeck_core::telegram::{BotApi, TelegramConfig};
 use serde_json::json;
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +28,8 @@ const TG_TEXT_LIMIT: usize = 4096;
 const INBOX: &str = "INBOX";
 /// 轮询失败后的重试退避（秒）。
 const RETRY_DELAYS: [u64; 4] = [3, 5, 10, 30];
+/// 后台 worker 的排队上限。满了就提示用户稍等，不无限堆积。
+const JOB_QUEUE_DEPTH: usize = 8;
 
 // ---------------------------------------------------------------------------
 // 会话状态
@@ -193,8 +197,11 @@ impl AccountView {
 
 /// 启动 Bot 主循环。配置非法/代理不可用时不 panic，只打印并退出线程。
 pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
-    let mut offset: i64 = 0;
-    let mut sessions: HashMap<String, Session> = HashMap::new();
+    // 从上次确认的位置继续：进程中途退出后重启不会把旧命令再执行一遍。
+    let mut offset: i64 = maildeck_core::telegram::load_offset();
+    if offset > 0 {
+        maildeck_core::logging::info(format!("[telegram] 从 offset {offset} 继续"));
+    }
     let mut failures = 0usize;
 
     maildeck_core::logging::info(format!(
@@ -241,15 +248,41 @@ pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
         Err(err) => maildeck_core::logging::warn(format!("[telegram] 命令菜单注册失败：{err}")),
     }
 
+    // 重活全交给后台 worker：轮询循环只收消息 + 秒回按钮应答。
+    let (tx, rx) = mpsc::sync_channel::<Job>(JOB_QUEUE_DEPTH);
+    let worker_ctx = Arc::clone(&ctx);
+    if let Err(err) = std::thread::Builder::new()
+        .name("telegram-worker".to_string())
+        .spawn(move || worker(worker_ctx, rx))
+    {
+        maildeck_core::logging::error(format!("[telegram] 启动 worker 失败：{err}"));
+        return;
+    }
+    maildeck_core::logging::info("[telegram] worker 已就绪（重活与轮询已分离）");
+
     loop {
         match api.get_updates(offset) {
             Ok(updates) => {
                 failures = 0;
+                let before = offset;
                 for update in &updates {
                     if let Some(id) = update.get("update_id").and_then(|v| v.as_i64()) {
                         offset = offset.max(id + 1);
                     }
-                    dispatch(&api, &config, &ctx, &mut sessions, update);
+                    // 单条坏 update 不能让轮询线程死掉。
+                    let parsed = catch_unwind(AssertUnwindSafe(|| {
+                        accept(&tx, &api, &config, update);
+                    }));
+                    if parsed.is_err() {
+                        maildeck_core::logging::error(
+                            "[telegram] 解析 update 时 panic，已跳过这条",
+                        );
+                    }
+                }
+
+                // 只在真的推进了才落盘：空轮询不写文件。
+                if offset != before {
+                    maildeck_core::telegram::save_offset(offset);
                 }
             }
             Err(err) => {
@@ -269,11 +302,30 @@ pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
     }
 }
 
-fn dispatch(
+/// 交给后台 worker 的一次操作。
+struct Job {
+    /// 每个 job 自带客户端：代理设置变了以后，新 job 自然用新客户端。
+    api: BotApi,
+    chat_id: String,
+    kind: JobKind,
+}
+
+enum JobKind {
+    /// 文本消息原文。
+    Text(String),
+    /// 按钮回调；`message_id` 是要原地编辑的那条消息。
+    Callback { data: String, message_id: i64 },
+}
+
+/// 轮询线程只做三件事：白名单、秒回按钮应答、把活丢进队列。
+///
+/// 重活（IMAP 刷新、跨账号搜索、取正文）全在 worker 里跑——否则一次刷新
+/// 就会把 `get_updates` 和 `answer_callback_query` 一起堵住，用户看到的是
+/// 「按钮一直转圈、发消息没反应」。
+fn accept(
+    tx: &mpsc::SyncSender<Job>,
     api: &BotApi,
     config: &TelegramConfig,
-    ctx: &AppContext,
-    sessions: &mut HashMap<String, Session>,
     update: &serde_json::Value,
 ) {
     if let Some(cq) = update.get("callback_query") {
@@ -285,15 +337,19 @@ fn dispatch(
             return;
         }
         let callback_id = cq.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        // 立刻应答：Telegram 只在收到应答后才停止按钮上的转圈。
         let _ = api.answer_callback_query(callback_id, None);
-        let data = cq.get("data").and_then(|v| v.as_str()).unwrap_or_default();
+        let data = cq
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         maildeck_core::logging::info(format!("[telegram] 收到按钮 {data}"));
         let message_id = cq
             .pointer("/message/message_id")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        let session = sessions.entry(chat_id.clone()).or_default();
-        handle_callback(api, ctx, session, &chat_id, message_id, data);
+        push(tx, api, &chat_id, JobKind::Callback { data, message_id });
         return;
     }
 
@@ -308,8 +364,39 @@ fn dispatch(
         // 记录原始输入：`/open` 打错、参数没带上时，日志里能直接看出来。
         let shown: String = text.chars().take(80).collect();
         maildeck_core::logging::info(format!("[telegram] 收到文本 {shown:?}"));
-        let session = sessions.entry(chat_id.clone()).or_default();
-        handle_text(api, ctx, session, &chat_id, text);
+        push(tx, api, &chat_id, JobKind::Text(text.to_string()));
+    }
+}
+
+fn push(tx: &mpsc::SyncSender<Job>, api: &BotApi, chat_id: &str, kind: JobKind) {
+    let job = Job {
+        api: api.clone(),
+        chat_id: chat_id.to_string(),
+        kind,
+    };
+    if let Err(err) = tx.try_send(job) {
+        maildeck_core::logging::warn(format!("[telegram] 队列已满，丢弃本次操作：{err}"));
+        let _ = api.send_message(chat_id, "⏳ 上一条还在处理，请等几秒再操作。", None);
+    }
+}
+
+/// 串行执行队列里的操作（顺序不乱），单条 panic 不会带走整个 Bot。
+fn worker(ctx: Arc<AppContext>, rx: mpsc::Receiver<Job>) {
+    let mut sessions: HashMap<String, Session> = HashMap::new();
+    for job in rx {
+        let session = sessions.entry(job.chat_id.clone()).or_default();
+        let outcome = catch_unwind(AssertUnwindSafe(|| match &job.kind {
+            JobKind::Text(text) => handle_text(&job.api, &ctx, session, &job.chat_id, text),
+            JobKind::Callback { data, message_id } => {
+                handle_callback(&job.api, &ctx, session, &job.chat_id, *message_id, data)
+            }
+        }));
+        if outcome.is_err() {
+            maildeck_core::logging::error(format!(
+                "[telegram] 处理 {} 时 panic，已跳过这条（Bot 继续运行）",
+                job.chat_id
+            ));
+        }
     }
 }
 
@@ -721,24 +808,7 @@ fn select_account(
     }
 
     // 刷新失败不假装成功：明确标注显示的是缓存。
-    let note = match crate::cmd_refresh_accounts_owned(
-        ctx,
-        Some(vec![account_id.clone()]),
-        crate::REFRESH_OWNER_TELEGRAM,
-    ) {
-        Ok(report) => {
-            let failed = report
-                .outcomes
-                .iter()
-                .any(|o| o.status == maildeck_core::contracts::RefreshStatusSummary::Failed);
-            if failed {
-                "⚠️ 刷新失败，下面是缓存".to_string()
-            } else {
-                "✅ 已刷新".to_string()
-            }
-        }
-        Err(_) => "⚠️ 刷新失败，下面是缓存".to_string(),
-    };
+    let note = refresh_note(ctx, &account_id);
 
     if let Ok(result) = crate::cmd_mail_list(ctx, &account_id, INBOX, 1, PAGE_SIZE, false) {
         session.view = Some(AccountView::new(result, email.clone(), 1));
@@ -766,9 +836,18 @@ fn refresh_view(
     };
     let _ = api.edit_message_text(chat_id, message_id, "🔄 正在刷新…", None);
     maildeck_core::logging::info(format!("[telegram] 手动刷新 {email}"));
-    let note = match crate::cmd_refresh_accounts_owned(
+    let note = refresh_note(ctx, &account_id);
+    if let Ok(result) = crate::cmd_mail_list(ctx, &account_id, &folder_id, page, PAGE_SIZE, false) {
+        session.view = Some(AccountView::new(result, email, page));
+    }
+    render_view(api, session, chat_id, message_id, &note);
+}
+
+/// 刷新单个账号并给出人话结论。刷新失败就明说“下面是缓存”，不假装成功。
+fn refresh_note(ctx: &AppContext, account_id: &str) -> String {
+    match crate::cmd_refresh_accounts_owned(
         ctx,
-        Some(vec![account_id.clone()]),
+        Some(vec![account_id.to_string()]),
         crate::REFRESH_OWNER_TELEGRAM,
     ) {
         Ok(report) => {
@@ -783,11 +862,7 @@ fn refresh_view(
             }
         }
         Err(_) => "⚠️ 刷新失败，下面是缓存".to_string(),
-    };
-    if let Ok(result) = crate::cmd_mail_list(ctx, &account_id, &folder_id, page, PAGE_SIZE, false) {
-        session.view = Some(AccountView::new(result, email, page));
     }
-    render_view(api, session, chat_id, message_id, &note);
 }
 
 /// 翻页：不刷新，只换页读缓存。

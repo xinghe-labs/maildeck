@@ -152,8 +152,26 @@ Bot: 正文…
 | --- | --- |
 | `[telegram] Bot 已启动…` | 配置读到了，线程起来了 |
 | `[telegram] 代理：未配置` | 设置里没代理，国内必失败 |
+| `[telegram] worker 已就绪` | 后台执行线程起来了（重活都在它里面跑） |
+| `[telegram] 从 offset N 继续` | 重启后接着上次的位置收，不会重放旧命令 |
+| `[telegram] {method} 触发限流` | 命中 429，按 `retry_after` 退避后自动重试 |
+| `[telegram] 队列已满，丢弃本次操作` | 连点太快，后台还在忙（会回一句“请等几秒”） |
+| `[telegram] 处理 … 时 panic` | 单条命令出错，已跳过，Bot 继续运行 |
 | `轮询失败…Unauthorized` | 代理通了，但 token 是错的 |
 | `轮询失败…error sending request` | 网络/代理层不通 |
 | 完全没有 `[telegram]` 开头 | `telegram.json` 没被读到（路径、JSON 格式、字段为空） |
 
 重试退避是 3s → 5s → 10s → 30s，不会打爆日志。
+
+## 实现要点（改代码前先看）
+
+- **轮询线程只做三件事**：白名单校验、`answer_callback_query` 秒回、把活丢进队列。
+  刷新/搜索/取正文全在 `telegram-worker` 线程里串行跑（`crates/maildeck-app/src/telegram_bot.rs`
+  的 `accept` / `push` / `worker`）。早期版本在轮询线程里同步做刷新，一次刷新
+  就把 `get_updates` 和按钮应答一起堵住，表现是“按钮一直转圈”。
+- **按钮应答必须在轮询线程发**：Telegram 只在收到 `answerCallbackQuery` 后才停止转圈。
+- **进度已记录在 `telegram_offset`**：文件里是已确认的 `update_id + 1`，
+  删掉它会让 Bot 重新处理 Telegram 还留着的旧命令（约 24 小时内）。
+- **429 会退避重试**：最多 3 次，等待秒数取 `parameters.retry_after`，封顶 60s。
+- **单条命令 panic 不影响 Bot**：worker 用 `catch_unwind` 包住每个 job；
+  轮询线程也包住了 update 解析。
