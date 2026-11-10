@@ -290,9 +290,7 @@ pub fn refresh_accounts(
                     // 错峰：按并发槽位取模，避免 idx 线性膨胀成几分钟的排队。
                     let idx = counter.fetch_add(1, Ordering::SeqCst);
                     if interval > 0 && idx > 0 {
-                        std::thread::sleep(Duration::from_millis(
-                            interval * (idx % slots) as u64,
-                        ));
+                        std::thread::sleep(Duration::from_millis(interval * (idx % slots) as u64));
                     }
                     let outcome =
                         refresh_one_account(store, tokens, record, options, ctx, graph_client);
