@@ -16,6 +16,7 @@ pub mod proxy_security;
 pub mod refresh_state;
 pub mod settings;
 pub mod transports;
+pub mod updater;
 
 pub use account_store::AccountStore;
 pub use contracts::*;
