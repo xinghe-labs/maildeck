@@ -105,6 +105,12 @@ impl AccountView {
         }
     }
 
+    /// 本页第一条的全局序号：第 2 页从 11 开始。
+    /// 只影响显示，按钮回调 `m:{i}` 仍是页内下标，不能跟着变。
+    fn first_no(&self) -> i64 {
+        (self.page.max(1) - 1) * PAGE_SIZE + 1
+    }
+
     fn render(&self, note: &str) -> String {
         let mut out = format!("📬 {}\n", self.email);
         if !note.is_empty() {
@@ -129,7 +135,7 @@ impl AccountView {
             let clip = if m.has_attachments { " 📎" } else { "" };
             out.push_str(&format!(
                 "{}. [{}] {} · {}{} · {}\n",
-                i + 1,
+                self.first_no() + i as i64,
                 flag,
                 m.from,
                 truncate(&m.subject, 40),
@@ -138,11 +144,7 @@ impl AccountView {
             ));
         }
         if self.total > self.messages.len() as i64 {
-            out.push_str(&format!(
-                "\n共 {} 封，这里显示最近 {} 封",
-                self.total,
-                self.messages.len()
-            ));
+            out.push_str(&format!("\n共 {} 封", self.total));
         }
         out
     }
@@ -152,7 +154,7 @@ impl AccountView {
         for (i, m) in self.messages.iter().enumerate() {
             let label = format!(
                 "{}. {} · {}",
-                i + 1,
+                self.first_no() + i as i64,
                 truncate(&m.from, 16),
                 truncate(&m.subject, 26)
             );
@@ -285,6 +287,7 @@ fn dispatch(
         let callback_id = cq.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         let _ = api.answer_callback_query(callback_id, None);
         let data = cq.get("data").and_then(|v| v.as_str()).unwrap_or_default();
+        maildeck_core::logging::info(format!("[telegram] 收到按钮 {data}"));
         let message_id = cq
             .pointer("/message/message_id")
             .and_then(|v| v.as_i64())
@@ -302,6 +305,9 @@ fn dispatch(
             return;
         }
         let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+        // 记录原始输入：`/open` 打错、参数没带上时，日志里能直接看出来。
+        let shown: String = text.chars().take(80).collect();
+        maildeck_core::logging::info(format!("[telegram] 收到文本 {shown:?}"));
         let session = sessions.entry(chat_id.clone()).or_default();
         handle_text(api, ctx, session, &chat_id, text);
     }
@@ -808,6 +814,11 @@ fn goto_page(
     };
     match crate::cmd_mail_list(ctx, &account_id, &folder_id, page, PAGE_SIZE, false) {
         Ok(result) => {
+            maildeck_core::logging::info(format!(
+                "[telegram] 翻页 {email} → 第 {page} 页（{} 封，共 {} 封）",
+                result.messages.len(),
+                result.total
+            ));
             session.view = Some(AccountView::new(result, email, page));
             render_view(api, session, chat_id, message_id, "");
         }
@@ -1302,6 +1313,29 @@ mod tests {
     fn render_shows_page_indicator_only_when_needed() {
         assert!(make_view(25, 2, 10).render("").contains("第 2/3 页"));
         assert!(!make_view(5, 1, 5).render("").contains("页"));
+    }
+
+    #[test]
+    fn numbering_continues_across_pages() {
+        // 每页都从 1 开始会让人以为没翻页，必须连续编号。
+        let text = make_view(25, 2, 10).render("");
+        assert!(text.contains("\n11. "), "第 2 页应从 11 开始：{text}");
+        assert!(!text.contains("\n1. "), "第 2 页不该出现 1.：{text}");
+
+        let kb = make_view(25, 2, 10).keyboard().to_string();
+        assert!(kb.contains("11. "), "按钮也应从 11 开始：{kb}");
+
+        assert!(make_view(25, 3, 5).render("").contains("\n21. "));
+        assert!(make_view(25, 1, 10).render("").contains("\n1. "));
+    }
+
+    #[test]
+    fn callback_index_stays_page_local() {
+        // 编号变了，但 m:{i} 必须仍是页内下标，否则会点开错邮件。
+        let kb = make_view(25, 2, 10).keyboard().to_string();
+        assert!(kb.contains("m:0"), "第 2 页首项仍应是 m:0：{kb}");
+        assert!(kb.contains("m:9"), "第 2 页末项仍应是 m:9：{kb}");
+        assert!(!kb.contains("m:10"), "不该出现页外下标：{kb}");
     }
 
     #[test]
