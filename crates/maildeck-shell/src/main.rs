@@ -1207,6 +1207,17 @@ fn main() {
                     let _ = perform_update_check(&handle, true);
                 });
             }
+            // Telegram Bot：配置齐全才拉起长轮询线程（没配就不跑，不占资源）。
+            if let Some(state) = app.try_state::<Ctx>() {
+                let bot_ctx = state.inner().clone();
+                match maildeck_core::telegram::load_config() {
+                    Ok(Some(config)) => {
+                        std::thread::spawn(move || maildeck_app::telegram_bot::run(bot_ctx, config));
+                    }
+                    Ok(None) => {}
+                    Err(err) => eprintln!("[telegram] 读取配置失败：{err}"),
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

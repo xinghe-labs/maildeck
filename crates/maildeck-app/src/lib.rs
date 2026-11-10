@@ -12,6 +12,8 @@ use maildeck_core::refresh_state::RefreshOptions;
 use maildeck_core::transports::GraphClient;
 use std::sync::{Arc, Mutex};
 
+pub mod telegram_bot;
+
 /// 全局应用上下文：store + token store + 取消令牌 + 设置缓存。
 pub struct AppContext {
     pub store: AccountStore,

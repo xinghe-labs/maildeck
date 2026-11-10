@@ -2332,6 +2332,7 @@ dependencies = [
 name = "maildeck-app"
 version = "0.5.2"
 dependencies = [
+ "chrono",
  "maildeck-core",
  "serde",
  "serde_json",
