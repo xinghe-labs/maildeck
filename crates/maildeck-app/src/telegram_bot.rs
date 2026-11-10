@@ -555,6 +555,9 @@ fn unread_overview(api: &BotApi, ctx: &AppContext, session: &mut Session, chat_i
     } else {
         format!("📬 共 {total} 封未读，涉及 {involved} 个账号：")
     };
+    maildeck_core::logging::info(format!(
+        "[telegram] 未读概览：{total} 封 / {involved} 个账号"
+    ));
     let _ = api.send_message(
         chat_id,
         &header,
@@ -756,6 +759,7 @@ fn refresh_view(
         return;
     };
     let _ = api.edit_message_text(chat_id, message_id, "🔄 正在刷新…", None);
+    maildeck_core::logging::info(format!("[telegram] 手动刷新 {email}"));
     let note = match crate::cmd_refresh_accounts_owned(
         ctx,
         Some(vec![account_id.clone()]),
