@@ -274,7 +274,8 @@ fn refresh_all_in_background(app: &tauri::AppHandle) {
 fn perform_update_check(app: &tauri::AppHandle, quiet_when_current: bool) -> Value {
     let current = app.package_info().version.to_string();
     let proxy_url = runtime_settings().map(|s| s.proxy_url).unwrap_or_default();
-    let next = match maildeck_core::updater::fetch_latest_release(&proxy_url, UPDATE_CHECK_TIMEOUT) {
+    let next = match maildeck_core::updater::fetch_latest_release(&proxy_url, UPDATE_CHECK_TIMEOUT)
+    {
         Ok(latest) if maildeck_core::updater::is_newer(&current, &latest.version) => json!({
             // 绿色版没有安装器：查得到新版，但只能引导到发布页手动下载。
             "phase": "unsupported",
@@ -374,10 +375,7 @@ async fn accounts_preview_import_text(state: tauri::State<'_, Ctx>, text: String
 #[tauri::command]
 async fn accounts_import_text(state: tauri::State<'_, Ctx>, text: String) -> CmdResult {
     let ctx = state.inner().clone();
-    offload(move || {
-        cmd_body!(ctx, maildeck_app::cmd_accounts_import_text(&ctx, &text))
-    })
-    .await
+    offload(move || cmd_body!(ctx, maildeck_app::cmd_accounts_import_text(&ctx, &text))).await
 }
 
 #[tauri::command]
@@ -422,28 +420,24 @@ async fn accounts_upsert(
 #[tauri::command]
 async fn accounts_update(state: tauri::State<'_, Ctx>, input: AccountUpdateInput) -> CmdResult {
     let ctx = state.inner().clone();
-    offload(move || {
-        cmd_body!(
-            ctx,
-            maildeck_app::cmd_accounts_update_input(&ctx, input)
-        )
-    })
-    .await
+    offload(move || cmd_body!(ctx, maildeck_app::cmd_accounts_update_input(&ctx, input))).await
 }
 
 #[tauri::command]
 async fn accounts_delete(state: tauri::State<'_, Ctx>, account_id: String) -> CmdResult {
     let ctx = state.inner().clone();
-    offload(move || match maildeck_app::cmd_account_delete(&ctx, &account_id) {
-        Ok(()) => cmd_body!(
-            ctx,
-            maildeck_app::cmd_account_list(&ctx).map(|records| records
-                .iter()
-                .map(maildeck_core::import_module::to_view)
-                .collect::<Vec<_>>())
-        ),
-        Err(e) => Err(fail(e)),
-    })
+    offload(
+        move || match maildeck_app::cmd_account_delete(&ctx, &account_id) {
+            Ok(()) => cmd_body!(
+                ctx,
+                maildeck_app::cmd_account_list(&ctx).map(|records| records
+                    .iter()
+                    .map(maildeck_core::import_module::to_view)
+                    .collect::<Vec<_>>())
+            ),
+            Err(e) => Err(fail(e)),
+        },
+    )
     .await
 }
 
@@ -454,10 +448,7 @@ async fn accounts_test(state: tauri::State<'_, Ctx>, account_id: String) -> CmdR
 }
 
 #[tauri::command]
-async fn accounts_test_fallback(
-    state: tauri::State<'_, Ctx>,
-    account_id: String,
-) -> CmdResult {
+async fn accounts_test_fallback(state: tauri::State<'_, Ctx>, account_id: String) -> CmdResult {
     let ctx = state.inner().clone();
     offload(move || {
         cmd_body!(
@@ -495,15 +486,16 @@ async fn accounts_test_many(
                     let job_id = job_id.clone();
                     let id = id.clone();
                     handles.push(scope.spawn(move || {
-                        let result = maildeck_app::cmd_account_test(state, &id).unwrap_or_else(|e| {
-                            maildeck_core::contracts::TestManyResult {
-                                account_id: id.clone(),
-                                account: None,
-                                ok: false,
-                                message: None,
-                                error: Some(e.payload()),
-                            }
-                        });
+                        let result =
+                            maildeck_app::cmd_account_test(state, &id).unwrap_or_else(|e| {
+                                maildeck_core::contracts::TestManyResult {
+                                    account_id: id.clone(),
+                                    account: None,
+                                    ok: false,
+                                    message: None,
+                                    error: Some(e.payload()),
+                                }
+                            });
                         let mut p = progress.lock().expect("progress lock");
                         p.0 += 1;
                         if result.ok {
@@ -831,11 +823,7 @@ async fn mail_save_attachment(
         {
             Ok(Ok(value)) => value,
             Ok(Err(e)) => return Err(fail(e)),
-            Err(err) => {
-                return Err(fail(AppError::Unknown(format!(
-                    "后台任务执行失败：{err}"
-                ))))
-            }
+            Err(err) => return Err(fail(AppError::Unknown(format!("后台任务执行失败：{err}")))),
         }
     };
     use tauri_plugin_dialog::DialogExt;
@@ -875,10 +863,7 @@ async fn mail_cache_stats(state: tauri::State<'_, Ctx>) -> CmdResult {
 }
 
 #[tauri::command]
-async fn mail_clear_cache(
-    state: tauri::State<'_, Ctx>,
-    account_id: Option<String>,
-) -> CmdResult {
+async fn mail_clear_cache(state: tauri::State<'_, Ctx>, account_id: Option<String>) -> CmdResult {
     let ctx = state.inner().clone();
     offload(move || {
         cmd_body!(
@@ -924,11 +909,7 @@ async fn auth_start_device_code(
         {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(fail(e)),
-            Err(err) => {
-                return Err(fail(AppError::Unknown(format!(
-                    "后台任务执行失败：{err}"
-                ))))
-            }
+            Err(err) => return Err(fail(AppError::Unknown(format!("后台任务执行失败：{err}")))),
         }
     };
     let _ = app.emit(
@@ -1105,7 +1086,8 @@ async fn settings_set(
     patch: Value,
 ) -> CmdResult {
     let ctx = state.inner().clone();
-    let result = offload(move || cmd_body!(ctx, maildeck_app::cmd_settings_set(&ctx, patch))).await?;
+    let result =
+        offload(move || cmd_body!(ctx, maildeck_app::cmd_settings_set(&ctx, patch))).await?;
     // 设置项的壳层副作用（原版 applySettings）：托盘开关、开机自启必须真的生效。
     // cmd_settings_set 返回的就是扁平的 AppSettings（没有外层 settings 键）。
     let close_to_tray = result
@@ -1146,9 +1128,7 @@ async fn update_check(app: tauri::AppHandle) -> CmdResult {
     let handle = app.clone();
     match tauri::async_runtime::spawn_blocking(move || perform_update_check(&handle, false)).await {
         Ok(next) => Ok(next),
-        Err(err) => Err(fail(AppError::Unknown(format!(
-            "后台任务执行失败：{err}"
-        )))),
+        Err(err) => Err(fail(AppError::Unknown(format!("后台任务执行失败：{err}")))),
     }
 }
 

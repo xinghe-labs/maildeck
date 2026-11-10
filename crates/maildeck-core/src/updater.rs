@@ -16,10 +16,7 @@ pub struct LatestRelease {
 }
 
 /// 请求 GitHub Releases 最新发布。代理走设置里的 proxyUrl（与原版 applySessionProxy 一致）。
-pub fn fetch_latest_release(
-    proxy_url: &str,
-    timeout: Duration,
-) -> Result<LatestRelease, AppError> {
+pub fn fetch_latest_release(proxy_url: &str, timeout: Duration) -> Result<LatestRelease, AppError> {
     let mut builder = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .user_agent("MailDeck-UpdateCheck");
@@ -41,9 +38,7 @@ pub fn fetch_latest_release(
         .text()
         .map_err(|e| AppError::NetworkError(e.to_string()))?;
     if status != 200 {
-        return Err(AppError::Unknown(format!(
-            "检查更新失败（HTTP {status}）"
-        )));
+        return Err(AppError::Unknown(format!("检查更新失败（HTTP {status}）")));
     }
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| AppError::NetworkError("发布信息不是合法 JSON".to_string()))?;
@@ -71,7 +66,9 @@ pub fn parse_version(tag: &str) -> Option<String> {
     // 取最后一个「v/V 紧跟数字」的位置（tag 前缀可能自带 v，例如 rust-v1.2.3）
     let start = tag
         .char_indices()
-        .filter(|(i, c)| (*c == 'v' || *c == 'V') && tag[i + 1..].starts_with(|n: char| n.is_ascii_digit()))
+        .filter(|(i, c)| {
+            (*c == 'v' || *c == 'V') && tag[i + 1..].starts_with(|n: char| n.is_ascii_digit())
+        })
         .map(|(i, _)| i + 1)
         .next_back();
     let body = match start {
