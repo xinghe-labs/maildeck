@@ -407,6 +407,78 @@ pub fn set_message_read(
     Ok(())
 }
 
+/// 跨账号未读统计（只看收件箱），按未读数降序。
+pub fn unread_by_account(conn: &Connection, limit: i64) -> Result<Vec<(String, i64)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT account_id, COUNT(*) AS n FROM mail_messages
+             WHERE folder_id=?1 AND is_read=0
+             GROUP BY account_id ORDER BY n DESC, account_id ASC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![DEFAULT_FOLDER, limit.max(1)], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 转义 LIKE 通配符，避免用户输入的 `%`/`_` 被当成模式。
+fn escape_like(needle: &str) -> String {
+    let mut out = String::with_capacity(needle.len() + 4);
+    for ch in needle.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// 跨账号搜索邮件：匹配主题 / 发件人名 / 发件地址，按收信时间倒序。
+pub fn search_messages(
+    conn: &Connection,
+    needle: &str,
+    limit: i64,
+) -> Result<Vec<crate::contracts::MailSearchHit>, String> {
+    let pattern = format!("%{}%", escape_like(needle.trim()));
+    let mut stmt = conn
+        .prepare(
+            "SELECT account_id, message_id, subject, from_name, from_address,
+                    received_date_time, is_read, has_attachments
+             FROM mail_messages
+             WHERE folder_id=?1
+               AND (subject LIKE ?2 ESCAPE '\\'
+                    OR from_name LIKE ?2 ESCAPE '\\'
+                    OR from_address LIKE ?2 ESCAPE '\\')
+             ORDER BY received_date_time DESC
+             LIMIT ?3",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![DEFAULT_FOLDER, pattern, limit.clamp(1, 200)],
+            |r| {
+                Ok(crate::contracts::MailSearchHit {
+                    account_id: r.get(0)?,
+                    message_id: r.get(1)?,
+                    subject: r.get(2)?,
+                    from_name: r.get(3)?,
+                    from_address: r.get(4)?,
+                    received_date_time: r.get(5)?,
+                    is_read: r.get::<_, i64>(6)? != 0,
+                    has_attachments: r.get::<_, i64>(7)? != 0,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +534,96 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::db::apply_database_migrations(&mut conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn unread_counts_group_by_account_desc() {
+        let conn = setup();
+        // acc-a：3 封未读 + 1 封已读
+        upsert_mail_messages(
+            &conn,
+            "acc-a",
+            DEFAULT_FOLDER,
+            &[
+                item("a1", "2024-05-01T00:00:00Z", false),
+                item("a2", "2024-05-02T00:00:00Z", false),
+                item("a3", "2024-05-03T00:00:00Z", false),
+                item("a4", "2024-05-04T00:00:00Z", true),
+            ],
+        )
+        .unwrap();
+        // acc-b：1 封未读
+        upsert_mail_messages(
+            &conn,
+            "acc-b",
+            DEFAULT_FOLDER,
+            &[item("b1", "2024-05-05T00:00:00Z", false)],
+        )
+        .unwrap();
+        // acc-c：全已读，不应出现
+        upsert_mail_messages(
+            &conn,
+            "acc-c",
+            DEFAULT_FOLDER,
+            &[item("c1", "2024-05-06T00:00:00Z", true)],
+        )
+        .unwrap();
+
+        let rows = unread_by_account(&conn, 10).unwrap();
+        assert_eq!(
+            rows,
+            vec![("acc-a".to_string(), 3), ("acc-b".to_string(), 1)]
+        );
+
+        // limit 生效
+        let rows = unread_by_account(&conn, 1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "acc-a");
+    }
+
+    #[test]
+    fn search_matches_subject_and_sender() {
+        let conn = setup();
+        let mut m = item("s1", "2024-05-01T00:00:00Z", false);
+        m.subject = "Your invoice is ready".into();
+        upsert_mail_messages(&conn, "acc-a", DEFAULT_FOLDER, &[m]).unwrap();
+
+        let mut m2 = item("s2", "2024-05-02T00:00:00Z", false);
+        m2.subject = "Weekly digest".into();
+        m2.from = Some(crate::contracts::MailRecipient {
+            name: Some("Invoices Bot".into()),
+            address: Some("billing@vendor.com".into()),
+        });
+        upsert_mail_messages(&conn, "acc-b", DEFAULT_FOLDER, &[m2]).unwrap();
+
+        // 主题命中
+        let hits = search_messages(&conn, "invoice", 10).unwrap();
+        assert_eq!(hits.len(), 2, "主题与发件人名都含 invoice（不区分大小写）");
+        assert_eq!(hits[0].message_id, "s2", "按时间倒序，新的在前");
+
+        // 地址命中
+        let hits = search_messages(&conn, "vendor.com", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].account_id, "acc-b");
+
+        // 无命中
+        assert!(search_messages(&conn, "zzz-not-there", 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn search_escapes_like_wildcards() {
+        let conn = setup();
+        let mut m = item("w1", "2024-05-01T00:00:00Z", false);
+        m.subject = "100% done".into();
+        upsert_mail_messages(&conn, "acc-a", DEFAULT_FOLDER, &[m]).unwrap();
+
+        // 字面 % 能命中；如果把 % 当通配符，则会匹配到所有邮件
+        assert_eq!(search_messages(&conn, "100%", 10).unwrap().len(), 1);
+        // `_` 不该变成单字符通配
+        assert!(search_messages(&conn, "1_0", 10).unwrap().is_empty());
+        assert_eq!(escape_like("a%b_c\\d"), "a\\%b\\_c\\\\d");
     }
 
     #[test]

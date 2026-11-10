@@ -56,10 +56,10 @@ pub fn load_config() -> Result<Option<TelegramConfig>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-    let file: TelegramFile = serde_json::from_str(&raw)
-        .map_err(|e| format!("解析 {} 失败：{e}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    let file: TelegramFile =
+        serde_json::from_str(&raw).map_err(|e| format!("解析 {} 失败：{e}", path.display()))?;
     if file.bot_token.trim().is_empty() || file.chat_id.trim().is_empty() {
         return Ok(None);
     }
@@ -106,8 +106,7 @@ impl BotApi {
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .user_agent("MailDeck-TelegramBot");
         if !proxy_url.trim().is_empty() {
-            let proxy =
-                reqwest::Proxy::all(proxy_url).map_err(|e| format!("代理配置无效：{e}"))?;
+            let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| format!("代理配置无效：{e}"))?;
             builder = builder.proxy(proxy);
         }
         let client = builder
@@ -174,7 +173,10 @@ impl BotApi {
             body["reply_markup"] = markup;
         }
         let result = self.call("sendMessage", body)?;
-        Ok(result.get("message_id").and_then(|v| v.as_i64()).unwrap_or(0))
+        Ok(result
+            .get("message_id")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0))
     }
 
     /// 原地编辑（用于「正在获取…」→ 正文）。编辑失败不致命，调用方降级为重新发送。
@@ -204,6 +206,20 @@ impl BotApi {
             body["text"] = serde_json::json!(t);
         }
         self.call("answerCallbackQuery", body).map(|_| ())
+    }
+
+    /// 注册命令菜单：聊天框旁的菜单按钮，以及输入 `/` 时的自动补全。
+    /// `commands` 是 `(命令名, 说明)`，命令名不带前导 `/`（Telegram 要求 1~32 个
+    /// 小写字母/数字/下划线，说明 3~256 字）。重复调用是覆盖，幂等。
+    pub fn set_my_commands(&self, commands: &[(&str, &str)]) -> Result<(), String> {
+        let list: Vec<serde_json::Value> = commands
+            .iter()
+            .map(|(command, description)| {
+                serde_json::json!({ "command": command, "description": description })
+            })
+            .collect();
+        self.call("setMyCommands", serde_json::json!({ "commands": list }))
+            .map(|_| ())
     }
 }
 

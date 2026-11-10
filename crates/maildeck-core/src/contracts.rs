@@ -938,6 +938,20 @@ pub struct MailRecipient {
     pub address: Option<String>,
 }
 
+/// 跨账号搜索命中的单条邮件（带归属账号，便于直接打开）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailSearchHit {
+    pub account_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub from_name: Option<String>,
+    pub from_address: Option<String>,
+    pub received_date_time: Option<String>,
+    pub is_read: bool,
+    pub has_attachments: bool,
+}
+
 /// flag 节点（Graph flag.flagStatus）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

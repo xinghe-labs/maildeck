@@ -3,22 +3,28 @@
 
 use maildeck_core::account_store::AccountStore;
 use maildeck_core::contracts::{
-    AppErrorPayload, DeviceCodePoll, DeviceCodeStart, MailboxMessageDetail,
+    AppErrorPayload, DeviceCodePoll, DeviceCodeStart, MailSearchHit, MailboxMessageDetail,
     MailboxMessageListResult, OAuthStart, RefreshReport,
 };
 use maildeck_core::credentials::TieredTokenStore;
 use maildeck_core::errors::AppError;
 use maildeck_core::refresh_state::RefreshOptions;
 use maildeck_core::transports::GraphClient;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub mod telegram_bot;
+
+/// 刷新任务的归属标识：界面与 Telegram Bot 各用各的取消令牌，互不干扰。
+pub const REFRESH_OWNER_UI: &str = "ui";
+pub const REFRESH_OWNER_TELEGRAM: &str = "telegram";
 
 /// 全局应用上下文：store + token store + 取消令牌 + 设置缓存。
 pub struct AppContext {
     pub store: AccountStore,
     pub tokens: TieredTokenStore,
-    pub refresh_cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// 按归属分槽：界面取消刷新不应该连带取消 Bot 正在跑的刷新，反之亦然。
+    pub refresh_cancel: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     pub oauth_timeout: std::time::Duration,
 }
 
@@ -29,7 +35,7 @@ impl AppContext {
         Ok(Self {
             store,
             tokens: TieredTokenStore::new(),
-            refresh_cancel: Mutex::new(None),
+            refresh_cancel: Mutex::new(HashMap::new()),
             oauth_timeout: std::time::Duration::from_secs(30),
         })
     }
@@ -240,6 +246,16 @@ pub fn cmd_refresh_accounts(
     ctx: &AppContext,
     account_ids: Option<Vec<String>>,
 ) -> Result<RefreshReport, AppError> {
+    cmd_refresh_accounts_owned(ctx, account_ids, REFRESH_OWNER_UI)
+}
+
+/// 按归属标识刷新：`owner` 决定占用哪个取消槽（界面用 `REFRESH_OWNER_UI`，Bot 用
+/// `REFRESH_OWNER_TELEGRAM`）。两个归属可以同时刷新而互不取消。
+pub fn cmd_refresh_accounts_owned(
+    ctx: &AppContext,
+    account_ids: Option<Vec<String>>,
+    owner: &str,
+) -> Result<RefreshReport, AppError> {
     let all = ctx.store.list().map_err(AppError::Unknown)?;
     let accounts: Vec<_> = match &account_ids {
         Some(ids) => all.into_iter().filter(|a| ids.contains(&a.id)).collect(),
@@ -255,7 +271,7 @@ pub fn cmd_refresh_accounts(
             .refresh_cancel
             .lock()
             .map_err(|e| AppError::Unknown(e.to_string()))?;
-        *slot = Some(ctx2.cancel.clone());
+        slot.insert(owner.to_string(), ctx2.cancel.clone());
     }
     let graph = ctx.graph_client();
     let report = maildeck_core::refresh_state::refresh_accounts(
@@ -266,17 +282,24 @@ pub fn cmd_refresh_accounts(
         &ctx2,
         &graph,
     );
-    let mut slot = ctx
-        .refresh_cancel
-        .lock()
-        .map_err(|e| AppError::Unknown(e.to_string()))?;
-    *slot = None;
+    {
+        let mut slot = ctx
+            .refresh_cancel
+            .lock()
+            .map_err(|e| AppError::Unknown(e.to_string()))?;
+        slot.remove(owner);
+    }
     Ok(report)
 }
 
 pub fn cmd_refresh_cancel(ctx: &AppContext) -> Result<(), AppError> {
+    cmd_refresh_cancel_owned(ctx, REFRESH_OWNER_UI)
+}
+
+/// 只取消 `owner` 名下的刷新。
+pub fn cmd_refresh_cancel_owned(ctx: &AppContext, owner: &str) -> Result<(), AppError> {
     if let Ok(slot) = ctx.refresh_cancel.lock() {
-        if let Some(cancel) = slot.as_ref() {
+        if let Some(cancel) = slot.get(owner) {
             cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
@@ -314,6 +337,30 @@ pub fn cmd_mail_list(
     } else {
         maildeck_core::mailbox::read_cached_list(&ctx.store, account_id, folder_id, page, page_size)
     }
+}
+
+/// 跨账号未读概览：返回 (account_id, 未读数)，按未读数降序。只统计收件箱。
+pub fn cmd_mail_unread_summary(
+    ctx: &AppContext,
+    limit: i64,
+) -> Result<Vec<(String, i64)>, AppError> {
+    ctx.store
+        .with_conn(|conn| maildeck_core::mail_cache::unread_by_account(conn, limit))
+        .map_err(AppError::Unknown)
+}
+
+/// 跨账号搜索邮件（走本地缓存，不联网）。
+pub fn cmd_mail_search(
+    ctx: &AppContext,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<MailSearchHit>, AppError> {
+    if query.trim().is_empty() {
+        return Err(AppError::InvalidRequest("搜索词不能为空".into()));
+    }
+    ctx.store
+        .with_conn(|conn| maildeck_core::mail_cache::search_messages(conn, query, limit))
+        .map_err(AppError::Unknown)
 }
 
 pub fn cmd_mail_detail(
@@ -700,10 +747,45 @@ mod tests {
             AppContext {
                 store,
                 tokens: TieredTokenStore::new(),
-                refresh_cancel: Mutex::new(None),
+                refresh_cancel: Mutex::new(HashMap::new()),
                 oauth_timeout: std::time::Duration::from_secs(3),
             },
         )
+    }
+
+    #[test]
+    fn refresh_cancel_slots_are_isolated_per_owner() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_dir, ctx) = temp_ctx();
+        let ui = Arc::new(AtomicBool::new(false));
+        let bot = Arc::new(AtomicBool::new(false));
+        {
+            let mut slot = ctx.refresh_cancel.lock().unwrap();
+            slot.insert(REFRESH_OWNER_UI.to_string(), ui.clone());
+            slot.insert(REFRESH_OWNER_TELEGRAM.to_string(), bot.clone());
+        }
+
+        // 界面取消不能连带取消 Bot 的刷新
+        cmd_refresh_cancel(&ctx).unwrap();
+        assert!(ui.load(Ordering::SeqCst), "ui 槽应该被取消");
+        assert!(!bot.load(Ordering::SeqCst), "bot 槽不该被界面取消连带");
+
+        // Bot 取消只影响自己的槽
+        cmd_refresh_cancel_owned(&ctx, REFRESH_OWNER_TELEGRAM).unwrap();
+        assert!(bot.load(Ordering::SeqCst), "bot 槽应该被取消");
+    }
+
+    #[test]
+    fn failed_refresh_leaves_no_slot_behind() {
+        let (_dir, ctx) = temp_ctx();
+        // 账号不存在 → 提前返回错误，不应在槽里留下任何东西
+        assert!(
+            cmd_refresh_accounts_owned(&ctx, Some(vec!["nope".into()]), REFRESH_OWNER_UI).is_err()
+        );
+        assert!(
+            ctx.refresh_cancel.lock().unwrap().is_empty(),
+            "失败的刷新不该残留取消槽"
+        );
     }
 
     #[test]

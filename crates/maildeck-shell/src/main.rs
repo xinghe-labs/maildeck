@@ -93,7 +93,7 @@ fn show_main_window(app: &tauri::AppHandle) {
 fn sync_tray(app: &tauri::AppHandle, enabled: bool) {
     if enabled {
         if let Err(err) = build_tray(app) {
-            eprintln!("创建托盘失败：{err}");
+            maildeck_core::logging::warn(format!("创建托盘失败：{err}"));
         }
     } else if tray_active(app) {
         let _ = app.remove_tray_by_id(TRAY_ID);
@@ -137,7 +137,7 @@ fn apply_launch_at_startup(app: &tauri::AppHandle, enabled: bool) {
         autolaunch.disable()
     };
     if let Err(err) = result {
-        eprintln!("应用开机自启设置失败：{err}");
+        maildeck_core::logging::warn(format!("应用开机自启设置失败：{err}"));
     }
 }
 
@@ -230,7 +230,7 @@ fn notify_new_mail(
             .body(format!("{email} 收到 {new_count} 封新邮件"))
             .show();
         if let Err(err) = result {
-            eprintln!("托盘气泡提醒失败：{err}");
+            maildeck_core::logging::warn(format!("托盘气泡提醒失败：{err}"));
         }
     }
 }
@@ -252,7 +252,7 @@ fn refresh_all_in_background(app: &tauri::AppHandle) {
                 .map(|account| account.id)
                 .collect(),
             Err(err) => {
-                eprintln!("读取账号失败：{err}");
+                maildeck_core::logging::warn(format!("读取账号失败：{err}"));
                 return;
             }
         };
@@ -265,7 +265,7 @@ fn refresh_all_in_background(app: &tauri::AppHandle) {
                 emit_refresh_progress(&app, "refreshBackground", &ids, &report);
                 notify_new_mail(&app, &report, &before);
             }
-            Err(err) => eprintln!("托盘立即收信失败：{err}"),
+            Err(err) => maildeck_core::logging::warn(format!("托盘立即收信失败：{err}")),
         }
     });
 }
@@ -298,13 +298,13 @@ fn perform_update_check(app: &tauri::AppHandle, quiet_when_current: bool) -> Val
     // 启动时的自动检查：已是最新就静默，别把设置页的「检查更新」换成「打开发布页」。
     let up_to_date = next.get("phase").and_then(|v| v.as_str()) == Some("not-available");
     if up_to_date && quiet_when_current {
-        eprintln!("启动自动检查更新：已是最新 v{current}");
+        maildeck_core::logging::info(format!("启动自动检查更新：已是最新 v{current}"));
         return next;
     }
-    eprintln!(
+    maildeck_core::logging::info(format!(
         "检查更新：{}（当前 v{current}）",
         next.get("phase").and_then(|v| v.as_str()).unwrap_or("?")
-    );
+    ));
     if let Some(state) = app.try_state::<ShellState>() {
         state.set_update_state(app, next.clone());
     }
@@ -1144,6 +1144,9 @@ fn launch_hidden() -> bool {
 }
 
 fn main() {
+    // 日志尽早初始化：之后所有日志都写 <数据目录>/logs/maildeck.log，
+    // 且 stderr 失效时不会再像 eprintln! 那样 panic。
+    maildeck_core::logging::init_default();
     let ctx: Ctx = Arc::new(AppContext::open().expect("初始化 MailDeck 数据目录失败"));
     let device_session = DeviceCodeSession {
         cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
@@ -1212,10 +1215,14 @@ fn main() {
                 let bot_ctx = state.inner().clone();
                 match maildeck_core::telegram::load_config() {
                     Ok(Some(config)) => {
-                        std::thread::spawn(move || maildeck_app::telegram_bot::run(bot_ctx, config));
+                        std::thread::spawn(move || {
+                            maildeck_app::telegram_bot::run(bot_ctx, config)
+                        });
                     }
                     Ok(None) => {}
-                    Err(err) => eprintln!("[telegram] 读取配置失败：{err}"),
+                    Err(err) => {
+                        maildeck_core::logging::warn(format!("[telegram] 读取配置失败：{err}"))
+                    }
                 }
             }
             Ok(())

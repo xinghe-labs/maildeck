@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod db;
 pub mod errors;
 pub mod import_module;
+pub mod logging;
 pub mod mail_cache;
 pub mod mailbox;
 pub mod mailbox_access;
