@@ -266,32 +266,53 @@ pub fn refresh_accounts(
     let interval = options.interval_ms;
     let counter = AtomicUsize::new(0);
 
-    rayon::scope(|s| {
-        for record in accounts {
-            if ctx.is_canceled() {
-                break;
+    // 并发上限取设置页「并发数」。以前直接 rayon::scope 跑在全局池上：
+    // 并发恒等于 CPU 核数，一次 407 账号的全量刷新会把全局池占满好几分钟，
+    // 界面命令和 Telegram Bot 的单账号刷新只能排队等 worker（表现为「刷新卡住」）。
+    // 现在开独立池：既尊重并发设置，也不抢全局池。
+    let concurrency = options.concurrency.max(1).min(accounts.len().max(1));
+    let slots = concurrency;
+
+    let batch = || {
+        rayon::scope(|s| {
+            for record in accounts {
+                if ctx.is_canceled() {
+                    break;
+                }
+                let outcomes = &outcomes;
+                let ctx = &ctx;
+                let options = &options;
+                let store = &store;
+                let tokens = &tokens;
+                let graph_client = &graph_client;
+                let counter = &counter;
+                s.spawn(move |_| {
+                    // 错峰：按并发槽位取模，避免 idx 线性膨胀成几分钟的排队。
+                    let idx = counter.fetch_add(1, Ordering::SeqCst);
+                    if interval > 0 && idx > 0 {
+                        std::thread::sleep(Duration::from_millis(
+                            interval * (idx % slots) as u64,
+                        ));
+                    }
+                    let outcome =
+                        refresh_one_account(store, tokens, record, options, ctx, graph_client);
+                    if let Ok(mut list) = outcomes.lock() {
+                        list.push(outcome);
+                    }
+                });
             }
-            let outcomes = &outcomes;
-            let ctx = &ctx;
-            let options = &options;
-            let store = &store;
-            let tokens = &tokens;
-            let graph_client = &graph_client;
-            let counter = &counter;
-            s.spawn(move |_| {
-                // 间隔控制：按完成序号错峰
-                let idx = counter.fetch_add(1, Ordering::SeqCst);
-                if interval > 0 && idx > 0 {
-                    std::thread::sleep(Duration::from_millis(interval * idx as u64));
-                }
-                let outcome =
-                    refresh_one_account(store, tokens, record, options, ctx, graph_client);
-                if let Ok(mut list) = outcomes.lock() {
-                    list.push(outcome);
-                }
-            });
-        }
-    });
+        });
+    };
+
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(concurrency)
+        .thread_name(|i| format!("md-refresh-{i}"))
+        .build()
+    {
+        Ok(pool) => pool.install(batch),
+        // 建池失败（极端资源耗尽）时退回全局池，功能不中断。
+        Err(_) => batch(),
+    }
 
     let list = outcomes.into_inner().unwrap_or_default();
     let refreshed = list

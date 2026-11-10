@@ -97,8 +97,15 @@ impl ImapSession {
             .collect();
         let mut last_err: Option<ImapError> = None;
         let mut tcp = None;
+        // 总预算 timeout：outlook.office365.com 会解析出多个 IP，
+        // 若每个地址各给一份 timeout，最坏会拖成 N×timeout（实测能卡几分钟）。
+        let deadline = std::time::Instant::now() + timeout;
         for addr in &addrs {
-            match std::net::TcpStream::connect_timeout(addr, timeout) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match std::net::TcpStream::connect_timeout(addr, remaining) {
                 Ok(s) => {
                     tcp = Some(s);
                     break;
