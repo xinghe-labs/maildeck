@@ -1,0 +1,7 @@
+{
+  "ignore": [
+    "frontend/assets/**",
+    "crates/maildeck-shell/gen/**",
+    "target/**"
+  ]
+}
