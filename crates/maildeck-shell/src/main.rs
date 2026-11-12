@@ -163,27 +163,21 @@ fn attach_window_handlers(app: &tauri::AppHandle) {
     };
     let app_handle = app.clone();
     let window_handle = window.clone();
-    window.on_window_event(move |event| match event {
+    window.on_window_event(move |event| {
         // 关闭 = 隐藏到托盘；真实退出由 quitting 标记放行。
-        tauri::WindowEvent::CloseRequested { api, .. } => {
-            let quitting = app_handle
-                .state::<ShellState>()
-                .quitting
-                .load(Ordering::SeqCst);
-            if !quitting && close_to_tray_enabled() && tray_active(&app_handle) {
-                api.prevent_close();
-                let _ = window_handle.hide();
-            }
-        }
-        // 最小化 = 隐藏到托盘（原版 window.on("minimize")）。
-        tauri::WindowEvent::Resized(_)
-            if window_handle.is_minimized().unwrap_or(false)
-                && close_to_tray_enabled()
-                && tray_active(&app_handle) =>
-        {
+        // 最小化**不再**隐藏（原版 window.on("minimize") 会 hide）：任务栏图标
+        // 跟着消失，用户会以为程序崩了。现在最小化就是普通最小化。
+        let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+            return;
+        };
+        let quitting = app_handle
+            .state::<ShellState>()
+            .quitting
+            .load(Ordering::SeqCst);
+        if !quitting && close_to_tray_enabled() && tray_active(&app_handle) {
+            api.prevent_close();
             let _ = window_handle.hide();
         }
-        _ => {}
     });
 }
 
