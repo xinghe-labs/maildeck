@@ -14,6 +14,7 @@ use maildeck_core::telegram::{BotApi, TelegramConfig};
 use serde_json::json;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,8 +196,15 @@ impl AccountView {
 // 主循环
 // ---------------------------------------------------------------------------
 
-/// 启动 Bot 主循环。配置非法/代理不可用时不 panic，只打印并退出线程。
-pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
+/// 启动 Bot 主循环。`stop` 置 true 后，下一轮检查时退出（不会卡死进程）。
+///
+/// 返回 `Err` 只用于**不可恢复**的情况（初始化失败、token 失效），调用方用它
+/// 把原因显示到设置页；普通轮询失败仍按 [`RETRY_DELAYS`] 重试，不上报。
+pub fn run(
+    ctx: Arc<AppContext>,
+    config: TelegramConfig,
+    stop: Arc<AtomicBool>,
+) -> Result<(), String> {
     // 从上次确认的位置继续：进程中途退出后重启不会把旧命令再执行一遍。
     let mut offset: i64 = maildeck_core::telegram::load_offset();
     if offset > 0 {
@@ -223,7 +231,7 @@ pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
         Ok(api) => api,
         Err(err) => {
             maildeck_core::logging::warn(format!("[telegram] 初始化失败：{err}"));
-            return;
+            return Err(format!("初始化失败：{err}"));
         }
     };
 
@@ -256,11 +264,17 @@ pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
         .spawn(move || worker(worker_ctx, rx))
     {
         maildeck_core::logging::error(format!("[telegram] 启动 worker 失败：{err}"));
-        return;
+        return Err(format!("启动 worker 失败：{err}"));
     }
     maildeck_core::logging::info("[telegram] worker 已就绪（重活与轮询已分离）");
 
     loop {
+        // 停止信号只在两轮之间检查：getUpdates 最长阻塞 POLL_TIMEOUT_SECS，
+        // 所以要停也要等这一次长轮询返回。
+        if stop.load(Ordering::SeqCst) {
+            maildeck_core::logging::info("[telegram] 收到停止信号，退出轮询");
+            return Ok(());
+        }
         match api.get_updates(offset) {
             Ok(updates) => {
                 failures = 0;
@@ -286,6 +300,11 @@ pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
                 }
             }
             Err(err) => {
+                // token 失效/被删这类错误重试多少次都好不了，直接退出并上报。
+                if is_fatal(&err) {
+                    maildeck_core::logging::error(format!("[telegram] 不可恢复错误，退出：{err}"));
+                    return Err(err);
+                }
                 let delay = RETRY_DELAYS[failures.min(RETRY_DELAYS.len() - 1)];
                 failures += 1;
                 maildeck_core::logging::warn(format!(
@@ -300,6 +319,15 @@ pub fn run(ctx: Arc<AppContext>, config: TelegramConfig) {
             }
         }
     }
+}
+
+/// 重试也救不回来的错误：token 无效/被删，或 chat 被踢出。
+///
+/// 只认这几条字面量，宁可多退避一轮也不要错把网络抖动当致命错误。
+fn is_fatal(err: &str) -> bool {
+    ["Unauthorized", "Not Found", "bot was kicked"]
+        .iter()
+        .any(|needle| err.contains(needle))
 }
 
 /// 交给后台 worker 的一次操作。

@@ -22,7 +22,7 @@ const RATE_LIMIT_RETRIES: usize = 3;
 const RETRY_AFTER_CAP_SECS: u64 = 60;
 
 /// 运行时配置（token 已解密为明文，只在内存里）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelegramConfig {
     pub bot_token: String,
     pub chat_id: String,
@@ -31,22 +31,41 @@ pub struct TelegramConfig {
 impl TelegramConfig {
     /// 日志/报错里用的脱敏形态：`123456789:AAH...` -> `123456789:…`
     pub fn redacted_token(&self) -> String {
-        let head: String = self.bot_token.chars().take_while(|c| *c != ':').collect();
-        if head.is_empty() {
-            "…".to_string()
-        } else {
-            format!("{head}:…")
-        }
+        mask_token(&self.bot_token)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct TelegramFile {
+    /// 设置页勾的「启用」。false 时不拉起 Bot（即使 token 齐全）——
+    /// 手写配置文件的人必须显式写 `"enabled": true`。
+    enabled: bool,
     /// 可写 `dpapi:`/`sec:v1:` 前缀的密文，也可直接写明文（首次加载后自动加密回写）。
     bot_token: String,
     /// 只允许这一个 chat 使用 Bot；留空视为未配置。
     chat_id: String,
+}
+
+/// 设置页回显用的视图：**token 只给脱敏形态**，明文不出 core。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredView {
+    pub enabled: bool,
+    pub bot_token_masked: String,
+    pub chat_id: String,
+}
+
+/// `123456789:AAHsecret` → `123456789:…`；没有 `:` 时只留前 4 个字符。
+pub fn mask_token(token: &str) -> String {
+    let token = token.trim();
+    if token.is_empty() {
+        return String::new();
+    }
+    match token.split_once(':') {
+        Some((id, _)) => format!("{id}:…"),
+        None => format!("{}…", token.chars().take(4).collect::<String>()),
+    }
 }
 
 /// `%APPDATA%/maildeck/telegram.json`
@@ -78,16 +97,26 @@ pub fn save_offset(offset: i64) {
     }
 }
 
-/// 读取配置。文件不存在、字段为空、或内容非法都返回 `Ok(None)`（= Bot 不启动）。
-pub fn load_config() -> Result<Option<TelegramConfig>, String> {
+/// 读取配置文件；不存在返回 `None`，内容损坏返回 `Err`。
+fn read_file() -> Result<Option<TelegramFile>, String> {
     let path = config_path();
     if !path.exists() {
         return Ok(None);
     }
     let raw =
         std::fs::read_to_string(&path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
-    let file: TelegramFile =
-        serde_json::from_str(&raw).map_err(|e| format!("解析 {} 失败：{e}", path.display()))?;
+    let file = serde_json::from_str::<TelegramFile>(&raw)
+        .map_err(|e| format!("解析 {} 失败：{e}", path.display()))?;
+    Ok(Some(file))
+}
+
+/// 已保存且字段齐全的配置，**不看 enabled**。
+///
+/// 设置页里 token 留空 = 沿用旧值，停用状态下也得能读到旧 token。
+pub fn load_stored_config() -> Result<Option<TelegramConfig>, String> {
+    let Some(file) = read_file()? else {
+        return Ok(None);
+    };
     if file.bot_token.trim().is_empty() || file.chat_id.trim().is_empty() {
         return Ok(None);
     }
@@ -97,14 +126,43 @@ pub fn load_config() -> Result<Option<TelegramConfig>, String> {
     }))
 }
 
+/// 读取运行配置。文件不存在、未勾启用、字段为空、或内容非法都返回 `Ok(None)`（= Bot 不启动）。
+pub fn load_config() -> Result<Option<TelegramConfig>, String> {
+    let Some(file) = read_file()? else {
+        return Ok(None);
+    };
+    // 没勾启用就不拉起 Bot：设置页关掉开关要真的停，而不是留着空跑。
+    if !file.enabled || file.bot_token.trim().is_empty() || file.chat_id.trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(TelegramConfig {
+        bot_token: decode_secret(file.bot_token.trim())?,
+        chat_id: file.chat_id.trim().to_string(),
+    }))
+}
+
+/// 读设置页要回显的内容。文件缺失/损坏都返回空视图（= 未配置）。
+pub fn load_view() -> StoredView {
+    let Ok(Some(file)) = read_file() else {
+        return StoredView::default();
+    };
+    let plain = decode_secret(file.bot_token.trim()).unwrap_or_default();
+    StoredView {
+        enabled: file.enabled,
+        bot_token_masked: mask_token(&plain),
+        chat_id: file.chat_id.trim().to_string(),
+    }
+}
+
 /// 写配置（token 加密后落盘）。手填明文后调用一次即可转成密文。
-pub fn save_config(config: &TelegramConfig) -> Result<(), String> {
+pub fn save_config(config: &TelegramConfig, enabled: bool) -> Result<(), String> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败：{e}", parent.display()))?;
     }
     let file = TelegramFile {
+        enabled,
         bot_token: crypto::secret_encrypt_str(config.bot_token.trim())
             .map_err(|e| format!("加密 bot token 失败：{e}"))?,
         chat_id: config.chat_id.trim().to_string(),
@@ -222,6 +280,16 @@ impl BotApi {
             .unwrap_or(serde_json::Value::Null))
     }
 
+    /// 取 bot 自己的用户名（不带 `@`）。用来验证 token 有效、且代理链路通。
+    pub fn get_me(&self) -> Result<String, String> {
+        let result = self.call("getMe", serde_json::json!({}))?;
+        Ok(result
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
+    }
+
     /// 长轮询取更新。`offset` = 已确认的最大 update_id + 1。
     pub fn get_updates(&self, offset: i64) -> Result<Vec<serde_json::Value>, String> {
         let body = serde_json::json!({
@@ -302,6 +370,55 @@ impl BotApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn masks_token_variants() {
+        assert_eq!(mask_token("123456789:AAHsecretvalue"), "123456789:…");
+        assert_eq!(mask_token("  "), "");
+        // 没有冒号（手填错格式）时也不能整串回显。
+        assert_eq!(mask_token("abcdefgh"), "abcd…");
+    }
+
+    /// 写文件，所以默认 ignore；与 offset_roundtrip 同样的隔离要求：
+    /// `MAILDECK_USER_DATA_DIR=D:/AgentWork/tmp/mdtest_x cargo test -p maildeck-core telegram_config_roundtrip -- --ignored`
+    #[test]
+    #[ignore = "会写数据目录，需 MAILDECK_USER_DATA_DIR 指向临时目录"]
+    fn telegram_config_roundtrip() {
+        let dir = crate::db::user_data_path();
+        assert!(
+            dir.to_string_lossy().to_lowercase().contains("mdtest"),
+            "拒绝在真实数据目录跑：{}",
+            dir.display()
+        );
+        let _ = std::fs::remove_file(config_path());
+        assert_eq!(load_config().unwrap(), None, "无文件时不应启动");
+        assert_eq!(load_view().bot_token_masked, "");
+
+        let cfg = TelegramConfig {
+            bot_token: "123456789:AAHsecret".into(),
+            chat_id: "42".into(),
+        };
+        // 未勾启用：存了但不拉起，视图要能看到脱敏 token（设置页留空沿用就靠它）。
+        save_config(&cfg, false).unwrap();
+        assert_eq!(load_config().unwrap(), None, "未勾启用就不该启动");
+        assert_eq!(
+            load_stored_config().unwrap().unwrap().bot_token,
+            cfg.bot_token
+        );
+        let view = load_view();
+        assert!(!view.enabled);
+        assert_eq!(view.bot_token_masked, "123456789:…");
+        assert_eq!(view.chat_id, "42");
+
+        save_config(&cfg, true).unwrap();
+        let running = load_config().unwrap().expect("勾了启用且字段齐全就要启动");
+        assert_eq!(
+            running.bot_token, cfg.bot_token,
+            "落盘是密文，读回要解出原文"
+        );
+        assert!(load_view().enabled);
+        let _ = std::fs::remove_file(config_path());
+    }
 
     #[test]
     fn redacts_token() {

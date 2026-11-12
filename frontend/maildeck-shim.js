@@ -87,6 +87,12 @@
       check: function () { return call("update_check", {}); },
       install: function () { return call("update_install", {}); },
       onState: function (callback) { return onEvent("update:state", callback); }
+    },
+    // 仅 Tauri 壳层提供：旧 Electron 主进程没有这套 IPC，渲染层按「有没有这个命名空间」决定是否显示设置。
+    telegram: {
+      get: function () { return call("telegram_get_config", {}); },
+      update: function (config) { return call("telegram_set_config", { input: config }); },
+      test: function (config) { return call("telegram_test", { input: config }); }
     }
   };
 })();

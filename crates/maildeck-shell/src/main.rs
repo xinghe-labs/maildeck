@@ -1143,6 +1143,228 @@ fn launch_hidden() -> bool {
     std::env::args().any(|arg| arg == "--hidden")
 }
 
+// ---------- telegram（设置页配置 + 后台线程生命周期） ----------
+
+/// 后台长轮询线程的把手。
+struct BotHandle {
+    /// 置 true 后，轮询循环在下一轮检查时退出。
+    stop: Arc<AtomicBool>,
+    join: std::thread::JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct BotInner {
+    /// 每次启停 +1。「先 join 旧线程再起新线程」的后台步骤靠它判断自己是否过期。
+    generation: u64,
+    handle: Option<BotHandle>,
+}
+
+/// Telegram Bot 的运行时状态：线程把手 + 最近一次失败原因。
+#[derive(Default)]
+struct BotSlot {
+    inner: Mutex<BotInner>,
+    /// 由 Bot 线程写入，设置页读出来显示（如 token 失效）。
+    last_error: Mutex<String>,
+}
+
+impl BotSlot {
+    /// 线程还活着才算 running：靠 `is_finished` 判断，不需要额外标志位。
+    fn running(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("bot lock")
+            .handle
+            .as_ref()
+            .map(|handle| !handle.join.is_finished())
+            .unwrap_or(false)
+    }
+
+    fn set_last_error(&self, message: String) {
+        *self.last_error.lock().expect("bot error lock") = message;
+    }
+
+    fn last_error(&self) -> String {
+        self.last_error.lock().expect("bot error lock").clone()
+    }
+}
+
+/// Telegram 托管状态。内部是 Arc，才能 clone 一份交给后台线程。
+struct TelegramBot(Arc<BotSlot>);
+
+impl TelegramBot {
+    fn new() -> Self {
+        Self(Arc::new(BotSlot::default()))
+    }
+}
+
+/// 设置页视图：核心配置（脱敏）+ 运行时状态。
+fn telegram_view(slot: &BotSlot) -> Value {
+    let stored = maildeck_core::telegram::load_view();
+    json!({
+        "enabled": stored.enabled,
+        "botTokenMasked": stored.bot_token_masked,
+        "chatId": stored.chat_id,
+        "running": slot.running(),
+        "lastError": slot.last_error(),
+    })
+}
+
+/// 按配置启停 Bot：`Some` 起（或重启），`None` 停。
+///
+/// 先等旧线程退出再起新线程：两个线程同时 `getUpdates` 会被 Telegram 回 409，
+/// 两边都收不到消息。等待必须放在后台线程——`getUpdates` 最长阻塞 25 秒，
+/// 同步 join 会把设置页的保存按钮卡死。
+fn apply_bot(
+    slot: Arc<BotSlot>,
+    ctx: Ctx,
+    config: Option<maildeck_core::telegram::TelegramConfig>,
+) {
+    let generation = {
+        let mut inner = slot.inner.lock().expect("bot lock");
+        inner.generation += 1;
+        inner.generation
+    };
+    slot.set_last_error(String::new());
+    let previous = slot.inner.lock().expect("bot lock").handle.take();
+    if let Some(handle) = &previous {
+        handle.stop.store(true, Ordering::SeqCst);
+    }
+    let starter_slot = Arc::clone(&slot);
+    // 没有旧线程要等时直接同步起，这样 `running` 在命令返回时就是真的，
+    // 不会出现「已保存，但 Bot 未启动」的假告警（线程晚一步才起来）。
+    if previous.is_none() {
+        start_bot(&starter_slot, generation, ctx, config);
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("telegram-starter".to_string())
+        .spawn(move || {
+            let slot = starter_slot;
+            if let Some(previous) = previous {
+                // 旧线程可能正在一次 25 秒的长轮询里，等它自己收尾。
+                let _ = previous.join.join();
+            }
+            start_bot(&slot, generation, ctx, config);
+        });
+    if let Err(err) = spawned {
+        slot.set_last_error(format!("启动调度线程失败：{err}"));
+    }
+}
+
+/// 起 Bot 线程（或在 `config` 为 `None` 时确认停用）。
+///
+/// `generation` 不是当前值时说明用户又改了一次设置，这一轮作废。
+fn start_bot(
+    slot: &Arc<BotSlot>,
+    generation: u64,
+    ctx: Ctx,
+    config: Option<maildeck_core::telegram::TelegramConfig>,
+) {
+    let Some(config) = config else {
+        maildeck_core::logging::info("[telegram] 已按设置停用");
+        return;
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let error_slot = Arc::clone(slot);
+    let bot = std::thread::Builder::new()
+        .name("telegram-bot".to_string())
+        .spawn(move || {
+            if let Err(err) = maildeck_app::telegram_bot::run(ctx, config, thread_stop) {
+                error_slot.set_last_error(err);
+            }
+        });
+    match bot {
+        Ok(join) => {
+            let mut inner = slot.inner.lock().expect("bot lock");
+            if inner.generation == generation {
+                inner.handle = Some(BotHandle { stop, join });
+            } else {
+                // 期间用户又改了一次设置：这一轮作废，交给后来者。
+                stop.store(true, Ordering::SeqCst);
+            }
+        }
+        Err(err) => slot.set_last_error(format!("启动 Bot 线程失败：{err}")),
+    }
+}
+
+/// 从设置页输入里取出 `(enabled, chatId, token)`；token 留空 = 沿用已保存的。
+fn parse_telegram_input(input: &Value) -> Result<(bool, String, String), Value> {
+    let enabled = input
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let chat_id = input
+        .get("chatId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let typed = input
+        .get("botToken")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if typed.is_empty() {
+        // 回显给前端的是 `123456789:…`，用户不改就不该重输——沿用已存的值。
+        let existing = maildeck_core::telegram::load_stored_config()
+            .map_err(|e| fail(AppError::Unknown(e)))?;
+        return Ok((
+            enabled,
+            chat_id,
+            existing.map(|c| c.bot_token).unwrap_or_default(),
+        ));
+    }
+    Ok((enabled, chat_id, typed))
+}
+
+#[tauri::command]
+fn telegram_get_config(bot: tauri::State<'_, TelegramBot>) -> CmdResult {
+    Ok(telegram_view(&bot.0))
+}
+
+#[tauri::command]
+fn telegram_set_config(
+    bot: tauri::State<'_, TelegramBot>,
+    state: tauri::State<'_, Ctx>,
+    input: Value,
+) -> CmdResult {
+    let (enabled, chat_id, bot_token) = parse_telegram_input(&input)?;
+    let config = maildeck_core::telegram::TelegramConfig { bot_token, chat_id };
+    maildeck_core::telegram::save_config(&config, enabled)
+        .map_err(|e| fail(AppError::Unknown(e)))?;
+    // 保存即生效：字段不全/没勾启用都直接停，不让后台线程白跑。
+    let should_run = enabled && !config.bot_token.is_empty() && !config.chat_id.is_empty();
+    let ctx = state.inner().clone();
+    apply_bot(
+        Arc::clone(&bot.0),
+        ctx,
+        if should_run { Some(config) } else { None },
+    );
+    Ok(telegram_view(&bot.0))
+}
+
+#[tauri::command]
+async fn telegram_test(state: tauri::State<'_, Ctx>, input: Value) -> CmdResult {
+    let (_, _, bot_token) = parse_telegram_input(&input)?;
+    if bot_token.is_empty() {
+        return Ok(json!({ "ok": false, "botUsername": "", "message": "还没填 Bot Token。" }));
+    }
+    let ctx = state.inner().clone();
+    // 网络请求必须离开主线程，否则设置页会「未响应」。
+    offload(move || {
+        let proxy = ctx.refresh_options().proxy_url;
+        let result =
+            maildeck_core::telegram::BotApi::new(&bot_token, &proxy).and_then(|api| api.get_me());
+        Ok(match result {
+            Ok(username) => json!({ "ok": true, "botUsername": username, "message": "" }),
+            Err(err) => json!({ "ok": false, "botUsername": "", "message": err }),
+        })
+    })
+    .await
+}
+
 fn main() {
     // 日志尽早初始化：之后所有日志都写 <数据目录>/logs/maildeck.log，
     // 且 stderr 失效时不会再像 eprintln! 那样 panic。
@@ -1156,6 +1378,7 @@ fn main() {
         .manage(ctx)
         .manage(device_session)
         .manage(ShellState::new())
+        .manage(TelegramBot::new())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 再次启动：把已有窗口叫回前台（原版 second-instance）。
             show_main_window(app);
@@ -1211,17 +1434,17 @@ fn main() {
                 });
             }
             // Telegram Bot：配置齐全才拉起长轮询线程（没配就不跑，不占资源）。
-            if let Some(state) = app.try_state::<Ctx>() {
-                let bot_ctx = state.inner().clone();
+            if let (Some(bot), Some(ctx_state)) =
+                (app.try_state::<TelegramBot>(), app.try_state::<Ctx>())
+            {
+                let slot = Arc::clone(&bot.0);
+                let bot_ctx = ctx_state.inner().clone();
                 match maildeck_core::telegram::load_config() {
-                    Ok(Some(config)) => {
-                        std::thread::spawn(move || {
-                            maildeck_app::telegram_bot::run(bot_ctx, config)
-                        });
-                    }
+                    Ok(Some(config)) => apply_bot(slot, bot_ctx, Some(config)),
                     Ok(None) => {}
                     Err(err) => {
-                        maildeck_core::logging::warn(format!("[telegram] 读取配置失败：{err}"))
+                        maildeck_core::logging::warn(format!("[telegram] 读取配置失败：{err}"));
+                        slot.set_last_error(err);
                     }
                 }
             }
@@ -1260,6 +1483,9 @@ fn main() {
             update_get_state,
             update_check,
             update_install,
+            telegram_get_config,
+            telegram_set_config,
+            telegram_test,
         ])
         .run(tauri::generate_context!())
         .expect("MailDeck 运行失败");
