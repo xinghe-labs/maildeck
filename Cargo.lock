@@ -2330,7 +2330,7 @@ dependencies = [
 
 [[package]]
 name = "maildeck-app"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "chrono",
  "maildeck-core",
@@ -2343,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "maildeck-core"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "maildeck-shell"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "maildeck-app",
  "maildeck-core",
